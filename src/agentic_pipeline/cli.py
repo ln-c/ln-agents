@@ -6,13 +6,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from agentic_pipeline.graph import REPO_ROOT, validate_repo
+from agentic_pipeline.graph import REPO_ROOT
+from agentic_pipeline.validation import validate_repo
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentic_pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
-    val = sub.add_parser("validate", help="check pipeline graph and policy invariants")
+    val = sub.add_parser("validate", help="check graph, policy, and model registry invariants")
     val.add_argument("--root", type=Path, default=REPO_ROOT)
     args = parser.parse_args(argv)
 
@@ -21,7 +22,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {err}", file=sys.stderr)
     if errors:
         return 1
-    print("pipeline graph OK")
+    print("repository validation OK (graph, policies, model registry)")
     return 0
 
 
