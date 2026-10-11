@@ -1,0 +1,340 @@
+# Logical model/access registry for agentic-pipeline.
+# This file assigns execution backends; it does not grant permissions or authorize transitions.
+# Resolve aliases to the exact supported tool/model version at runtime and record that resolution.
+# Decisions behind this layout: docs/adr/0003-model-registry-stage-requirements.md
+version: 1
+registry_name: agentic-pipeline-budget
+
+policy:
+  subscription_only: true
+  allow_paid_api_billing: false
+  allow_clefflash_free_allowance: true
+  allow_unapproved_provider_fallback: false
+  on_quota_exhaustion: pause_or_approved_local_fallback
+  record_resolved_model_and_access_path: true
+  record_usage_or_quota_status: true
+  model_output_is_untrusted: true
+  # Presence of any of these (even empty) blocks every dispatch. The schema
+  # enforces this list as a floor; entries may be added, never removed.
+  prohibited_credential_env_vars:
+    - ANTHROPIC_API_KEY
+    - ANTHROPIC_AUTH_TOKEN
+    - CLAUDE_CODE_USE_BEDROCK
+    - CLAUDE_CODE_USE_VERTEX
+    - GEMINI_API_KEY
+    - GOOGLE_API_KEY
+    - GOOGLE_APPLICATION_CREDENTIALS
+    - GOOGLE_GENAI_USE_VERTEXAI
+  # Child processes receive an allowlisted environment, not the dispatcher's.
+  child_process_env: allowlist_only
+
+providers:
+  claude_pro:
+    access_mode: subscription_tool
+    subscription: Claude Pro
+    api_billing_allowed: false
+    readiness:
+      executable: claude
+      version_pattern: '^(\d+)\.(\d+)\.(\d+) \(Claude Code\)$'
+      min_version: [2, 1, 0]
+  google_ai_pro:
+    access_mode: subscription_tool
+    subscription: Google AI Pro
+    api_billing_allowed: false
+    readiness:
+      executable: agy
+      version_pattern: '^(\d+)\.(\d+)\.(\d+)$'
+      min_version: [1, 3, 1]
+      # Overage must be explicitly disabled; a missing file or key is UNVERIFIED.
+      settings_path: ~/.gemini/antigravity-cli/settings.json
+      settings_key: useG1Credits
+      settings_required_value: false
+  qwen_local:
+    access_mode: local_inference
+    model_alias: Qwen3 8B
+    network_required: false
+    api_billing_allowed: false
+    readiness:
+      protocol: ollama
+      host: 127.0.0.1
+      port: 11434
+      model_id: "qwen3:8b"
+      timeout_seconds: 1.0
+  clef_flash_free:
+    access_mode: free_allowance_only
+    model_alias: Clef-flash
+    api_billing_allowed: false
+    optional: true
+    quota_exhaustion: disable_and_use_deterministic_rule_or_pause
+  deterministic_rules:
+    access_mode: local_code
+    api_billing_allowed: false
+  deterministic_ci_git_policy:
+    access_mode: local_or_ci_tools
+    api_billing_allowed: false
+  deterministic_orchestrator:
+    access_mode: repository_runtime
+    api_billing_allowed: false
+  local_ledger_and_deterministic_metrics:
+    access_mode: local_code_and_storage
+    api_billing_allowed: false
+  human_approval_ui_and_deterministic_state_machine:
+    access_mode: human_interface_and_repository_runtime
+    api_billing_allowed: false
+
+agents:
+  grounding:
+    spec: agents/pipeline-grounding-agent.md
+    primary: qwen_local
+    escalation: claude_pro
+    escalation_trigger: unresolved_ambiguity_or_insufficient_local_quality
+    allowed_writes: [grounding_artifacts]
+    may_change_state: false
+
+  design:
+    spec: agents/pipeline-design-agent.md
+    # Per-operation read/write scopes live in stage_requirements (A1, A2, A3).
+    proposal_a:
+      primary: claude_pro
+      isolation_group: design_a
+    proposal_b:
+      primary: google_ai_pro
+      isolation_group: design_b
+    synthesis:
+      primary: deterministic_orchestrator
+      model_assistance: [claude_pro, google_ai_pro]
+      requires_both_proposals_sealed: true
+      unresolved_conflict_route: human_authority
+
+  scoring_authorization:
+    primary: deterministic_rules
+    policy_inputs:
+      - policy/vetoes.yaml
+      - policy/weights.yaml
+      - policy/fast_path.yaml
+      - policy/budgets.yaml
+    may_change_policy: false
+    may_authorize_own_policy_change: false
+
+  build:
+    spec: agents/pipeline-build-agent.md
+    # graph E1: "Pi + Qwen3 8B". Cloud models reach build only through E3 -> E4.
+    primary: qwen_local
+    cloud_escalation: graph_e3_e4_only
+    allowed_writes: [assigned_implementation_paths]
+    protected_paths_write_denied: [tests, contracts, adr, policy, budgets, approvals, release_state, pipeline/graph.yaml, schemas]
+    escalation_requires_explicit_authorization: true
+
+  exception_router:
+    spec: agents/pipeline-exception-router.md
+    primary: deterministic_rules
+    optional_classifier: clef_flash_free
+    classifier_role: bounded_classification_only
+    may_change_policy: false
+    may_authorize_security_override: false
+    transition_executor: deterministic_orchestrator
+    routing_policy: policy/routing.yaml
+    retry_budget_policy: policy/budgets.yaml
+
+  release:
+    spec: agents/pipeline-release-agent.md
+    primary: deterministic_ci_git_policy
+    explanation_fallback: qwen_local
+    cloud_explanation_fallback: claude_pro
+    merge_approval_required: true
+    deploy_approval_separate: true
+    model_may_authorize_release: false
+
+  learning:
+    spec: agents/pipeline-learning-agent.md
+    primary: local_ledger_and_deterministic_metrics
+    analysis_fallback: qwen_local
+    subscription_analysis: claude_pro
+    index_update_condition: successful_merge_and_exact_merged_sha
+    calibration_requires_human_review: true
+
+  human_authority:
+    spec: agents/pipeline-human-authority-agent.md
+    primary: human_approval_ui_and_deterministic_state_machine
+    model_assistance: [claude_pro, google_ai_pro, qwen_local]
+    approval_decider: human_only
+    security_veto_override_by_model: false
+
+execution:
+  state_graph: pipeline/graph.yaml
+  state_transition_executor: deterministic_orchestrator
+  require_idempotency_key: true
+  require_pinned_git_sha: true
+  require_context_manifest_digest: true
+  require_provenance_event: true
+  retry_budget_owner: policy/budgets.yaml
+  hard_veto_policy: policy/vetoes.yaml
+  data_classification_policy: policy/data_classes.yaml
+  escalation_policy: policy/escalation.yaml
+  validate_structured_outputs: true
+  enforce_filesystem_permissions_outside_model: true
+  enforce_network_and_secret_policy_outside_model: true
+  on_missing_or_conflicting_evidence: fail_closed
+  # A dispatch failure with no graph edge (e.g. in A1-A3) pauses the run; it is
+  # not a graph state and never routes to T-HALTED without a human at H1.
+  on_unrouted_dispatch_failure: pause_run_pending_human
+
+isolation:
+  proposal_a_and_b_must_use_separate_sessions: true
+  proposal_a_and_b_must_use_separate_write_roots: true
+  proposal_b_can_read_proposal_a_before_seal: false
+  same_backend_counts_as_cross_provider_independence: false
+  isolation_failure_policy: mark_requirement_unmet_and_pause
+
+budget:
+  no_new_subscription: true
+  paid_api_calls: forbidden
+  use_local_for_routine_tasks: true
+  use_cloud_subscription_for_high_value_escalations: true
+  disable_optional_free_classifier_when_quota_unavailable: true
+  no_silent_fallback: true
+  # graph.yaml: an edge's budget is consumed each time the edge is taken. A stage
+  # with several model invocations still consumes one unit per entering edge.
+  retry_accounting: per_graph_edge
+
+# Artifact catalog referenced by stage_requirements. `producer` is a graph state
+# or `STATE.operation`; only sealed artifacts may cross an isolation boundary.
+artifacts:
+  requirements: {sealed: true, producer: [START]}
+  pinned_source_tree: {sealed: true, producer: [G1]}
+  applicable_contracts: {sealed: true, producer: [G1]}
+  adr_snapshot: {sealed: true, producer: [G1]}
+  protected_tests: {sealed: true, producer: [G1]}
+  pinned_context_manifest: {sealed: true, producer: [G4]}
+  proposal_a_scratch: {sealed: false, producer: [A1.proposal_a]}
+  proposal_a_sealed: {sealed: true, producer: [A1.proposal_a]}
+  proposal_b_scratch: {sealed: false, producer: [A1.proposal_b]}
+  proposal_b_sealed: {sealed: true, producer: [A1.proposal_b]}
+  critique_b_by_a_sealed: {sealed: true, producer: [A2.critique_b_by_a]}
+  critique_a_by_b_sealed: {sealed: true, producer: [A2.critique_a_by_b]}
+  synthesis_sealed: {sealed: true, producer: [A3.synthesis]}
+  design_decision_sealed: {sealed: true, producer: [DR, ADR]}
+  contracts_sealed: {sealed: true, producer: [C1.module_decomposition]}
+  generated_tests_sealed: {sealed: true, producer: [D1.test_generation]}
+  implementation_patch: {sealed: false, producer: [E1.implementation_patch]}
+
+# Write roots, relative to the per-run root the orchestrator supplies at runtime.
+# Roots must be distinct and must not nest.
+workspace_roots:
+  proposal_a: design/proposal_a
+  proposal_b: design/proposal_b
+  critique_b_by_a: design/critique_b_by_a
+  critique_a_by_b: design/critique_a_by_b
+  synthesis: design/synthesis
+  contracts: build/contracts
+  generated_tests: build/generated_tests
+  implementation_patch: build/implementation_patch
+
+# Runtime checks each profile requires; any check not VERIFIED blocks dispatch.
+isolation_profiles:
+  independent_proposals: [proposal_path_layout, sandbox_enforcement, session_separation]
+  independent_cross_critique: [proposal_path_layout, sandbox_enforcement, session_separation, sealed_input_verification]
+  sealed_inputs_only: [sandbox_enforcement, sealed_input_verification]
+  implementation_sandbox: [sandbox_enforcement, sealed_input_verification, protected_paths_read_only, network_disabled, broker_mediated_inference]
+
+# One entry per graph state whose executor includes `model`. Reads are
+# default-deny: only `allowed_reads` are supplied. `denied_reads` are explicit
+# assertions the validator checks are disjoint from `allowed_reads`.
+stage_requirements:
+  A1:
+    mode: all_of
+    operations:
+      - id: proposal_a
+        agent: design.proposal_a
+        role: proposal_author
+        allowed_reads: [pinned_context_manifest, requirements, applicable_contracts, adr_snapshot]
+        denied_reads: [proposal_b_scratch, proposal_b_sealed]
+        write_root: proposal_a
+        isolation_profile: independent_proposals
+      - id: proposal_b
+        agent: design.proposal_b
+        role: proposal_author
+        allowed_reads: [pinned_context_manifest, requirements, applicable_contracts, adr_snapshot]
+        denied_reads: [proposal_a_scratch, proposal_a_sealed]
+        write_root: proposal_b
+        isolation_profile: independent_proposals
+  A2:
+    mode: all_of
+    operations:
+      # Model A critiques only Proposal B; Model B critiques only Proposal A.
+      - id: critique_b_by_a
+        agent: design.proposal_a
+        role: cross_reviewer
+        target_artifact: proposal_b_sealed
+        allowed_reads: [pinned_context_manifest, proposal_b_sealed]
+        denied_reads: [proposal_b_scratch, critique_a_by_b_sealed]
+        write_root: critique_b_by_a
+        isolation_profile: independent_cross_critique
+      - id: critique_a_by_b
+        agent: design.proposal_b
+        role: cross_reviewer
+        target_artifact: proposal_a_sealed
+        allowed_reads: [pinned_context_manifest, proposal_a_sealed]
+        denied_reads: [proposal_a_scratch, critique_b_by_a_sealed]
+        write_root: critique_a_by_b
+        isolation_profile: independent_cross_critique
+  A3:
+    mode: ordered_any_of
+    backends: [claude_pro, google_ai_pro]
+    operations:
+      - id: synthesis
+        agent: design.synthesis
+        role: synthesizer
+        allowed_reads:
+          - pinned_context_manifest
+          - requirements
+          - applicable_contracts
+          - adr_snapshot
+          - proposal_a_sealed
+          - proposal_b_sealed
+          - critique_a_by_b_sealed
+          - critique_b_by_a_sealed
+        denied_reads: [proposal_a_scratch, proposal_b_scratch]
+        write_root: synthesis
+        isolation_profile: sealed_inputs_only
+  C1:
+    mode: ordered_any_of
+    backends: [qwen_local]
+    operations:
+      # Runs before E0 creates the implementation sandbox.
+      - id: module_decomposition
+        agent: build
+        role: contract_author
+        allowed_reads: [pinned_context_manifest, design_decision_sealed, synthesis_sealed, pinned_source_tree, applicable_contracts]
+        denied_reads: [proposal_a_scratch, proposal_b_scratch]
+        write_root: contracts
+        isolation_profile: sealed_inputs_only
+  D1:
+    mode: ordered_any_of
+    backends: [qwen_local]
+    operations:
+      - id: test_generation
+        agent: build
+        role: test_author
+        allowed_reads: [pinned_context_manifest, contracts_sealed, pinned_source_tree, protected_tests]
+        denied_reads: [implementation_patch]
+        write_root: generated_tests
+        isolation_profile: sealed_inputs_only
+  E1:
+    mode: ordered_any_of
+    backends: [qwen_local]
+    operations:
+      # Tests and contracts are readable; writes are confined to write_root.
+      - id: implementation_patch
+        agent: build
+        role: patch_author
+        allowed_reads: [pinned_context_manifest, pinned_source_tree, contracts_sealed, generated_tests_sealed, protected_tests]
+        denied_reads: [proposal_a_scratch, proposal_b_scratch]
+        write_root: implementation_patch
+        isolation_profile: implementation_sandbox
+  E4:
+    mode: disabled
+    reason: escalation targets in policy/escalation.yaml are not registry providers
+  BENCH:
+    mode: disabled
+    reason: benchmark backend not yet decided

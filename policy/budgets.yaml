@@ -1,0 +1,16 @@
+# Retry budgets (human-owned). `max_retries` counts attempts AFTER the first:
+# 2 retries = 3 attempts total. A repeated failure signature exhausts its
+# route's budget early. Values are initial defaults (see ADR 0002).
+version: 1
+budgets:
+  run:         {max_retries: 2, wall_clock_minutes: null, on_exhausted: H1}
+  design:      {max_retries: 2, on_exhausted: H1}
+  regen:       {max_retries: 2, on_exhausted: H1}
+  evidence:    {max_retries: 2, on_exhausted: H1}
+  local:       {max_retries: 2, on_exhausted: E3}
+  escalation:  {max_retries: 2, on_exhausted: H1}
+  test:        {max_retries: 2, on_exhausted: H1}
+  infra:       {max_retries: 2, on_exhausted: H1}
+  reconcile:   {max_retries: 2, on_exhausted: H1}
+  remediation: {max_retries: 2, on_exhausted: H1}
+  runner_up:   {max_retries: 2, on_exhausted: H1}

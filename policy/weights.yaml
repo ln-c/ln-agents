@@ -1,0 +1,12 @@
+# B2 MCDA weights. Human-owned and versioned; models never set weights.
+# Weights express how much a criterion matters, not how well an option scores.
+version: 1
+weights:
+  security: 0.35
+  reliability: 0.20
+  scalability: 0.15
+  maintainability: 0.15
+  cost: 0.15
+thresholds:
+  near_tie_delta: 0.05     # top-two weighted score gap below this sets near_tie
+  high_uncertainty: 0.30   # aggregate uncertainty above this sets high_uncertainty
