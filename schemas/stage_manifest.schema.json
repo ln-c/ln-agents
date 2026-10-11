@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stage_manifest",
+  "title": "Stage completion manifest: the only way downstream stages consume a stage's artifacts",
+  "type": "object",
+  "required": ["manifest_version", "run_id", "stage", "attempt", "published_at", "provenance_tip", "operations", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "manifest_version": {"const": 1},
+    "run_id": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"},
+    "stage": {"type": "string", "pattern": "^[A-Z][A-Z0-9-]*$"},
+    "attempt": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "published_at": {"type": "string", "minLength": 1},
+    "provenance_tip": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "operations": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["backend", "invocation_id", "status"],
+        "properties": {
+          "backend": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "invocation_id": {"type": "string", "minLength": 1},
+          "status": {"const": "ok"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path", "digest", "sealed"],
+        "properties": {
+          "path": {"type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\0]+$"},
+          "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "sealed": {"type": "boolean"},
+          "data_class": {"enum": ["public", "internal", "confidential", "restricted", "unknown"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}
