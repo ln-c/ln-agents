@@ -4,7 +4,10 @@ Order of operations for `dispatch_stage` (failure handling in brackets):
 
 1. Preflight + stage eligibility: static validity, credential denylist,
    backend readiness, isolation profile          [DispatchBlocked, no budget]
-2. Adapter present for every selected backend    [DispatchBlocked, no budget]
+2. Adapter present for every selected backend, and
+   it enforces every isolation check in the
+   operation's profile that the dispatcher does
+   not enforce itself                            [DispatchBlocked, no budget]
 3. Sealed inputs match their published manifests [DispatchBlocked, no budget]
 4. Graph edge exists and guard holds             [DispatchBlocked, no budget]
 5. Reserve one unit of the edge's budget         [DispatchBlocked if exhausted]
@@ -104,7 +107,14 @@ class AdapterResult:
     detail: str = ""
 
 
+# Isolation checks the dispatcher enforces itself; adapters must enforce the rest.
+DISPATCHER_ENFORCED = frozenset({"proposal_path_layout", "sealed_input_verification"})
+
+
 class BackendAdapter(Protocol):
+    # Isolation checks (registry isolation_profiles vocabulary) this adapter enforces.
+    enforced_isolation: frozenset[str]
+
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         """Resolve model/version and build the prompt. Must not call out."""
         ...
@@ -151,6 +161,14 @@ class Dispatcher:
             raise DispatchBlocked(f"{stage}: no adapter for {missing}")
         spec = self.registry["stage_requirements"][stage]
         ops = [op for _, op in operations({stage: spec})]
+        profiles = self.registry["isolation_profiles"]
+        for op in ops:
+            backend = verdict.backends[op["id"]]
+            required = set(profiles[op["isolation_profile"]]) - DISPATCHER_ENFORCED
+            if gaps := sorted(required - self.adapters[backend].enforced_isolation):
+                raise DispatchBlocked(
+                    f"{stage}.{op['id']}: {backend} adapter does not enforce {gaps}"
+                )
         if input_errors := [e for op in ops for e in self._input_errors(op)]:
             raise DispatchBlocked(f"{stage}: sealed inputs: " + "; ".join(input_errors))
         try:

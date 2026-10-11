@@ -19,7 +19,12 @@ RESTRICTED_OS_CALLS = frozenset(
     | {f"spawn{s}" for s in ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe")}
 )
 # module file -> restricted top-level modules it may import
-APPROVED = {"readiness.py": frozenset({"subprocess", "http"})}
+APPROVED = {
+    "readiness.py": frozenset({"subprocess", "http"}),  # version probes, Ollama health check
+    "sandbox.py": frozenset({"subprocess"}),  # launches bwrap
+    "broker.py": frozenset({"http"}),  # the only route from a worker to a model
+    "sandbox_entry.py": frozenset({"subprocess", "http", "urllib"}),  # runs inside bwrap only
+}
 
 
 def _violations(path: Path) -> list[str]:

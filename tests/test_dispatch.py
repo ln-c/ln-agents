@@ -84,6 +84,8 @@ def report(*, unready: tuple[str, ...] = (), credential: Status = Status.VERIFIE
 
 
 class FakeAdapter:
+    enforced_isolation = frozenset(ISOLATION)
+
     def __init__(self, status: str = "ok", raise_on_invoke: bool = False) -> None:
         self.status = status
         self.raise_on_invoke = raise_on_invoke
@@ -348,3 +350,11 @@ def test_each_attempt_gets_a_fresh_write_root(tmp_path: Path, adapters: dict) ->
     d.dispatch_stage("A2", "blocking_flaw", "A1", {})
     first, second = (g.write_path for g in adapters["claude_pro"].grants)
     assert first != second and first.is_dir() and second.is_dir()
+
+
+def test_adapter_must_enforce_profile_checks(tmp_path: Path, adapters: dict) -> None:
+    adapters["qwen_local"].enforced_isolation = frozenset({"network_disabled"})
+    d = make(tmp_path, adapters)
+    with pytest.raises(DispatchBlocked, match="qwen_local adapter does not enforce"):
+        d.dispatch_stage("E0", "always", "E1", {})
+    assert events(d) == [] and not (d.run_root / "attempts").exists()
