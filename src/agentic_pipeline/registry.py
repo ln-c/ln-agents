@@ -51,7 +51,7 @@ EXECUTION_PATH_KEYS = (
 type Op = Mapping[str, Any]
 
 
-def _resolve_agent(agents: Mapping[str, Any], dotted: str) -> Mapping[str, Any] | None:
+def resolve_agent(agents: Mapping[str, Any], dotted: str) -> Mapping[str, Any] | None:
     node: Any = agents
     for part in dotted.split("."):
         if not isinstance(node, Mapping) or part not in node:
@@ -60,17 +60,17 @@ def _resolve_agent(agents: Mapping[str, Any], dotted: str) -> Mapping[str, Any] 
     return node if isinstance(node, Mapping) else None
 
 
-def _operations(stage_reqs: Mapping[str, Any]) -> Iterator[tuple[str, Op]]:
+def operations(stage_reqs: Mapping[str, Any]) -> Iterator[tuple[str, Op]]:
     for stage, spec in stage_reqs.items():
         for op in spec.get("operations") or ():
             yield stage, op
 
 
-def _op_backends(registry: Mapping[str, Any], stage: str, op: Op) -> list[str]:
+def op_backends(registry: Mapping[str, Any], stage: str, op: Op) -> list[str]:
     spec = registry["stage_requirements"][stage]
     if spec["mode"] == "ordered_any_of":
         return list(spec["backends"])
-    agent = _resolve_agent(registry["agents"], op["agent"]) or {}
+    agent = resolve_agent(registry["agents"], op["agent"]) or {}
     return [agent["primary"]] if "primary" in agent else []
 
 
@@ -112,7 +112,7 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
     roots = registry["workspace_roots"]
     profiles = registry["isolation_profiles"]
     stage_reqs = registry["stage_requirements"]
-    ops = list(_operations(stage_reqs))
+    ops = list(operations(stage_reqs))
     op_index = {f"{stage}.{op['id']}": op for stage, op in ops}
 
     # R2. Repo paths exist and do not escape the root.
@@ -140,14 +140,14 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
         tag = f"{stage}.{op['id']}"
 
         # R5. Agent resolves.
-        agent = _resolve_agent(agents, op["agent"])
+        agent = resolve_agent(agents, op["agent"])
         if agent is None:
             errors.append(f"registry R5 {tag}: unknown agent {op['agent']!r}")
             continue
 
         # R6. Backends are model providers permitted for the agent.
         permitted = {agent.get("primary"), *(agent.get("model_assistance") or ())}
-        backends = _op_backends(registry, stage, op)
+        backends = op_backends(registry, stage, op)
         if not backends:
             errors.append(f"registry R6 {tag}: no backend resolved")
         for backend in backends:
@@ -224,7 +224,7 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
         for op in spec["operations"]:
             if "session_separation" not in profiles.get(op["isolation_profile"], ()):
                 continue
-            for backend in _op_backends(registry, stage, op):
+            for backend in op_backends(registry, stage, op):
                 if backend in seen:
                     errors.append(
                         f"registry R14 {stage}.{op['id']}: shares backend {backend!r} "
