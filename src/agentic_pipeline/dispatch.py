@@ -44,7 +44,7 @@ from agentic_pipeline.manifest import (
     ManifestError,
     build_manifest,
     publish_stage_manifest,
-    verify_sealed_inputs,
+    resolve_sealed_inputs,
 )
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.readiness import Report, evaluate_stage
@@ -80,7 +80,9 @@ class DispatchGrant:
     operation_id: str
     backend: str
     invocation_id: str
+    role: str
     allowed_reads: tuple[str, ...]
+    inputs: Mapping[str, Path]  # verified sealed inputs, artifact_id -> host path
     write_root: str
     attempt: str
     write_path: Path
@@ -169,7 +171,7 @@ class Dispatcher:
                 raise DispatchBlocked(
                     f"{stage}.{op['id']}: {backend} adapter does not enforce {gaps}"
                 )
-        if input_errors := [e for op in ops for e in self._input_errors(op)]:
+        if input_errors := [e for op in ops for e in self._inputs(op)[1]]:
             raise DispatchBlocked(f"{stage}: sealed inputs: " + "; ".join(input_errors))
         try:
             edge = check_transition(self.graph, src, guard, stage, self.guards, run_context)
@@ -189,16 +191,23 @@ class Dispatcher:
                 if not again.eligible or again.backends.get(op["id"]) != backend:
                     self._log_exception(stage, op["id"], None, "readiness_lost")
                     raise RunPaused(f"{stage}.{op['id']}: readiness lost before invocation")
-                if self._input_errors(op):
+            inputs, errors = self._inputs(op)  # re-verified right before each invocation
+            if errors:
+                if self._committed:
                     self._log_exception(stage, op["id"], None, "sealed_input_changed")
                     raise RunPaused(f"{stage}.{op['id']}: sealed input changed")
+                if reservation is not None:
+                    reservation.release()
+                raise DispatchBlocked(f"{stage}.{op['id']}: sealed input changed")
             grant = DispatchGrant(
                 run_id=self.log.run_id,
                 stage=stage,
                 operation_id=op["id"],
                 backend=backend,
                 invocation_id=self.new_invocation_id(),
+                role=op["role"],
                 allowed_reads=tuple(op["allowed_reads"]),
+                inputs=inputs,
                 write_root=op["write_root"],
                 attempt=attempt,
                 write_path=self.run_root / ATTEMPTS_DIR / attempt / roots[op["write_root"]],
@@ -207,8 +216,8 @@ class Dispatcher:
             grants.append(grant)
         return StageOutcome(stage, results, self._seal(stage, attempt, grants))
 
-    def _input_errors(self, op: Mapping[str, Any]) -> list[str]:
-        return verify_sealed_inputs(
+    def _inputs(self, op: Mapping[str, Any]) -> tuple[dict[str, Path], list[str]]:
+        return resolve_sealed_inputs(
             self.run_root, self.log.run_id, self.registry, op["allowed_reads"]
         )
 

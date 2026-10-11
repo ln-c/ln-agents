@@ -151,29 +151,53 @@ def probe_settings(spec: Mapping[str, Any], host: Host) -> Check:
     return Check("overage_policy", Status.VERIFIED, f"{key} is {wanted!r}")
 
 
-def probe_ollama(spec: Mapping[str, Any]) -> list[Check]:
-    host, port, model = spec["host"], spec["port"], spec["model_id"]
-    conn = http.client.HTTPConnection(host, port, timeout=spec["timeout_seconds"])
+def _ollama_tags(spec: Mapping[str, Any]) -> tuple[int, bytes]:
+    conn = http.client.HTTPConnection(spec["host"], spec["port"], timeout=spec["timeout_seconds"])
     try:
         conn.request("GET", "/api/tags")
         resp = conn.getresponse()
-        body = resp.read()
+        return resp.status, resp.read()
+    finally:
+        conn.close()
+
+
+def _tagged_models(body: bytes) -> dict[str, str]:
+    """name -> digest from an /api/tags body; raises on malformed input."""
+    return {m["name"]: m.get("digest", "") for m in json.loads(body)["models"]}
+
+
+def probe_ollama(spec: Mapping[str, Any]) -> list[Check]:
+    host, port, model = spec["host"], spec["port"], spec["model_id"]
+    try:
+        status, body = _ollama_tags(spec)
     except OSError as exc:
         daemon = Check("daemon", Status.FAILED, f"{host}:{port} unreachable: {exc}")
         return [daemon, Check("model_inventory", Status.UNVERIFIED, "daemon unreachable")]
-    finally:
-        conn.close()
-    if resp.status != 200:
-        daemon = Check("daemon", Status.FAILED, f"GET /api/tags returned HTTP {resp.status}")
+    if status != 200:
+        daemon = Check("daemon", Status.FAILED, f"GET /api/tags returned HTTP {status}")
         return [daemon, Check("model_inventory", Status.UNVERIFIED, "daemon unhealthy")]
     daemon = Check("daemon", Status.VERIFIED, f"ollama responding on {host}:{port}")
     try:
-        names = {m["name"] for m in json.loads(body)["models"]}
+        names = _tagged_models(body)
     except (ValueError, KeyError, TypeError):
         return [daemon, Check("model_inventory", Status.FAILED, "malformed /api/tags response")]
     if model not in names:
         return [daemon, Check("model_inventory", Status.FAILED, f"{model} not pulled")]
     return [daemon, Check("model_inventory", Status.VERIFIED, f"{model} present")]
+
+
+def ollama_model_digest(spec: Mapping[str, Any]) -> str:
+    """Resolve the exact local model build, as runtime evidence for provenance."""
+    status, body = _ollama_tags(spec)
+    if status != 200:
+        raise LookupError(f"GET /api/tags returned HTTP {status}")
+    try:
+        digest = _tagged_models(body).get(spec["model_id"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LookupError("malformed /api/tags response") from exc
+    if not digest:
+        raise LookupError(f"{spec['model_id']} not pulled or has no digest")
+    return f"{spec['model_id']}@sha256:{digest}"
 
 
 def _decode_proc_addr(hex_addr: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
