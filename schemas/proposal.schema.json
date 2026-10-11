@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "proposal",
+  "title": "Architecture proposal (A1 proposals A/B, A3 synthesis S)",
+  "type": "object",
+  "required": ["id", "author_model", "synthesized", "topology", "manifest_hash"],
+  "properties": {
+    "id": {"type": "string"},
+    "author_model": {"type": "string"},
+    "synthesized": {"type": "boolean"},
+    "sources": {
+      "type": "object",
+      "description": "Element ID -> source proposal ID. Required when synthesized.",
+      "additionalProperties": {"type": "string"}
+    },
+    "topology": {
+      "type": "object",
+      "required": ["components"],
+      "properties": {
+        "components": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["name"]}},
+        "edges": {"type": "array"}
+      }
+    },
+    "constraints_addressed": {"type": "array", "items": {"type": "string"}},
+    "manifest_hash": {"type": "string"}
+  },
+  "if": {"properties": {"synthesized": {"const": true}}},
+  "then": {"required": ["sources"]}
+}

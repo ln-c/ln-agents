@@ -1,0 +1,15 @@
+# B3 authorization: the fast path skips design approval ONLY (E2 and F1 always run).
+# All requirements must hold. Items marked (proposed) are open in ADR 0002.
+version: 1
+task_class_allowlist: []   # empty = fast path disabled until a human adds classes
+require_all:
+  - task_class_on_allowlist
+  - no_active_veto
+  - no_mandatory_approval
+  - contracts_and_protected_tests_intact
+  - no_unresolved_material_exception
+  - no_near_tie
+  - no_high_uncertainty
+  - no_security_tag
+  - no_new_dependency          # (proposed)
+  - no_cross_service_boundary  # (proposed)

@@ -1,0 +1,11 @@
+# G2 classification. Unknown blocks cloud; derived artifacts inherit the most
+# restrictive class of their inputs.
+version: 1
+inherit: most_restrictive
+order: [public, internal, confidential, restricted, unknown]
+classes:
+  public:       {cloud_allowed: true}
+  internal:     {cloud_allowed: true}
+  confidential: {cloud_allowed: false}
+  restricted:   {cloud_allowed: false}
+  unknown:      {cloud_allowed: false}

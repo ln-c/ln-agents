@@ -1,0 +1,14 @@
+# Exception router (X): cause -> target. Must match the X edges in pipeline/graph.yaml.
+# The router may not modify contracts, protected tests, ADRs, policy, weights, or budgets.
+version: 1
+routes:
+  implementation_violates_contract: {to: E1, budget: local}
+  contract_inadequate:              {to: H1, note: proposed amendment only}
+  requirement_missing:              {to: D1, budget: test}
+  topology_conflict_runner_up:      {to: A4, budget: runner_up, note: revalidate then B1 and B2}
+  topology_conflict_no_runner_up:   {to: A1, budget: design}
+  local_spent:                      {to: E3}
+  security_or_scope:                {to: H1, note: security means halt or remediate only}
+  infra_rerun_e2:                   {to: E2, budget: infra}
+  infra_rerun_f1:                   {to: F1, budget: infra}
+  unknown_or_spent:                 {to: H1}

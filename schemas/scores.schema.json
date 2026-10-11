@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "scores",
+  "title": "MCDA scores and flags (B2). Every value is explicitly typed.",
+  "type": "object",
+  "required": ["weights_version", "values", "flags"],
+  "properties": {
+    "weights_version": {"type": "string"},
+    "values": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate", "criterion", "type", "value"],
+        "properties": {
+          "candidate": {"type": "string"},
+          "criterion": {"type": "string"},
+          "type": {"enum": ["criterion_score", "outcome_probability", "uncertainty"]},
+          "value": {"type": "number"},
+          "task_class": {"type": "string"},
+          "calibration_label": {"type": "string"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"type": {"const": "criterion_score"}}},
+            "then": {"properties": {"value": {"type": "integer", "minimum": 0, "maximum": 4}}}
+          },
+          {
+            "if": {"properties": {"type": {"const": "outcome_probability"}}},
+            "then": {
+              "required": ["task_class", "calibration_label"],
+              "properties": {"value": {"minimum": 0, "maximum": 1}}
+            }
+          },
+          {
+            "if": {"properties": {"type": {"const": "uncertainty"}}},
+            "then": {"properties": {"value": {"minimum": 0, "maximum": 1}}}
+          }
+        ]
+      }
+    },
+    "flags": {
+      "type": "object",
+      "required": ["near_tie", "high_uncertainty"],
+      "properties": {
+        "near_tie": {"type": "boolean"},
+        "high_uncertainty": {"type": "boolean"}
+      }
+    }
+  }
+}

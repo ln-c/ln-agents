@@ -1,0 +1,9 @@
+# E3 escalation targets. An agent is eligible only if the run's data class is listed.
+version: 1
+agents:
+  - id: local-large
+    location: local
+    allowed_data_classes: [public, internal, confidential, restricted]
+  - id: cloud-approved
+    location: cloud
+    allowed_data_classes: [public, internal]

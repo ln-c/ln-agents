@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "exception_payload",
+  "title": "Exception payload delivered to the router (X)",
+  "type": "object",
+  "required": ["type", "raised_by", "reproduced", "rule_ids", "manifest_id", "attempt", "failure_signature"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {"enum": ["ArchitectureException", "CheckFailure", "SecurityFinding", "InfraFailure"]},
+    "raised_by": {"enum": ["E2", "F1"]},
+    "reproduced": {"type": "boolean"},
+    "rule_ids": {"type": "array", "items": {"type": "string"}},
+    "manifest_id": {"type": "string"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "failure_signature": {"type": "string", "minLength": 1},
+    "detail": {"type": "string"}
+  }
+}

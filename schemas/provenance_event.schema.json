@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "provenance_event",
+  "title": "Provenance event (L1). Appended before each external model call.",
+  "type": "object",
+  "required": ["run_id", "seq", "state", "event", "timestamp"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "seq": {"type": "integer", "minimum": 0},
+    "state": {"type": "string"},
+    "event": {"enum": ["enter", "model_call", "decision", "approval", "exception", "terminal"]},
+    "timestamp": {"type": "string"},
+    "model": {"type": "string"},
+    "model_version": {"type": "string"},
+    "prompt_hash": {"type": "string"},
+    "approver_id": {"type": "string"},
+    "approved_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "reason_code": {"type": "string"}
+  },
+  "allOf": [
+    {"if": {"properties": {"event": {"const": "model_call"}}}, "then": {"required": ["model", "model_version", "prompt_hash"]}},
+    {"if": {"properties": {"event": {"const": "approval"}}}, "then": {"required": ["approver_id", "approved_sha"]}}
+  ]
+}

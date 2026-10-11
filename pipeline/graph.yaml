@@ -1,0 +1,320 @@
+# Agentic delivery pipeline: state machine specification.
+#
+# This file is the spec the agents implement. It is human-owned (see CODEOWNERS)
+# and its structural invariants are enforced by `agentic_pipeline.graph.validate`.
+#
+# kind:      code | model | human | decision | terminal | sink
+# executor:  code | model | human | code+model | code+human
+# edges:     {to, guard, budget?}; `budget` names a key in policy/budgets.yaml
+#            and is consumed every time the edge is taken.
+version: 1
+
+entrypoints: [START, L3]
+
+human_states: [H1, R1, R2, HR]
+
+states:
+  # ── ENTRY ────────────────────────────────────────────────────────────────
+  START:
+    kind: code
+    executor: code+human
+    doc: Task spec and task class submitted (human submits, code validates class).
+    edges:
+      - {to: G1, guard: task_class_valid}
+
+  # ── GROUNDING ────────────────────────────────────────────────────────────
+  G1:
+    kind: code
+    executor: code
+    doc: Pin snapshot (commit SHA, ADR set with status, contract versions, accepted tests).
+    edges:
+      - {to: G2, guard: always}
+  G2:
+    kind: code
+    executor: code
+    doc: Classify every artifact; unknown or unclassified artifacts are blocked from cloud.
+    edges:
+      - {to: G3, guard: always}
+  G3:
+    kind: code
+    executor: code
+    doc: Build hybrid index at pinned SHA (SCIP/LSIF, Tree-sitter, vector + graph).
+    edges:
+      - {to: G4, guard: always}
+  G4:
+    kind: code
+    executor: code
+    doc: Write hashed, immutable context manifest for this run.
+    produces: context_manifest
+    edges:
+      - {to: A1, guard: always}
+
+  # ── DESIGN ───────────────────────────────────────────────────────────────
+  A1:
+    kind: model
+    executor: model
+    doc: Independent proposals A (Gemini) and B (Claude); no cross-visibility.
+    produces: proposal
+    edges:
+      - {to: A2, guard: always}
+  A2:
+    kind: model
+    executor: model
+    doc: Cross-critique (A critiques B, B critiques A); no self-critique.
+    edges:
+      - {to: A1, guard: blocking_flaw, budget: design}
+      - {to: A3, guard: no_blocking_flaw}
+  A3:
+    kind: model
+    executor: model
+    doc: Synthesize candidate S (synthesized=true, sources listed per element).
+    produces: proposal
+    edges:
+      - {to: A4, guard: always}
+  A4:
+    kind: decision
+    executor: code
+    doc: Validation (schema, semantic, constraints).
+    edges:
+      - {to: A1, guard: proposal_invalid, budget: design}
+      - {to: A3, guard: synthesis_invalid, budget: design}
+      - {to: H1, guard: design_spent}
+      - {to: H1, guard: constraint_sources_conflict}
+      - {to: B1, guard: all_required_valid}
+
+  # ── SCORING AND AUTHORIZATION ────────────────────────────────────────────
+  B1:
+    kind: decision
+    executor: code
+    doc: Hard vetoes. Deterministic; model confidence cannot clear a veto.
+    edges:
+      - {to: B2, guard: at_least_one_survivor}
+      - {to: A1, guard: all_vetoed_correctable, budget: regen}
+      - {to: H1, guard: all_vetoed_otherwise}
+  B2:
+    kind: code
+    executor: code
+    doc: MCDA over survivors with human-owned, versioned weights. Sets near_tie, high_uncertainty.
+    produces: scores
+    edges:
+      - {to: B3, guard: always}
+  B3:
+    kind: decision
+    executor: code
+    doc: Authorization (pre-implementation fast-path checks, see policy/fast_path.yaml).
+    edges:
+      - {to: DR, guard: fast_path_eligible}
+      - {to: H1, guard: otherwise}
+  DR:
+    kind: code
+    executor: code
+    doc: Auto-generated decision record. Not an accepted ADR; never recorded as human approval.
+    produces: decision_record
+    edges:
+      - {to: C1, guard: always}
+
+  # ── HUMAN AUTHORITY ──────────────────────────────────────────────────────
+  H1:
+    kind: human
+    executor: human
+    doc: Human decision with full evidence bundle and manifest.
+    edges:
+      - {to: ADR, guard: approve_design_and_no_security_veto}
+      - {to: BENCH, guard: request_evidence, budget: evidence}
+      - {to: A1, guard: revise_with_notes, budget: design}
+      - {to: CHILD, guard: approve_remediation_or_constraint_change}
+      - {to: T-REJECTED, guard: reject}
+      - {to: T-HALTED, guard: halt}
+  ADR:
+    kind: code
+    executor: code+human
+    doc: Human accepts, code writes accepted ADR with approver ID and reason.
+    produces: adr
+    edges:
+      - {to: C1, guard: always}
+  BENCH:
+    kind: code
+    executor: code+model
+    doc: Sandbox prototype or benchmark; results measured against constraints.
+    edges:
+      - {to: B1, guard: always}
+  CHILD:
+    kind: code
+    executor: code
+    doc: Human-authorized child run (new snapshot, manifest, own budget, parent link).
+    edges:
+      - {to: G1, guard: always}
+
+  # ── BUILD ────────────────────────────────────────────────────────────────
+  C1:
+    kind: model
+    executor: code+model
+    doc: Decompose into modules; versioned, frozen contracts; contract tests.
+    edges:
+      - {to: D1, guard: always}
+  D1:
+    kind: model
+    executor: code+model
+    doc: Acceptance and property tests; each must fail on baseline for the right reason.
+    edges:
+      - {to: E0, guard: always}
+  E0:
+    kind: code
+    executor: code
+    doc: Ephemeral sandbox (pinned SHA, network off, no host creds, protected tests read-only).
+    edges:
+      - {to: E1, guard: always}
+  E1:
+    kind: model
+    executor: model
+    doc: Pi + Qwen3 8B writes implementation files only.
+    edges:
+      - {to: E2, guard: always}
+  E2:
+    kind: decision
+    executor: code
+    doc: Deterministic checks every attempt (test hashes before and after, contracts, perf, deps, secrets).
+    edges:
+      - {to: F1, guard: all_pass}
+      - {to: X, guard: any_fail_or_exception}
+  E3:
+    kind: decision
+    executor: code
+    doc: Escalation policy (data class allowed, budget remains, approved agent, sandbox available).
+    edges:
+      - {to: E4, guard: escalation_allowed, budget: escalation}
+      - {to: H1, guard: escalation_not_allowed}
+  E4:
+    kind: model
+    executor: model
+    doc: Larger local model or approved cloud agent; same sandbox and write scope.
+    edges:
+      - {to: E2, guard: always}
+
+  # ── EXCEPTION ROUTER ─────────────────────────────────────────────────────
+  X:
+    kind: decision
+    executor: code
+    doc: Reproduce, classify, count against budget, route. See policy/routing.yaml.
+    may_modify: []
+    forbidden_mutations: [contracts, protected_tests, adrs, policy, weights, budgets]
+    edges:
+      - {to: E1, guard: implementation_violates_contract, budget: local}
+      - {to: H1, guard: contract_inadequate}
+      - {to: D1, guard: requirement_missing, budget: test}
+      - {to: A4, guard: topology_conflict_runner_up, budget: runner_up}
+      - {to: A1, guard: topology_conflict_no_runner_up, budget: design}
+      - {to: E3, guard: local_spent}
+      - {to: H1, guard: security_or_scope}
+      - {to: E2, guard: infra_rerun_e2, budget: infra}
+      - {to: F1, guard: infra_rerun_f1, budget: infra}
+      - {to: H1, guard: unknown_or_spent}
+
+  # ── RELEASE ──────────────────────────────────────────────────────────────
+  F1:
+    kind: decision
+    executor: code
+    doc: Independent CI (integration, ADR fitness functions, incremental mutation testing).
+    edges:
+      - {to: X, guard: required_check_failed}
+      - {to: R1, guard: all_required_pass}
+  R1:
+    kind: human
+    executor: human
+    doc: Merge approval bound to the exact SHA under review.
+    edges:
+      - {to: M1, guard: approve}
+      - {to: RM, guard: deny}
+      - {to: T-CANCELED, guard: cancel}
+  RM:
+    kind: decision
+    executor: code
+    doc: Remediation routed by cause.
+    edges:
+      - {to: E1, guard: code_defect, budget: remediation}
+      - {to: D1, guard: test_defect, budget: remediation}
+      - {to: A1, guard: design_issue, budget: remediation}
+      - {to: H1, guard: remediation_spent}
+  M1:
+    kind: code
+    executor: code
+    doc: Merge to target branch.
+    edges:
+      - {to: MERGED, guard: success}
+      - {to: RC, guard: head_changed_or_conflict}
+  RC:
+    kind: decision
+    executor: code
+    doc: Merge reconciliation. Rebase re-runs E2 and F1 and requires new merge approval.
+    edges:
+      - {to: E2, guard: constraints_unchanged_rebase, budget: reconcile}
+      - {to: CHILD, guard: constraints_changed}
+      - {to: H1, guard: reconcile_spent}
+  MERGED:
+    kind: code
+    executor: code
+    doc: Record merged SHA; all approvals for this run are bound to it.
+    edges:
+      - {to: L2, guard: always}
+      - {to: R2, guard: always}
+  R2:
+    kind: human
+    executor: human
+    doc: Deploy approval; separate scope and authority from merge.
+    edges:
+      - {to: D2, guard: approve}
+      - {to: T-MERGED-UNDEPLOYED, guard: deny_or_not_requested}
+  D2:
+    kind: code
+    executor: code
+    doc: Deploy merged SHA.
+    edges:
+      - {to: T-RELEASED, guard: success}
+      - {to: RB, guard: failure}
+  RB:
+    kind: code
+    executor: code+human
+    doc: Rollback per deployment policy; incident opened.
+    edges:
+      - {to: T-ROLLED-BACK, guard: always}
+
+  # ── LEARNING ─────────────────────────────────────────────────────────────
+  L1:
+    kind: sink
+    executor: code
+    doc: Provenance record; events appended before each external call, finalized at terminals.
+  L2:
+    kind: code
+    executor: code
+    doc: Merged-only learning (mark ADRs implemented, refresh index at merged SHA).
+    edges:
+      - {to: L1, guard: always}
+  L3:
+    kind: decision
+    executor: code
+    doc: Periodic offline evaluation per task class, only when labeled outcomes meet the minimum.
+    edges:
+      - {to: HR, guard: proposal_ready}
+      - {to: L1, guard: not_yet_evaluable}
+  HR:
+    kind: human
+    executor: human
+    doc: Human review of calibration, rubric, threshold, or allowlist proposals.
+    edges:
+      - {to: L1, guard: approve_new_versioned_release}
+      - {to: L1, guard: reject_with_reason}
+
+  # ── TERMINAL STATES ──────────────────────────────────────────────────────
+  T-REJECTED: {kind: terminal, executor: code, writes: [L1]}
+  T-HALTED: {kind: terminal, executor: code, writes: [L1]}
+  T-CANCELED: {kind: terminal, executor: code, writes: [L1]}
+  T-MERGED-UNDEPLOYED: {kind: terminal, executor: code, writes: [L1]}
+  T-RELEASED: {kind: terminal, executor: code, writes: [L1]}
+  T-ROLLED-BACK: {kind: terminal, executor: code, writes: [L1]}
+
+# Paths that must never be bypassed. For each `target`, removing every state in
+# any one `through` group must make the target unreachable from the entrypoints.
+guarded_paths:
+  - {target: C1, through: [[B1, H1]]}          # build only after vetoes or a human
+  - {target: M1, through: [[E2], [F1], [R1]]}  # merge only after checks, CI, approval
+  - {target: D2, through: [[R2]]}              # deploy only after deploy approval
