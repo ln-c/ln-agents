@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from agentic_pipeline import dispatch
 from agentic_pipeline.dispatch import (
     AdapterResult,
     DispatchBlocked,
@@ -19,7 +20,13 @@ from agentic_pipeline.dispatch import (
     RunPaused,
 )
 from agentic_pipeline.graph import Edge, Graph, load_yaml
-from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
+from agentic_pipeline.manifest import (
+    build_manifest,
+    digest_path,
+    load_manifest,
+    publish_stage_manifest,
+)
+from agentic_pipeline.provenance import GENESIS_HASH, JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.readiness import Check, Report, Status
 from agentic_pipeline.transition import BudgetLedger
 
@@ -36,6 +43,30 @@ ISOLATION = (
     "sealed_input_verification",
     "broker_mediated_inference",
 )
+UPSTREAM = ("START", "G1", "G4", "DR", "A1", "A2", "A3", "C1", "D1")
+
+
+def seed(run_root: Path, stages: tuple[str, ...] = UPSTREAM) -> None:
+    """Publish manifests with placeholder content for every sealed artifact of `stages`."""
+    for stage in stages:
+        produced = {
+            aid: (run_root / "seed" / aid, True)
+            for aid, spec in REGISTRY["artifacts"].items()
+            if spec["sealed"] and stage in {p.split(".")[0] for p in spec["producer"]}
+        }
+        for path, _ in produced.values():
+            path.mkdir(parents=True)
+            (path / "content.txt").write_text(f"{path.name}\n")
+        manifest = build_manifest(
+            run_root,
+            run_id="run-1",
+            stage=stage,
+            attempt=f"{stage}-seed",
+            artifacts=produced,
+            operations={},
+            provenance_tip=GENESIS_HASH,
+        )
+        publish_stage_manifest(run_root, manifest)
 
 
 def report(*, unready: tuple[str, ...] = (), credential: Status = Status.VERIFIED) -> Report:
@@ -57,6 +88,7 @@ class FakeAdapter:
         self.status = status
         self.raise_on_invoke = raise_on_invoke
         self.grants: list[DispatchGrant] = []
+        self.side_effect: Any = None
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         return PreparedCall("fake-model", "1.0", "subscription_tool", grant.operation_id.encode())
@@ -65,6 +97,9 @@ class FakeAdapter:
         self.grants.append(grant)
         if self.raise_on_invoke:
             raise ConnectionError("provider unreachable")
+        (grant.write_path / "output.md").write_text(f"{grant.operation_id}\n")
+        if self.side_effect:
+            self.side_effect()
         return AdapterResult(self.status)  # type: ignore[arg-type]
 
 
@@ -99,7 +134,11 @@ def make(
     reports: Iterator[Report] | None = None,
     guards: Any = allow_all,
     ledger: BudgetLedger | None = None,
+    upstream: tuple[str, ...] = UPSTREAM,
 ) -> Dispatcher:
+    run_root = tmp_path / "run"
+    if not run_root.exists():
+        seed(run_root, upstream)
     reports = reports or iter(lambda: report(), None)
     kwargs = {"guards": guards} if guards is not None else {}
     return Dispatcher(
@@ -109,6 +148,7 @@ def make(
         ledger=ledger or BudgetLedger.from_policy(BUDGETS),
         adapters=adapters,
         preflight=lambda: next(reports),
+        run_root=run_root,
         **kwargs,
     )
 
@@ -124,7 +164,7 @@ def test_a1_happy_path_runs_both_operations_with_role_backends(
 ) -> None:
     d = make(tmp_path, adapters)
     outcome = d.dispatch_stage("A2", "blocking_flaw", "A1", {})
-    assert set(outcome.results) == {"proposal_a", "proposal_b"} and outcome.provisional
+    assert set(outcome.results) == {"proposal_a", "proposal_b"} and not outcome.provisional
     assert [g.operation_id for g in adapters["claude_pro"].grants] == ["proposal_a"]
     assert [g.operation_id for g in adapters["google_ai_pro"].grants] == ["proposal_b"]
     assert events(d) == ["model_call", "model_result", "model_call", "model_result"]
@@ -228,3 +268,83 @@ def test_ordered_any_of_uses_first_ready_backend(tmp_path: Path, adapters: dict)
     outcome = d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
     assert set(outcome.results) == {"synthesis"}
     assert adapters["claude_pro"].grants == [] and len(adapters["google_ai_pro"].grants) == 1
+
+
+# ── Sealed inputs and stage manifests ────────────────────────────────────────
+
+
+def test_manifest_seals_operation_outputs(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters)
+    outcome = d.dispatch_stage("G4", "always", "A1", {})
+    manifest = load_manifest(d.run_root, "A1", "run-1")
+    assert manifest is not None and outcome.manifest == d.run_root / "manifests" / "A1.json"
+    assert set(manifest["artifacts"]) == {"proposal_a_sealed", "proposal_b_sealed"}
+    grant = adapters["claude_pro"].grants[0]
+    entry = manifest["artifacts"]["proposal_a_sealed"]
+    assert entry["path"] == f"attempts/{grant.attempt}/design/proposal_a" and entry["sealed"]
+    assert entry["digest"] == digest_path(grant.write_path)
+    assert manifest["provenance_tip"] == verify_provenance_chain(d.log.path).tip
+    assert manifest["operations"]["proposal_b"]["backend"] == "google_ai_pro"
+
+
+def test_downstream_stage_reads_what_upstream_sealed(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters, upstream=("START", "G1", "G4"))
+    d.dispatch_stage("G4", "always", "A1", {})
+    outcome = d.dispatch_stage("A1", "always", "A2", {})
+    assert not outcome.provisional
+
+
+def test_unsealed_output_recorded_for_e1(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters)
+    d.dispatch_stage("E0", "always", "E1", {})
+    manifest = load_manifest(d.run_root, "E1", "run-1")
+    assert manifest["artifacts"]["implementation_patch"]["sealed"] is False
+
+
+def test_missing_upstream_manifest_blocks(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters, upstream=("START", "G1"))
+    with pytest.raises(DispatchBlocked, match="pinned_context_manifest: no published manifest"):
+        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+    assert events(d) == [] and d.ledger.reserved == {} and d.ledger.consumed == {}
+
+
+def test_tampered_sealed_input_blocks(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters)
+    (d.run_root / "seed" / "requirements" / "content.txt").write_text("edited after sealing\n")
+    with pytest.raises(DispatchBlocked, match="requirements: content changed since START"):
+        d.dispatch_stage("G4", "always", "A1", {})
+    assert not (d.run_root / "attempts").exists()
+
+
+def test_input_changed_between_operations_pauses(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters)
+    target = d.run_root / "seed" / "requirements" / "content.txt"
+    adapters["claude_pro"].side_effect = lambda: target.write_text("swapped mid-stage\n")
+    with pytest.raises(RunPaused, match="sealed input changed"):
+        d.dispatch_stage("G4", "always", "A1", {})
+    assert events(d) == ["model_call", "model_result", "exception"]
+    assert adapters["google_ai_pro"].grants == []
+
+
+def test_manifest_publish_failure_leaves_outputs_provisional(
+    tmp_path: Path, adapters: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = make(tmp_path, adapters)
+
+    def fail(run_root: Path, manifest: Mapping[str, Any]) -> Path:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(dispatch, "publish_stage_manifest", fail)
+    with pytest.raises(RunPaused, match="outputs provisional"):
+        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+    assert load_manifest(d.run_root, "A1", "run-1")["attempt"] == "A1-seed"  # old one untouched
+    assert events(d)[-1] == "exception" and d.ledger.consumed == {"design": 1}
+    assert verify_provenance_chain(d.log.path).ok
+
+
+def test_each_attempt_gets_a_fresh_write_root(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters)
+    d.dispatch_stage("G4", "always", "A1", {})
+    d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+    first, second = (g.write_path for g in adapters["claude_pro"].grants)
+    assert first != second and first.is_dir() and second.is_dir()

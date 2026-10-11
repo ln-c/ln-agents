@@ -5,19 +5,25 @@ Order of operations for `dispatch_stage` (failure handling in brackets):
 1. Preflight + stage eligibility: static validity, credential denylist,
    backend readiness, isolation profile          [DispatchBlocked, no budget]
 2. Adapter present for every selected backend    [DispatchBlocked, no budget]
-3. Graph edge exists and guard holds             [DispatchBlocked, no budget]
-4. Reserve one unit of the edge's budget         [DispatchBlocked if exhausted]
-5. Per operation:
-   a. re-probe readiness (after the first)       [RunPaused: readiness_lost]
-   b. adapter.prepare (no external call)         [release budget if nothing logged]
+3. Sealed inputs match their published manifests [DispatchBlocked, no budget]
+4. Graph edge exists and guard holds             [DispatchBlocked, no budget]
+5. Reserve one unit of the edge's budget         [DispatchBlocked if exhausted]
+6. Per operation:
+   a. re-probe readiness and sealed inputs
+      (after the first)                          [RunPaused: readiness_lost,
+                                                  sealed_input_changed]
+   b. create a fresh attempt write root,
+      adapter.prepare (no external call)         [release budget if nothing logged]
    c. append + fsync model_call                  [release budget if first call]
    d. commit the reservation (first call only)   [RunPaused: budget_commit_failed]
    e. adapter.invoke                             [exception event; RunPaused]
    f. append + fsync model_result                [ProvenanceIncomplete]
    g. non-ok result (quota, auth, error)         [RunPaused; no in-flight fallback]
+7. Publish manifests/<STAGE>.json atomically     [RunPaused: manifest_publish_failed;
+                                                  outputs stay provisional]
 
-Outcomes are provisional: no stage manifest is published yet, so the
-orchestrator must not advance state on them.
+Only an outcome with a published manifest is final; the orchestrator must not
+advance state on a provisional one.
 """
 
 from __future__ import annotations
@@ -26,9 +32,17 @@ import hashlib
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from agentic_pipeline.graph import Graph
+from agentic_pipeline.manifest import (
+    ATTEMPTS_DIR,
+    ManifestError,
+    build_manifest,
+    publish_stage_manifest,
+    verify_sealed_inputs,
+)
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.readiness import Report, evaluate_stage
 from agentic_pipeline.registry import operations
@@ -65,6 +79,8 @@ class DispatchGrant:
     invocation_id: str
     allowed_reads: tuple[str, ...]
     write_root: str
+    attempt: str
+    write_path: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +116,11 @@ class BackendAdapter(Protocol):
 class StageOutcome:
     stage: str
     results: dict[str, AdapterResult]
-    provisional: bool = True
+    manifest: Path | None = None
+
+    @property
+    def provisional(self) -> bool:
+        return self.manifest is None
 
 
 def _new_invocation_id() -> str:
@@ -115,9 +135,11 @@ class Dispatcher:
     ledger: BudgetLedger
     adapters: Mapping[str, BackendAdapter]
     preflight: Callable[[], Report]
+    run_root: Path
     guards: GuardEvaluator = deny_all_guards
     new_invocation_id: Callable[[], str] = _new_invocation_id
     _committed: bool = field(default=False, init=False)
+    _tip: str = field(default="", init=False)
 
     def dispatch_stage(
         self, src: str, guard: str, stage: str, run_context: Mapping[str, Any]
@@ -127,6 +149,10 @@ class Dispatcher:
             raise DispatchBlocked(f"{stage}: " + "; ".join(verdict.reasons))
         if missing := sorted(set(verdict.backends.values()) - self.adapters.keys()):
             raise DispatchBlocked(f"{stage}: no adapter for {missing}")
+        spec = self.registry["stage_requirements"][stage]
+        ops = [op for _, op in operations({stage: spec})]
+        if input_errors := [e for op in ops for e in self._input_errors(op)]:
+            raise DispatchBlocked(f"{stage}: sealed inputs: " + "; ".join(input_errors))
         try:
             edge = check_transition(self.graph, src, guard, stage, self.guards, run_context)
             reservation = self.ledger.reserve(edge)
@@ -134,15 +160,20 @@ class Dispatcher:
             raise DispatchBlocked(str(exc)) from exc
 
         self._committed = False
+        attempt = f"{stage}-{uuid.uuid4().hex[:12]}"
+        roots = self.registry["workspace_roots"]
         results: dict[str, AdapterResult] = {}
-        spec = self.registry["stage_requirements"][stage]
-        for index, (_, op) in enumerate(operations({stage: spec})):
+        grants: list[DispatchGrant] = []
+        for index, op in enumerate(ops):
             backend = verdict.backends[op["id"]]
             if index > 0:
                 again = evaluate_stage(stage, self.preflight())
                 if not again.eligible or again.backends.get(op["id"]) != backend:
                     self._log_exception(stage, op["id"], None, "readiness_lost")
                     raise RunPaused(f"{stage}.{op['id']}: readiness lost before invocation")
+                if self._input_errors(op):
+                    self._log_exception(stage, op["id"], None, "sealed_input_changed")
+                    raise RunPaused(f"{stage}.{op['id']}: sealed input changed")
             grant = DispatchGrant(
                 run_id=self.log.run_id,
                 stage=stage,
@@ -151,9 +182,51 @@ class Dispatcher:
                 invocation_id=self.new_invocation_id(),
                 allowed_reads=tuple(op["allowed_reads"]),
                 write_root=op["write_root"],
+                attempt=attempt,
+                write_path=self.run_root / ATTEMPTS_DIR / attempt / roots[op["write_root"]],
             )
             results[op["id"]] = self._invoke(grant, reservation)
-        return StageOutcome(stage, results)
+            grants.append(grant)
+        return StageOutcome(stage, results, self._seal(stage, attempt, grants))
+
+    def _input_errors(self, op: Mapping[str, Any]) -> list[str]:
+        return verify_sealed_inputs(
+            self.run_root, self.log.run_id, self.registry, op["allowed_reads"]
+        )
+
+    def _seal(self, stage: str, attempt: str, grants: list[DispatchGrant]) -> Path:
+        catalog = self.registry["artifacts"]
+        artifacts: dict[str, tuple[Path, bool]] = {}
+        for grant in grants:
+            produced = {
+                aid: spec["sealed"]
+                for aid, spec in catalog.items()
+                if f"{stage}.{grant.operation_id}" in spec["producer"]
+            }
+            if any(produced.values()):  # sealed output supersedes its own scratch
+                produced = {aid: True for aid, sealed in produced.items() if sealed}
+            artifacts.update({aid: (grant.write_path, sealed) for aid, sealed in produced.items()})
+        try:
+            manifest = build_manifest(
+                self.run_root,
+                run_id=self.log.run_id,
+                stage=stage,
+                attempt=attempt,
+                artifacts=artifacts,
+                operations={
+                    g.operation_id: {
+                        "backend": g.backend,
+                        "invocation_id": g.invocation_id,
+                        "status": "ok",
+                    }
+                    for g in grants
+                },
+                provenance_tip=self._tip,
+            )
+            return publish_stage_manifest(self.run_root, manifest)
+        except (ManifestError, OSError) as exc:
+            self._log_exception(stage, "manifest", {"state": stage}, "manifest_publish_failed")
+            raise RunPaused(f"{stage}: manifest not published, outputs provisional: {exc}") from exc
 
     def _invoke(self, grant: DispatchGrant, reservation: Reservation | None) -> AdapterResult:
         adapter = self.adapters[grant.backend]
@@ -164,6 +237,7 @@ class Dispatcher:
             "invocation_id": grant.invocation_id,
         }
         try:
+            grant.write_path.mkdir(parents=True, exist_ok=False)
             call = adapter.prepare(grant)
             correlation["access_method"] = call.access_method
             self.log.append(
@@ -200,7 +274,8 @@ class Dispatcher:
             raise RunPaused(f"{grant.operation_id}: adapter failed: {exc}") from exc
 
         try:
-            self.log.append({**correlation, "event": "model_result", "reason_code": result.status})
+            record = {**correlation, "event": "model_result", "reason_code": result.status}
+            self._tip = self.log.append(record)["event_hash"]
         except Exception as exc:
             raise ProvenanceIncomplete(f"{grant.operation_id}: result not recorded") from exc
         if result.status != "ok":

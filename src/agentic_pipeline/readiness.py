@@ -277,7 +277,6 @@ def probe_sandbox(host: Host) -> dict[str, Check]:
 
 NOT_YET_IMPLEMENTED = {
     "session_separation": "no session-isolation mechanism implemented for cloud tools",
-    "sealed_input_verification": "stage manifest verification not implemented",
     "broker_mediated_inference": "inference broker not implemented",
 }
 
@@ -334,6 +333,11 @@ def run_preflight(root: Path = REPO_ROOT, host: Host | None = None) -> Report:
     report.isolation = probe_sandbox(host)
     report.isolation["proposal_path_layout"] = Check(
         "proposal_path_layout", Status.VERIFIED, "workspace roots distinct and non-nested (R12)"
+    )
+    report.isolation["sealed_input_verification"] = Check(
+        "sealed_input_verification",
+        Status.VERIFIED,
+        "enforced per dispatch: inputs re-hashed against published stage manifests",
     )
     for name, why in NOT_YET_IMPLEMENTED.items():
         report.isolation[name] = Check(name, Status.UNVERIFIED, why)
