@@ -1,24 +1,31 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "provenance_event",
-  "title": "Provenance event (L1). Appended before each external model call.",
+  "title": "Provenance event (L1). Appended before each external model call; hash-chained per run.",
   "type": "object",
-  "required": ["run_id", "seq", "state", "event", "timestamp"],
+  "required": ["run_id", "seq", "state", "event", "timestamp", "prev_hash", "event_hash"],
   "properties": {
-    "run_id": {"type": "string"},
+    "run_id": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"},
     "seq": {"type": "integer", "minimum": 0},
     "state": {"type": "string"},
-    "event": {"enum": ["enter", "model_call", "decision", "approval", "exception", "terminal"]},
+    "event": {"enum": ["enter", "model_call", "model_result", "decision", "approval", "exception", "terminal"]},
     "timestamp": {"type": "string"},
+    "prev_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "event_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "model": {"type": "string"},
     "model_version": {"type": "string"},
     "prompt_hash": {"type": "string"},
+    "backend": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "access_method": {"type": "string", "minLength": 1},
+    "operation_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "invocation_id": {"type": "string", "minLength": 1},
     "approver_id": {"type": "string"},
     "approved_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "reason_code": {"type": "string"}
   },
   "allOf": [
-    {"if": {"properties": {"event": {"const": "model_call"}}}, "then": {"required": ["model", "model_version", "prompt_hash"]}},
+    {"if": {"properties": {"event": {"const": "model_call"}}}, "then": {"required": ["model", "model_version", "prompt_hash", "backend", "access_method", "operation_id", "invocation_id"]}},
+    {"if": {"properties": {"event": {"const": "model_result"}}}, "then": {"required": ["reason_code", "backend", "access_method", "operation_id", "invocation_id"]}},
     {"if": {"properties": {"event": {"const": "approval"}}}, "then": {"required": ["approver_id", "approved_sha"]}}
   ]
 }

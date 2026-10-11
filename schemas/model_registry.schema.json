@@ -1,0 +1,221 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.invalid/schemas/model_registry.schema.json",
+  "title": "Agentic Pipeline Model Registry",
+  "description": "Logical execution backend assignments. Does not grant permissions or authorize state transitions.",
+  "type": "object",
+  "required": ["version", "registry_name", "policy", "providers", "agents", "execution", "isolation", "budget", "artifacts", "workspace_roots", "isolation_profiles", "stage_requirements"],
+  "definitions": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "id_list": {"type": "array", "items": {"$ref": "#/definitions/id"}, "uniqueItems": true},
+    "stage_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9-]*$"},
+    "version_triple": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 3, "maxItems": 3},
+    "operation": {
+      "type": "object",
+      "required": ["id", "agent", "role", "allowed_reads", "denied_reads", "write_root", "isolation_profile"],
+      "properties": {
+        "id": {"$ref": "#/definitions/id"},
+        "agent": {"type": "string", "pattern": "^[a-z_]+(\\.[a-z_]+)?$"},
+        "role": {"$ref": "#/definitions/id"},
+        "target_artifact": {"$ref": "#/definitions/id"},
+        "allowed_reads": {"allOf": [{"$ref": "#/definitions/id_list"}, {"minItems": 1}]},
+        "denied_reads": {"$ref": "#/definitions/id_list"},
+        "write_root": {"$ref": "#/definitions/id"},
+        "isolation_profile": {"$ref": "#/definitions/id"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "version": {"const": 1},
+    "registry_name": {"type": "string", "minLength": 1},
+    "policy": {
+      "type": "object",
+      "required": ["subscription_only", "allow_paid_api_billing", "allow_clefflash_free_allowance", "allow_unapproved_provider_fallback", "on_quota_exhaustion", "record_resolved_model_and_access_path", "record_usage_or_quota_status", "model_output_is_untrusted", "prohibited_credential_env_vars", "child_process_env"],
+      "properties": {
+        "subscription_only": {"const": true},
+        "allow_paid_api_billing": {"const": false},
+        "allow_clefflash_free_allowance": {"type": "boolean"},
+        "allow_unapproved_provider_fallback": {"const": false},
+        "on_quota_exhaustion": {"enum": ["pause_or_approved_local_fallback"]},
+        "record_resolved_model_and_access_path": {"const": true},
+        "record_usage_or_quota_status": {"const": true},
+        "model_output_is_untrusted": {"const": true},
+        "prohibited_credential_env_vars": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "uniqueItems": true,
+          "allOf": [
+            {"contains": {"const": "ANTHROPIC_API_KEY"}},
+            {"contains": {"const": "ANTHROPIC_AUTH_TOKEN"}},
+            {"contains": {"const": "CLAUDE_CODE_USE_BEDROCK"}},
+            {"contains": {"const": "CLAUDE_CODE_USE_VERTEX"}},
+            {"contains": {"const": "GEMINI_API_KEY"}},
+            {"contains": {"const": "GOOGLE_API_KEY"}},
+            {"contains": {"const": "GOOGLE_APPLICATION_CREDENTIALS"}},
+            {"contains": {"const": "GOOGLE_GENAI_USE_VERTEXAI"}}
+          ]
+        },
+        "child_process_env": {"const": "allowlist_only"}
+      },
+      "additionalProperties": true
+    },
+    "providers": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["access_mode", "api_billing_allowed"],
+        "properties": {"access_mode": {"type": "string"}, "api_billing_allowed": {"const": false}},
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "if": {"properties": {"access_mode": {"const": "subscription_tool"}}},
+            "then": {
+              "required": ["readiness"],
+              "properties": {
+                "readiness": {
+                  "type": "object",
+                  "required": ["executable", "version_pattern", "min_version"],
+                  "properties": {
+                    "executable": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+                    "version_pattern": {"type": "string", "minLength": 1},
+                    "min_version": {"$ref": "#/definitions/version_triple"},
+                    "settings_path": {"type": "string", "pattern": "^~/[^\\0]+$"},
+                    "settings_key": {"type": "string", "minLength": 1},
+                    "settings_required_value": {}
+                  },
+                  "dependencies": {
+                    "settings_path": ["settings_key", "settings_required_value"],
+                    "settings_key": ["settings_path", "settings_required_value"]
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {"properties": {"access_mode": {"const": "local_inference"}}},
+            "then": {
+              "required": ["readiness"],
+              "properties": {
+                "readiness": {
+                  "type": "object",
+                  "required": ["protocol", "host", "port", "model_id", "timeout_seconds"],
+                  "properties": {
+                    "protocol": {"enum": ["ollama"]},
+                    "host": {"enum": ["127.0.0.1", "::1"]},
+                    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                    "model_id": {"type": "string", "minLength": 1},
+                    "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 30}
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "agents": {"type": "object", "required": ["grounding", "design", "scoring_authorization", "build", "exception_router", "release", "learning", "human_authority"], "additionalProperties": {"type": "object"}},
+    "execution": {
+      "type": "object",
+      "required": ["state_graph", "state_transition_executor", "require_pinned_git_sha", "require_context_manifest_digest", "validate_structured_outputs", "on_missing_or_conflicting_evidence", "retry_budget_owner", "hard_veto_policy", "data_classification_policy", "escalation_policy", "on_unrouted_dispatch_failure"],
+      "properties": {
+        "state_graph": {"const": "pipeline/graph.yaml"},
+        "state_transition_executor": {"const": "deterministic_orchestrator"},
+        "require_pinned_git_sha": {"const": true},
+        "require_context_manifest_digest": {"const": true},
+        "validate_structured_outputs": {"const": true},
+        "on_missing_or_conflicting_evidence": {"const": "fail_closed"},
+        "retry_budget_owner": {"type": "string", "minLength": 1},
+        "hard_veto_policy": {"type": "string", "minLength": 1},
+        "data_classification_policy": {"type": "string", "minLength": 1},
+        "escalation_policy": {"type": "string", "minLength": 1},
+        "on_unrouted_dispatch_failure": {"const": "pause_run_pending_human"}
+      },
+      "additionalProperties": true
+    },
+    "isolation": {"type": "object", "required": ["proposal_a_and_b_must_use_separate_sessions", "proposal_a_and_b_must_use_separate_write_roots", "proposal_b_can_read_proposal_a_before_seal", "same_backend_counts_as_cross_provider_independence", "isolation_failure_policy"], "properties": {"proposal_a_and_b_must_use_separate_sessions": {"const": true}, "proposal_a_and_b_must_use_separate_write_roots": {"const": true}, "proposal_b_can_read_proposal_a_before_seal": {"const": false}, "same_backend_counts_as_cross_provider_independence": {"const": false}, "isolation_failure_policy": {"const": "mark_requirement_unmet_and_pause"}}, "additionalProperties": true},
+    "budget": {
+      "type": "object",
+      "required": ["no_new_subscription", "paid_api_calls", "no_silent_fallback", "disable_optional_free_classifier_when_quota_unavailable", "retry_accounting"],
+      "properties": {
+        "no_new_subscription": {"const": true},
+        "paid_api_calls": {"const": "forbidden"},
+        "no_silent_fallback": {"const": true},
+        "disable_optional_free_classifier_when_quota_unavailable": {"const": true},
+        "retry_accounting": {"const": "per_graph_edge"}
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/definitions/id"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["sealed", "producer"],
+        "properties": {
+          "sealed": {"type": "boolean"},
+          "producer": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9-]*(\\.[a-z][a-z0-9_]*)?$"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "workspace_roots": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/definitions/id"},
+      "additionalProperties": {"type": "string", "pattern": "^[a-z0-9_]+(/[a-z0-9_]+)*$"}
+    },
+    "isolation_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/definitions/id"},
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {"enum": ["proposal_path_layout", "sandbox_enforcement", "session_separation", "sealed_input_verification", "protected_paths_read_only", "network_disabled", "broker_mediated_inference"]}
+      }
+    },
+    "stage_requirements": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/definitions/stage_id"},
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["mode", "operations"],
+            "properties": {
+              "mode": {"const": "all_of"},
+              "operations": {"type": "array", "minItems": 2, "items": {"$ref": "#/definitions/operation"}}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["mode", "backends", "operations"],
+            "properties": {
+              "mode": {"const": "ordered_any_of"},
+              "backends": {"allOf": [{"$ref": "#/definitions/id_list"}, {"minItems": 1}]},
+              "operations": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/definitions/operation"}}
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["mode", "reason"],
+            "properties": {
+              "mode": {"const": "disabled"},
+              "reason": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

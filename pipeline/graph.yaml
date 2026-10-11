@@ -53,7 +53,7 @@ states:
   A1:
     kind: model
     executor: model
-    doc: Independent proposals A (Gemini) and B (Claude); no cross-visibility.
+    doc: Independent proposals A (Claude) and B (Gemini); no cross-visibility.
     produces: proposal
     edges:
       - {to: A2, guard: always}
