@@ -30,6 +30,9 @@ MAX_BODY_BYTES = 8 * 1024 * 1024
 REQ_FD_ENV = "AP_BROKER_REQ_FD"
 RESP_FD_ENV = "AP_BROKER_RESP_FD"
 URL_ENV = "AP_INFERENCE_URL"
+# Fixed: the sandbox has a private network namespace, so nothing else can hold it.
+SHIM_PORT = 8411
+SHIM_URL = f"http://127.0.0.1:{SHIM_PORT}/v1"
 
 
 def write_frame(fd: int, obj: object) -> None:
@@ -109,10 +112,10 @@ def _relay_handler(req_fd: int, resp_fd: int) -> type[BaseHTTPRequestHandler]:
 
 def launch(argv: list[str]) -> int:
     req_fd, resp_fd = int(os.environ[REQ_FD_ENV]), int(os.environ[RESP_FD_ENV])
-    server = HTTPServer(("127.0.0.1", 0), _relay_handler(req_fd, resp_fd))
+    server = HTTPServer(("127.0.0.1", SHIM_PORT), _relay_handler(req_fd, resp_fd))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     env = {k: v for k, v in os.environ.items() if k not in (REQ_FD_ENV, RESP_FD_ENV)}
-    env[URL_ENV] = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    env[URL_ENV] = SHIM_URL
     try:
         # close_fds (the default) keeps the broker pipes away from the worker.
         return subprocess.run(argv, env=env, check=False).returncode  # noqa: S603

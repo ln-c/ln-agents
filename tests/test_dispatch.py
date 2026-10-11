@@ -358,3 +358,18 @@ def test_adapter_must_enforce_profile_checks(tmp_path: Path, adapters: dict) -> 
     with pytest.raises(DispatchBlocked, match="qwen_local adapter does not enforce"):
         d.dispatch_stage("E0", "always", "E1", {})
     assert events(d) == [] and not (d.run_root / "attempts").exists()
+
+
+def test_grant_carries_verified_input_paths(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters)
+    d.dispatch_stage("E0", "always", "E1", {})
+    g = adapters["qwen_local"].grants[0]
+    assert g.role == "patch_author"
+    assert set(g.inputs) == {
+        "pinned_context_manifest",
+        "pinned_source_tree",
+        "contracts_sealed",
+        "generated_tests_sealed",
+        "protected_tests",
+    }
+    assert g.inputs["contracts_sealed"] == (d.run_root / "seed" / "contracts_sealed").resolve()

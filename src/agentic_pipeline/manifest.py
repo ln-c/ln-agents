@@ -155,13 +155,15 @@ def load_manifest(run_root: Path, stage: str, run_id: str) -> dict[str, Any] | N
     return doc
 
 
-def verify_sealed_inputs(
+def resolve_sealed_inputs(
     run_root: Path, run_id: str, registry: Mapping[str, Any], allowed_reads: list[str]
-) -> list[str]:
-    """Check every sealed input is published by exactly one manifest and unchanged on disk.
+) -> tuple[dict[str, Path], list[str]]:
+    """Locate and re-hash every sealed input; return (artifact_id -> path, errors).
 
-    Unsealed reads are an operation's own scratch (registry R10) and are not checked.
+    Each sealed input must be published by exactly one manifest and be unchanged on
+    disk. Unsealed reads are an operation's own scratch (registry R10) and are skipped.
     """
+    paths: dict[str, Path] = {}
     errors: list[str] = []
     artifacts = registry["artifacts"]
     for artifact_id in allowed_reads:
@@ -189,10 +191,19 @@ def verify_sealed_inputs(
             errors.append(f"{artifact_id}: {stage} manifest does not mark it sealed")
             continue
         try:
-            actual = digest_path(_confined(run_root, entry["path"]))
+            path = _confined(run_root, entry["path"])
+            actual = digest_path(path)
         except ManifestError as exc:
             errors.append(f"{artifact_id}: {exc}")
             continue
         if actual != entry["digest"]:
             errors.append(f"{artifact_id}: content changed since {stage} sealed it")
-    return errors
+            continue
+        paths[artifact_id] = path
+    return paths, errors
+
+
+def verify_sealed_inputs(
+    run_root: Path, run_id: str, registry: Mapping[str, Any], allowed_reads: list[str]
+) -> list[str]:
+    return resolve_sealed_inputs(run_root, run_id, registry, allowed_reads)[1]

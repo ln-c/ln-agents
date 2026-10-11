@@ -15,9 +15,11 @@ from agentic_pipeline.sandbox import (
     HOME,
     INPUTS,
     WORK,
+    SandboxLimits,
     SandboxSpec,
     bwrap_argv,
     run_sandboxed,
+    sandbox_command,
 )
 
 MODEL = "qwen3:8b"
@@ -143,3 +145,44 @@ def test_argv_layout() -> None:
     assert argv[-5:] == ["python3", "-I", ENTRY, "--", "pi"]
     assert ["--setenv", "HOME", HOME] == argv[argv.index("HOME") - 1 : argv.index("HOME") + 2]
     assert "/" not in [argv[i + 1] for i, a in enumerate(argv) if a in ("--bind", "--ro-bind")]
+
+
+def _limited(tmp_path: Path, script: str, **limits: int) -> object:
+    broker = InferenceBroker(BrokerPolicy(MODEL), lambda p, b: (200, {}, iter([])))
+    spec = SandboxSpec(
+        argv=["python3", "-I", "-c", script],
+        write_path=tmp_path,
+        limits=SandboxLimits(**limits),
+        timeout=60,
+    )
+    return run_sandboxed(spec, broker)
+
+
+def test_file_size_limit_enforced(tmp_path: Path) -> None:
+    script = (
+        "import sys\n"
+        "try:\n open('/work/big.bin','wb').write(b'x' * 2_000_000); print('wrote')\n"
+        "except OSError as e: print('blocked', e.errno)"
+    )
+    result = _limited(tmp_path, script, file_bytes=1_000_000)
+    assert result.stdout.strip().startswith("blocked"), result.stdout
+    assert (tmp_path / "big.bin").stat().st_size <= 1_000_000
+
+
+def test_tmpfs_size_limit_enforced(tmp_path: Path) -> None:
+    script = (
+        "try:\n"
+        " f = open('/tmp/fill.bin','wb')\n"
+        " [f.write(b'x' * 1_000_000) for _ in range(8)]; f.flush(); print('filled')\n"
+        "except OSError as e: print('blocked', e.errno)"
+    )
+    result = _limited(tmp_path, script, tmpfs_bytes=4_000_000)
+    assert result.stdout.strip().startswith("blocked"), result.stdout
+
+
+def test_command_wraps_bwrap_in_prlimit() -> None:
+    spec = SandboxSpec(argv=["true"], limits=SandboxLimits(file_bytes=5, cpu_seconds=6))
+    cmd = sandbox_command("/usr/bin/bwrap", "/usr/bin/prlimit", spec, 3, 4)
+    assert cmd[:5] == ["/usr/bin/prlimit", "--fsize=5", "--cpu=6", "--nofile=1024", "--"]
+    assert cmd[5] == "/usr/bin/bwrap"
+    assert cmd.count("--size") == 3  # /tmp, $HOME, and the tmpfs /work

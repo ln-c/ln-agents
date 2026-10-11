@@ -141,3 +141,12 @@ def test_malformed_frame_ends_session() -> None:
     broker = InferenceBroker(BrokerPolicy(MODEL), FakeUpstream())
     exchange(broker, [struct.pack(">I", 5) + b"[1]  "])
     assert broker.stats.protocol_error is not None
+
+
+def test_oversized_response_truncated_and_recorded() -> None:
+    broker = InferenceBroker(
+        BrokerPolicy(MODEL, max_response_bytes=10), FakeUpstream((b"0123456", b"789abc", b"def"))
+    )
+    status, body = exchange(broker, [request()])[0]
+    assert status == 200 and body == b"0123456"
+    assert any("response exceeded" in r for r in broker.stats.rejected)

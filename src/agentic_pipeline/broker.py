@@ -30,6 +30,7 @@ class BrokerPolicy:
     model_id: str
     max_rounds: int = 64
     max_request_bytes: int = 4 * 1024 * 1024
+    max_response_bytes: int = 16 * 1024 * 1024
     allowed_paths: frozenset[str] = frozenset({"/v1/chat/completions"})
 
 
@@ -97,7 +98,19 @@ class InferenceBroker:
         except OSError as exc:
             self._respond(resp_fd, 502, iter([json.dumps({"error": f"upstream: {exc}"}).encode()]))
             return
-        self._respond(resp_fd, status, chunks, headers)
+        self._respond(resp_fd, status, self._capped(chunks), headers)
+
+    def _capped(self, chunks: Iterator[bytes]) -> Iterator[bytes]:
+        """Relay at most max_response_bytes; a longer response is cut off and recorded."""
+        sent = 0
+        for chunk in chunks:
+            sent += len(chunk)
+            if sent > self.policy.max_response_bytes:
+                self.stats.rejected.append(
+                    f"response exceeded {self.policy.max_response_bytes} bytes; truncated"
+                )
+                return
+            yield chunk
 
     def _validate(self, frame: Mapping[str, object]) -> tuple[str, bytes]:
         policy = self.policy

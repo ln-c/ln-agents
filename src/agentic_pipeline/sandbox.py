@@ -36,6 +36,23 @@ class SandboxUnavailable(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class SandboxLimits:
+    """Resource caps. tmpfs sizes are enforced by bwrap; the rest by prlimit (per process)."""
+
+    tmpfs_bytes: int = 256 * 1024 * 1024  # each of /tmp and $HOME (RAM-backed)
+    file_bytes: int = 64 * 1024 * 1024  # largest single file a process may write
+    cpu_seconds: int = 900
+    open_files: int = 1024
+
+    def prlimit_args(self) -> list[str]:
+        return [
+            f"--fsize={self.file_bytes}",
+            f"--cpu={self.cpu_seconds}",
+            f"--nofile={self.open_files}",
+        ]
+
+
+@dataclass(frozen=True, slots=True)
 class SandboxSpec:
     argv: list[str]
     write_path: Path | None = None  # bound read-write at /work; private tmpfs if None
@@ -43,6 +60,7 @@ class SandboxSpec:
     ro_binds: Mapping[str, Path] = field(default_factory=dict)  # sandbox path -> host path
     env: Mapping[str, str] = field(default_factory=dict)
     timeout: float = 600.0
+    limits: SandboxLimits = field(default_factory=SandboxLimits)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,11 +99,11 @@ def bwrap_argv(bwrap: str, spec: SandboxSpec, req_fd: int, resp_fd: int) -> list
         "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache",
         "--proc", "/proc",
         "--dev", "/dev",
-        "--tmpfs", "/tmp",  # noqa: S108 - private tmpfs inside the sandbox
-        "--tmpfs", HOME,
+        "--size", str(spec.limits.tmpfs_bytes), "--tmpfs", "/tmp",  # noqa: S108 - private
+        "--size", str(spec.limits.tmpfs_bytes), "--tmpfs", HOME,
     ]  # fmt: skip
     if spec.write_path is None:
-        argv += ["--tmpfs", WORK]
+        argv += ["--size", str(spec.limits.tmpfs_bytes), "--tmpfs", WORK]
     else:
         argv += ["--bind", str(spec.write_path), WORK]
     for artifact_id, path in sorted(spec.inputs.items()):
@@ -106,17 +124,25 @@ def bwrap_argv(bwrap: str, spec: SandboxSpec, req_fd: int, resp_fd: int) -> list
     return [*argv, "python3", "-I", ENTRY, "--", *spec.argv]
 
 
+def sandbox_command(
+    bwrap: str, prlimit: str, spec: SandboxSpec, req_fd: int, resp_fd: int
+) -> list[str]:
+    return [prlimit, *spec.limits.prlimit_args(), "--", *bwrap_argv(bwrap, spec, req_fd, resp_fd)]
+
+
 def run_sandboxed(
     spec: SandboxSpec, broker: InferenceBroker, bwrap: str | None = None
 ) -> SandboxResult:
     bwrap = bwrap or shutil.which("bwrap")
-    if bwrap is None:
-        raise SandboxUnavailable("bwrap not found on PATH")
+    prlimit = shutil.which("prlimit")
+    if bwrap is None or prlimit is None:
+        missing = [name for name, path in (("bwrap", bwrap), ("prlimit", prlimit)) if not path]
+        raise SandboxUnavailable(f"not found on PATH: {missing}")
     req_r, req_w = os.pipe()
     resp_r, resp_w = os.pipe()
     try:
         proc = subprocess.Popen(  # noqa: S603 - fixed argv built above
-            bwrap_argv(bwrap, spec, req_w, resp_r),
+            sandbox_command(bwrap, prlimit, spec, req_w, resp_r),
             pass_fds=(req_w, resp_r),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
