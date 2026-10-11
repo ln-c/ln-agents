@@ -15,14 +15,22 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from agentic_pipeline.broker import BrokerPolicy, InferenceBroker
 from agentic_pipeline.graph import REPO_ROOT, load_yaml
 from agentic_pipeline.registry import op_backends, operations
+from agentic_pipeline.sandbox import (
+    ENTRY,
+    SandboxResult,
+    SandboxSpec,
+    SandboxUnavailable,
+    run_sandboxed,
+)
 from agentic_pipeline.validation import validate_repo
 
 TCP_LISTEN = "0A"
@@ -70,6 +78,7 @@ class Host:
     proc_root: Path = Path("/proc")
     which: Callable[[str], str | None] = shutil.which
     run: RunFn = _run
+    run_sandbox: Callable[[SandboxSpec, InferenceBroker, str], SandboxResult] = run_sandboxed
 
     @classmethod
     def real(cls) -> Host:
@@ -201,75 +210,103 @@ def probe_listeners(port: int, proc_root: Path) -> Check:
     return Check("listener_binding", Status.VERIFIED, f"port {port} loopback-only {bound}")
 
 
-SANDBOX_SCRIPT = (
-    'test -w /tmp && echo WRITE_ROOT_OK; test -w "$HOME" && echo HOME_WRITABLE; cat /proc/net/dev'
+SANDBOX_CHECKS = (
+    "sandbox_enforcement",
+    "protected_paths_read_only",
+    "network_disabled",
+    "broker_mediated_inference",
 )
+PROBE_MODEL = "probe-model"
+PROBE_REPLY = (b"probe-", b"ok")  # two chunks, so streaming relay is exercised
+PROBE_INPUT = Path(__file__).resolve().parent  # any existing directory; bound read-only
 
 
-def sandbox_argv(bwrap: str) -> list[str]:
-    """Self-test sandbox: read-only host, private tmpfs write root, no network."""
-    return [
-        bwrap,
-        "--die-with-parent",
-        "--unshare-all",
-        "--ro-bind", "/", "/",
-        "--dev", "/dev",
-        "--proc", "/proc",
-        "--tmpfs", "/tmp",  # noqa: S108 - private tmpfs inside the sandbox
-        "sh", "-c", SANDBOX_SCRIPT,
-    ]  # fmt: skip
+def _probe_upstream(path: str, body: bytes) -> tuple[int, Mapping[str, str], Iterator[bytes]]:
+    return 200, {"Content-Type": "text/plain"}, iter(PROBE_REPLY)
 
 
-def parse_sandbox_output(code: int, out: str) -> dict[str, Check]:
-    if code != 0:
-        failed = Check("sandbox_enforcement", Status.FAILED, f"bwrap self-test exited {code}")
-        unknown = "sandbox self-test did not run"
+def parse_sandbox_probe(result: SandboxResult) -> dict[str, Check]:
+    """Turn the in-sandbox probe report into checks; anything unexpected fails closed."""
+    report: dict[str, Any] = {}
+    if result.returncode == 0 and not result.timed_out:
+        try:
+            report = json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            report = {}
+    if not isinstance(report, dict) or not report:
+        why = "timed out" if result.timed_out else f"exited {result.returncode}"
+        tail = result.stderr.strip().splitlines()[-1:] or [""]
+        failed = Check("sandbox_enforcement", Status.FAILED, f"self-test {why} {tail[0]}".strip())
+        unknown = "sandbox self-test did not complete"
         return {
             "sandbox_enforcement": failed,
-            "protected_paths_read_only": Check(
-                "protected_paths_read_only", Status.UNVERIFIED, unknown
-            ),
-            "network_disabled": Check("network_disabled", Status.UNVERIFIED, unknown),
+            **{n: Check(n, Status.UNVERIFIED, unknown) for n in SANDBOX_CHECKS[1:]},
         }
-    lines = out.splitlines()
-    interfaces = sorted(
-        line.split(":")[0].strip() for line in lines if ":" in line and "|" not in line
+
+    def check(name: str, ok: bool, good: str, bad: str) -> Check:
+        return Check(name, Status.VERIFIED if ok else Status.FAILED, good if ok else bad)
+
+    contained = (
+        report.get("write_root_writable") is True and report.get("host_home_visible") is False
     )
-    write_ok = "WRITE_ROOT_OK" in lines
-    read_only = "HOME_WRITABLE" not in lines
-    no_net = interfaces == ["lo"]
+    read_only = report.get("input_writable") is False
+    interfaces = report.get("interfaces")
+    foreign = report.get("foreign_model") or [0]
+    brokered = (
+        report.get("brokered") == [200, b"".join(PROBE_REPLY).decode()]
+        and foreign[0] == 403
+        and result.broker.rounds == 1
+    )
     return {
-        "sandbox_enforcement": Check(
+        "sandbox_enforcement": check(
             "sandbox_enforcement",
-            Status.VERIFIED if write_ok and read_only else Status.FAILED,
-            "bwrap: write root writable, host read-only"
-            if write_ok and read_only
-            else f"bwrap: write_root_ok={write_ok}, host_read_only={read_only}",
+            contained,
+            "bwrap: only /work writable, host home invisible",
+            f"bwrap: write_root={report.get('write_root_writable')}, "
+            f"host_home_visible={report.get('host_home_visible')}",
         ),
-        "protected_paths_read_only": Check(
+        "protected_paths_read_only": check(
             "protected_paths_read_only",
-            Status.VERIFIED if read_only else Status.FAILED,
-            "host filesystem read-only inside sandbox"
-            if read_only
-            else "host home writable inside sandbox",
+            read_only,
+            "inputs mounted read-only",
+            "inputs writable inside sandbox",
         ),
-        "network_disabled": Check(
+        "network_disabled": check(
             "network_disabled",
-            Status.VERIFIED if no_net else Status.FAILED,
+            interfaces == ["lo"],
+            "only private loopback inside sandbox",
             f"interfaces inside sandbox: {interfaces}",
+        ),
+        "broker_mediated_inference": check(
+            "broker_mediated_inference",
+            brokered,
+            "shim -> pipes -> broker round trip; foreign model refused",
+            f"brokered={report.get('brokered')}, foreign_model={foreign}",
         ),
     }
 
 
 def probe_sandbox(host: Host) -> dict[str, Check]:
+    """Run the real worker sandbox configuration with a canned, offline broker upstream."""
     bwrap = host.which("bwrap")
     if bwrap is None:
-        missing = "bwrap not found on PATH"
+        return {n: Check(n, Status.UNVERIFIED, "bwrap not found on PATH") for n in SANDBOX_CHECKS}
+    spec = SandboxSpec(
+        argv=["python3", "-I", ENTRY, "--probe", str(host.home), PROBE_MODEL],
+        inputs={"probe": PROBE_INPUT},
+        timeout=PROBE_TIMEOUT_SECONDS * 6,
+    )
+    broker = InferenceBroker(BrokerPolicy(PROBE_MODEL), _probe_upstream)
+    try:
+        result = host.run_sandbox(spec, broker, bwrap)
+    except SandboxUnavailable as exc:
+        failed = Check("sandbox_enforcement", Status.FAILED, f"sandbox did not start: {exc}")
+        unknown = "sandbox self-test did not complete"
         return {
-            name: Check(name, Status.UNVERIFIED, missing)
-            for name in ("sandbox_enforcement", "protected_paths_read_only", "network_disabled")
+            "sandbox_enforcement": failed,
+            **{n: Check(n, Status.UNVERIFIED, unknown) for n in SANDBOX_CHECKS[1:]},
         }
-    return parse_sandbox_output(*host.run(sandbox_argv(bwrap), host.child_env()))
+    return parse_sandbox_probe(result)
 
 
 # ── Report and stage eligibility ─────────────────────────────────────────────
@@ -277,7 +314,6 @@ def probe_sandbox(host: Host) -> dict[str, Check]:
 
 NOT_YET_IMPLEMENTED = {
     "session_separation": "no session-isolation mechanism implemented for cloud tools",
-    "broker_mediated_inference": "inference broker not implemented",
 }
 
 

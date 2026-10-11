@@ -14,15 +14,17 @@ from typing import Any
 
 import pytest
 
+from agentic_pipeline.broker import BrokerStats
 from agentic_pipeline.cli import main
 from agentic_pipeline.graph import load_yaml
 from agentic_pipeline.readiness import (
+    SANDBOX_CHECKS,
     Check,
     Host,
     Report,
     Status,
     evaluate_stage,
-    parse_sandbox_output,
+    parse_sandbox_probe,
     probe_credential_env,
     probe_executable,
     probe_listeners,
@@ -31,6 +33,7 @@ from agentic_pipeline.readiness import (
     probe_settings,
     run_preflight,
 )
+from agentic_pipeline.sandbox import SandboxResult, SandboxUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = load_yaml(ROOT / "policy" / "model_registry.yaml")
@@ -225,38 +228,63 @@ def test_probe_listeners_ignores_non_listening_sockets(tmp_path: Path) -> None:
 
 # ── Sandbox self-test ────────────────────────────────────────────────────────
 
-NET_DEV_HEADER = "Inter-|   Receive  |  Transmit\n face |bytes packets|bytes packets\n"
+GOOD_PROBE = {
+    "write_root_writable": True,
+    "input_writable": False,
+    "host_home_visible": False,
+    "interfaces": ["lo"],
+    "brokered": [200, "probe-ok"],
+    "foreign_model": [403, ""],
+}
+
+
+def _probe_result(
+    changes: Mapping[str, Any] | None = None, code: int = 0, rounds: int = 1, stdout: str = ""
+) -> SandboxResult:
+    out = stdout or json.dumps({**GOOD_PROBE, **(changes or {})})
+    return SandboxResult(code, out, "", False, BrokerStats(rounds=rounds))
+
+
+def _verified(checks: Mapping[str, Check]) -> dict[str, bool]:
+    return {name: c.status is Status.VERIFIED for name, c in checks.items()}
+
+
+ALL_OK = dict.fromkeys(SANDBOX_CHECKS, True)
 
 
 @pytest.mark.parametrize(
-    ("code", "out", "enforced", "read_only", "no_net"),
+    ("changes", "rounds", "failing"),
     [
-        (0, f"WRITE_ROOT_OK\n{NET_DEV_HEADER}    lo: 0 0\n", True, True, True),
-        (0, f"WRITE_ROOT_OK\nHOME_WRITABLE\n{NET_DEV_HEADER}    lo: 0 0\n", False, False, True),
-        (0, f"WRITE_ROOT_OK\n{NET_DEV_HEADER}    lo: 0 0\n  eth0: 1 1\n", True, True, False),
-        (0, f"{NET_DEV_HEADER}    lo: 0 0\n", False, True, True),
+        ({}, 1, set()),
+        ({"write_root_writable": False}, 1, {"sandbox_enforcement"}),
+        ({"host_home_visible": True}, 1, {"sandbox_enforcement"}),
+        ({"input_writable": True}, 1, {"protected_paths_read_only"}),
+        ({"interfaces": ["eth0", "lo"]}, 1, {"network_disabled"}),
+        ({"brokered": [502, ""]}, 1, {"broker_mediated_inference"}),
+        ({"foreign_model": [200, "leak"]}, 1, {"broker_mediated_inference"}),
+        ({}, 2, {"broker_mediated_inference"}),
     ],
-    ids=["enforced", "home-writable", "network-visible", "write-root-missing"],
+    ids=["enforced", "no-write-root", "home-visible", "input-writable", "network-visible",
+         "broker-failed", "foreign-model-allowed", "extra-rounds"],
+)  # fmt: skip
+def test_parse_sandbox_probe(changes: dict, rounds: int, failing: set[str]) -> None:
+    checks = parse_sandbox_probe(_probe_result(changes, rounds=rounds))
+    assert _verified(checks) == {n: n not in failing for n in SANDBOX_CHECKS}
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        SandboxResult(1, "", "bwrap: setting up uid map: Permission denied", False, BrokerStats()),
+        SandboxResult(-9, "", "", True, BrokerStats()),
+        _probe_result(stdout="not json"),
+    ],
+    ids=["nonzero-exit", "timed-out", "garbage-output"],
 )
-def test_parse_sandbox_output(
-    code: int, out: str, enforced: bool, read_only: bool, no_net: bool
-) -> None:
-    checks = parse_sandbox_output(code, out)
-
-    def ok(name: str) -> bool:
-        return checks[name].status is Status.VERIFIED
-
-    assert (ok("sandbox_enforcement"), ok("protected_paths_read_only"), ok("network_disabled")) == (
-        enforced,
-        read_only,
-        no_net,
-    )
-
-
-def test_sandbox_failure_to_start_is_not_verified() -> None:
-    checks = parse_sandbox_output(1, "bwrap: setting up uid map: Permission denied")
+def test_incomplete_self_test_is_never_verified(result: SandboxResult) -> None:
+    checks = parse_sandbox_probe(result)
     assert checks["sandbox_enforcement"].status is Status.FAILED
-    assert all(c.status is not Status.VERIFIED for c in checks.values())
+    assert not any(_verified(checks).values())
 
 
 def test_sandbox_missing_bwrap(tmp_path: Path) -> None:
@@ -264,10 +292,18 @@ def test_sandbox_missing_bwrap(tmp_path: Path) -> None:
     assert all(c.status is Status.UNVERIFIED for c in checks.values())
 
 
+def test_sandbox_start_failure(tmp_path: Path) -> None:
+    def refuse(*args: object) -> SandboxResult:
+        raise SandboxUnavailable("no user namespaces")
+
+    checks = probe_sandbox(dataclasses.replace(fake_host(tmp_path), run_sandbox=refuse))
+    assert checks["sandbox_enforcement"].status is Status.FAILED
+
+
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap not installed")
 def test_sandbox_real_bwrap_smoke() -> None:
     checks = probe_sandbox(Host.real())
-    assert set(checks) == {"sandbox_enforcement", "protected_paths_read_only", "network_disabled"}
+    assert set(checks) == set(SANDBOX_CHECKS)
 
 
 # ── Stage eligibility ────────────────────────────────────────────────────────
