@@ -18,6 +18,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from agentic_pipeline import sandbox_entry
 from agentic_pipeline.broker import BrokerStats, InferenceBroker
@@ -28,6 +29,14 @@ HOME = "/home/worker"
 ENTRY = "/opt/agentic/sandbox_entry.py"
 ENTRY_HOST = Path(sandbox_entry.__file__).resolve()
 BROKER_JOIN_SECONDS = 10.0
+NETWORK_ETC = (
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/ssl",
+    "/etc/ca-certificates",
+    "/etc/pki",
+)
 USR_LINKS = ("bin", "sbin", "lib", "lib32", "lib64", "libx32")
 
 
@@ -61,6 +70,11 @@ class SandboxSpec:
     env: Mapping[str, str] = field(default_factory=dict)
     timeout: float = 600.0
     limits: SandboxLimits = field(default_factory=SandboxLimits)
+    # "none": private loopback only. "host": shares the host network, for cloud tools
+    # that must reach their provider; only DNS/TLS files from /etc are added.
+    network: Literal["none", "host"] = "none"
+    rw_binds: Mapping[str, Path] = field(default_factory=dict)  # sandbox path -> host path
+    stdin: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,11 +102,15 @@ def _usr_links() -> list[str]:
     return argv
 
 
-def bwrap_argv(bwrap: str, spec: SandboxSpec, req_fd: int, resp_fd: int) -> list[str]:
+def bwrap_argv(
+    bwrap: str, spec: SandboxSpec, req_fd: int | None = None, resp_fd: int | None = None
+) -> list[str]:
+    """bwrap command line. With broker fds, the worker runs behind the inference shim."""
     argv = [
         bwrap,
         "--die-with-parent",
         "--unshare-all",
+        *(["--share-net"] if spec.network == "host" else []),
         "--new-session",
         "--ro-bind", "/usr", "/usr",
         *_usr_links(),
@@ -102,6 +120,9 @@ def bwrap_argv(bwrap: str, spec: SandboxSpec, req_fd: int, resp_fd: int) -> list
         "--size", str(spec.limits.tmpfs_bytes), "--tmpfs", "/tmp",  # noqa: S108 - private
         "--size", str(spec.limits.tmpfs_bytes), "--tmpfs", HOME,
     ]  # fmt: skip
+    if spec.network == "host":
+        for path in NETWORK_ETC:
+            argv += ["--ro-bind-try", path, path]
     if spec.write_path is None:
         argv += ["--size", str(spec.limits.tmpfs_bytes), "--tmpfs", WORK]
     else:
@@ -110,66 +131,83 @@ def bwrap_argv(bwrap: str, spec: SandboxSpec, req_fd: int, resp_fd: int) -> list
         argv += ["--ro-bind", str(path), f"{INPUTS}/{artifact_id}"]
     for target, source in sorted(spec.ro_binds.items()):
         argv += ["--ro-bind", str(source), target]
-    env = {
-        "PATH": "/usr/bin",
-        "HOME": HOME,
-        "LANG": "C.UTF-8",
-        **spec.env,
-        sandbox_entry.REQ_FD_ENV: str(req_fd),
-        sandbox_entry.RESP_FD_ENV: str(resp_fd),
-    }
-    argv += ["--ro-bind", str(ENTRY_HOST), ENTRY, "--chdir", WORK, "--clearenv"]
+    for target, source in sorted(spec.rw_binds.items()):
+        argv += ["--bind", str(source), target]
+    env = {"PATH": "/usr/bin", "HOME": HOME, "LANG": "C.UTF-8", **spec.env}
+    brokered = req_fd is not None and resp_fd is not None
+    if brokered:
+        env[sandbox_entry.REQ_FD_ENV] = str(req_fd)
+        env[sandbox_entry.RESP_FD_ENV] = str(resp_fd)
+        argv += ["--ro-bind", str(ENTRY_HOST), ENTRY]
+    argv += ["--chdir", WORK, "--clearenv"]
     for key, value in env.items():
         argv += ["--setenv", key, value]
-    return [*argv, "python3", "-I", ENTRY, "--", *spec.argv]
+    if brokered:
+        return [*argv, "python3", "-I", ENTRY, "--", *spec.argv]
+    return [*argv, *spec.argv]
 
 
 def sandbox_command(
-    bwrap: str, prlimit: str, spec: SandboxSpec, req_fd: int, resp_fd: int
+    bwrap: str,
+    prlimit: str,
+    spec: SandboxSpec,
+    req_fd: int | None = None,
+    resp_fd: int | None = None,
 ) -> list[str]:
     return [prlimit, *spec.limits.prlimit_args(), "--", *bwrap_argv(bwrap, spec, req_fd, resp_fd)]
 
 
 def run_sandboxed(
-    spec: SandboxSpec, broker: InferenceBroker, bwrap: str | None = None
+    spec: SandboxSpec, broker: InferenceBroker | None, bwrap: str | None = None
 ) -> SandboxResult:
+    """Run `spec`; with a broker, the worker reaches a model only through it."""
     bwrap = bwrap or shutil.which("bwrap")
     prlimit = shutil.which("prlimit")
     if bwrap is None or prlimit is None:
         missing = [name for name, path in (("bwrap", bwrap), ("prlimit", prlimit)) if not path]
         raise SandboxUnavailable(f"not found on PATH: {missing}")
-    req_r, req_w = os.pipe()
-    resp_r, resp_w = os.pipe()
+    if broker is not None and spec.network != "none":
+        raise SandboxUnavailable("brokered workers must not share the host network")
+    req_r = req_w = resp_r = resp_w = None
+    if broker is not None:
+        req_r, req_w = os.pipe()
+        resp_r, resp_w = os.pipe()
+    child_fds = tuple(fd for fd in (req_w, resp_r) if fd is not None)
     try:
         proc = subprocess.Popen(  # noqa: S603 - fixed argv built above
             sandbox_command(bwrap, prlimit, spec, req_w, resp_r),
-            pass_fds=(req_w, resp_r),
-            stdin=subprocess.DEVNULL,
+            pass_fds=child_fds,
+            stdin=subprocess.PIPE if spec.stdin is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             env={"PATH": os.environ.get("PATH", "/usr/bin")},
             start_new_session=True,
         )
     except OSError as exc:
-        os.close(req_r)
-        os.close(resp_w)
+        for fd in (req_r, resp_w):
+            if fd is not None:
+                os.close(fd)
         raise SandboxUnavailable(str(exc)) from exc
     finally:
         # Close the child's ends here so the broker sees EOF when the sandbox exits.
-        os.close(req_w)
-        os.close(resp_r)
+        for fd in child_fds:
+            os.close(fd)
 
-    serving = threading.Thread(target=broker.serve, args=(req_r, resp_w), daemon=True)
-    serving.start()
+    serving = None
+    if broker is not None:
+        serving = threading.Thread(target=broker.serve, args=(req_r, resp_w), daemon=True)
+        serving.start()
     timed_out = False
     try:
-        stdout, stderr = proc.communicate(timeout=spec.timeout)
+        out, err = proc.communicate(input=spec.stdin, timeout=spec.timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         proc.kill()
-        stdout, stderr = proc.communicate()
-    serving.join(BROKER_JOIN_SECONDS)
-    os.close(req_r)
-    os.close(resp_w)
-    return SandboxResult(proc.returncode, stdout, stderr, timed_out, broker.stats)
+        out, err = proc.communicate()
+    if serving is not None:
+        serving.join(BROKER_JOIN_SECONDS)
+        os.close(req_r)
+        os.close(resp_w)
+    stats = broker.stats if broker is not None else BrokerStats()
+    decode = lambda b: b.decode("utf-8", "replace")  # noqa: E731
+    return SandboxResult(proc.returncode, decode(out), decode(err), timed_out, stats)

@@ -8,7 +8,9 @@ Order of operations for `dispatch_stage` (failure handling in brackets):
    it enforces every isolation check in the
    operation's profile that the dispatcher does
    not enforce itself                            [DispatchBlocked, no budget]
-3. Sealed inputs match their published manifests [DispatchBlocked, no budget]
+3. Sealed inputs match their published manifests,
+   and their most restrictive data class may go
+   to the backend (cloud needs cloud_allowed)    [DispatchBlocked, no budget]
 4. Graph edge exists and guard holds             [DispatchBlocked, no budget]
 5. Reserve one unit of the edge's budget         [DispatchBlocked if exhausted]
 6. Per operation:
@@ -83,6 +85,7 @@ class DispatchGrant:
     role: str
     allowed_reads: tuple[str, ...]
     inputs: Mapping[str, Path]  # verified sealed inputs, artifact_id -> host path
+    data_class: str  # most restrictive class of the inputs; outputs inherit it
     write_root: str
     attempt: str
     write_path: Path
@@ -107,7 +110,11 @@ type ResultStatus = Literal["ok", "quota_exhausted", "auth_failed", "error"]
 class AdapterResult:
     status: ResultStatus
     detail: str = ""
+    resolved_model: str | None = None  # model the provider reports it actually used
 
+
+# Provider access modes whose traffic leaves the host (policy/data_classes.yaml applies).
+CLOUD_ACCESS_MODES = frozenset({"subscription_tool", "free_allowance_only"})
 
 # Isolation checks the dispatcher enforces itself; adapters must enforce the rest.
 DISPATCHER_ENFORCED = frozenset({"proposal_path_layout", "sealed_input_verification"})
@@ -148,6 +155,7 @@ class Dispatcher:
     adapters: Mapping[str, BackendAdapter]
     preflight: Callable[[], Report]
     run_root: Path
+    data_classes: Mapping[str, Any]  # policy/data_classes.yaml
     guards: GuardEvaluator = deny_all_guards
     new_invocation_id: Callable[[], str] = _new_invocation_id
     _committed: bool = field(default=False, init=False)
@@ -171,7 +179,8 @@ class Dispatcher:
                 raise DispatchBlocked(
                     f"{stage}.{op['id']}: {backend} adapter does not enforce {gaps}"
                 )
-        if input_errors := [e for op in ops for e in self._inputs(op)[1]]:
+        checks = [self._inputs(op, verdict.backends[op["id"]])[2] for op in ops]
+        if input_errors := [e for errors in checks for e in errors]:
             raise DispatchBlocked(f"{stage}: sealed inputs: " + "; ".join(input_errors))
         try:
             edge = check_transition(self.graph, src, guard, stage, self.guards, run_context)
@@ -191,7 +200,8 @@ class Dispatcher:
                 if not again.eligible or again.backends.get(op["id"]) != backend:
                     self._log_exception(stage, op["id"], None, "readiness_lost")
                     raise RunPaused(f"{stage}.{op['id']}: readiness lost before invocation")
-            inputs, errors = self._inputs(op)  # re-verified right before each invocation
+            # Re-verified right before each invocation.
+            inputs, data_class, errors = self._inputs(op, backend)
             if errors:
                 if self._committed:
                     self._log_exception(stage, op["id"], None, "sealed_input_changed")
@@ -208,6 +218,7 @@ class Dispatcher:
                 role=op["role"],
                 allowed_reads=tuple(op["allowed_reads"]),
                 inputs=inputs,
+                data_class=data_class,
                 write_root=op["write_root"],
                 attempt=attempt,
                 write_path=self.run_root / ATTEMPTS_DIR / attempt / roots[op["write_root"]],
@@ -216,14 +227,26 @@ class Dispatcher:
             grants.append(grant)
         return StageOutcome(stage, results, self._seal(stage, attempt, grants))
 
-    def _inputs(self, op: Mapping[str, Any]) -> tuple[dict[str, Path], list[str]]:
-        return resolve_sealed_inputs(
+    def _inputs(
+        self, op: Mapping[str, Any], backend: str
+    ) -> tuple[dict[str, Path], str, list[str]]:
+        """Verified input paths, their combined data class, and any blocking errors."""
+        found, errors = resolve_sealed_inputs(
             self.run_root, self.log.run_id, self.registry, op["allowed_reads"]
         )
+        order = self.data_classes["order"]
+        classes = [i.data_class for i in found.values()] + ["unknown"] * bool(errors)
+        data_class = max(classes or ["unknown"], key=order.index)
+        mode = self.registry["providers"][backend]["access_mode"]
+        allowed = self.data_classes["classes"][data_class].get("cloud_allowed") is True
+        if mode in CLOUD_ACCESS_MODES and not allowed:
+            errors.append(f"data class {data_class!r} may not be sent to cloud backend {backend}")
+        return {aid: i.path for aid, i in found.items()}, data_class, errors
 
     def _seal(self, stage: str, attempt: str, grants: list[DispatchGrant]) -> Path:
         catalog = self.registry["artifacts"]
         artifacts: dict[str, tuple[Path, bool]] = {}
+        classes: dict[str, str] = {}
         for grant in grants:
             produced = {
                 aid: spec["sealed"]
@@ -233,6 +256,7 @@ class Dispatcher:
             if any(produced.values()):  # sealed output supersedes its own scratch
                 produced = {aid: True for aid, sealed in produced.items() if sealed}
             artifacts.update({aid: (grant.write_path, sealed) for aid, sealed in produced.items()})
+            classes.update(dict.fromkeys(produced, grant.data_class))
         try:
             manifest = build_manifest(
                 self.run_root,
@@ -249,6 +273,7 @@ class Dispatcher:
                     for g in grants
                 },
                 provenance_tip=self._tip,
+                data_classes=classes,
             )
             return publish_stage_manifest(self.run_root, manifest)
         except (ManifestError, OSError) as exc:
@@ -302,6 +327,8 @@ class Dispatcher:
 
         try:
             record = {**correlation, "event": "model_result", "reason_code": result.status}
+            if result.resolved_model:
+                record["model"] = result.resolved_model
             self._tip = self.log.append(record)["event_hash"]
         except Exception as exc:
             raise ProvenanceIncomplete(f"{grant.operation_id}: result not recorded") from exc

@@ -20,6 +20,7 @@ import os
 import re
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,12 @@ STAGE_RE = re.compile(r"[A-Z][A-Z0-9-]*")
 
 class ManifestError(Exception):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class SealedInput:
+    path: Path
+    data_class: str  # "unknown" when the producing manifest did not classify it
 
 
 def digest_path(path: Path) -> str:
@@ -87,6 +94,7 @@ def build_manifest(
     artifacts: Mapping[str, tuple[Path, bool]],
     operations: Mapping[str, Mapping[str, str]],
     provenance_tip: str,
+    data_classes: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Digest each artifact (id -> (path, sealed)) and assemble a manifest."""
     root = run_root.resolve()
@@ -100,6 +108,8 @@ def build_manifest(
             "digest": digest_path(path),
             "sealed": sealed,
         }
+        if data_classes and artifact_id in data_classes:
+            entries[artifact_id]["data_class"] = data_classes[artifact_id]
     return {
         "manifest_version": MANIFEST_VERSION,
         "run_id": run_id,
@@ -157,13 +167,13 @@ def load_manifest(run_root: Path, stage: str, run_id: str) -> dict[str, Any] | N
 
 def resolve_sealed_inputs(
     run_root: Path, run_id: str, registry: Mapping[str, Any], allowed_reads: list[str]
-) -> tuple[dict[str, Path], list[str]]:
-    """Locate and re-hash every sealed input; return (artifact_id -> path, errors).
+) -> tuple[dict[str, SealedInput], list[str]]:
+    """Locate and re-hash every sealed input; return (artifact_id -> input, errors).
 
     Each sealed input must be published by exactly one manifest and be unchanged on
     disk. Unsealed reads are an operation's own scratch (registry R10) and are skipped.
     """
-    paths: dict[str, Path] = {}
+    found_inputs: dict[str, SealedInput] = {}
     errors: list[str] = []
     artifacts = registry["artifacts"]
     for artifact_id in allowed_reads:
@@ -199,8 +209,8 @@ def resolve_sealed_inputs(
         if actual != entry["digest"]:
             errors.append(f"{artifact_id}: content changed since {stage} sealed it")
             continue
-        paths[artifact_id] = path
-    return paths, errors
+        found_inputs[artifact_id] = SealedInput(path, entry.get("data_class", "unknown"))
+    return found_inputs, errors
 
 
 def verify_sealed_inputs(

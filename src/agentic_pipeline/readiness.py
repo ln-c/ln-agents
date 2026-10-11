@@ -106,32 +106,78 @@ def probe_credential_env(denylist: list[str], environ: Mapping[str, str]) -> Che
     )
 
 
-def probe_executable(spec: Mapping[str, Any], host: Host) -> Check:
+def resolve_executable(spec: Mapping[str, Any], host: Host) -> tuple[str, str]:
+    """(absolute path, version) of the declared executable; LookupError if unusable."""
     name = spec["executable"]
     path = host.which(name)
     if path is None:
-        return Check("executable", Status.FAILED, f"{name} not found on PATH")
+        raise LookupError(f"{name} not found on PATH")
     code, out = host.run([path, "--version"], host.child_env())
     if code != 0:
-        return Check("executable", Status.FAILED, f"{name} --version exited {code}")
+        raise LookupError(f"{name} --version exited {code}")
     match = re.match(spec["version_pattern"], out.strip())
     if match is None:
-        return Check("executable", Status.FAILED, f"unrecognized version output {out.strip()!r}")
+        raise LookupError(f"unrecognized version output {out.strip()!r}")
     found = tuple(int(g) for g in match.groups())
-    wanted = tuple(spec["min_version"])
     shown = ".".join(map(str, found))
-    if found < wanted:
-        minimum = ".".join(map(str, wanted))
-        return Check("executable", Status.FAILED, f"{name} {shown} < {minimum}")
-    return Check("executable", Status.VERIFIED, f"{name} {shown} at {path}")
+    if found < tuple(spec["min_version"]):
+        minimum = ".".join(map(str, spec["min_version"]))
+        raise LookupError(f"{name} {shown} < {minimum}")
+    return path, shown
 
 
-def probe_subscription_auth() -> Check:
-    return Check(
-        "subscription_auth",
-        Status.UNVERIFIED,
-        "no read-only, non-mutating auth verifier is available",
-    )
+def probe_executable(spec: Mapping[str, Any], host: Host) -> Check:
+    try:
+        path, version = resolve_executable(spec, host)
+    except LookupError as exc:
+        return Check("executable", Status.FAILED, str(exc))
+    return Check("executable", Status.VERIFIED, f"{spec['executable']} {version} at {path}")
+
+
+# Subscription-login requirements for `claude auth status --json` (read-only).
+CLAUDE_AUTH_REQUIRED = {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty"}
+CLAUDE_SUBSCRIPTIONS = frozenset({"pro", "max"})
+
+
+def _claude_auth(path: str, host: Host) -> Check:
+    # With no existing config, `auth status` runs first-time setup and writes files.
+    # It changed nothing when the config already existed, so only run it then.
+    if not ((host.home / ".claude.json").is_file() and (host.home / ".claude").is_dir()):
+        return Check("subscription_auth", Status.UNVERIFIED, "no Claude config in $HOME")
+    code, out = host.run([path, "auth", "status", "--json"], host.child_env())
+    if code != 0:
+        return Check("subscription_auth", Status.FAILED, f"auth status exited {code}")
+    try:
+        status = json.loads(out)
+    except ValueError:
+        return Check("subscription_auth", Status.FAILED, "auth status output is not JSON")
+    if not isinstance(status, dict):
+        return Check("subscription_auth", Status.FAILED, "auth status output is not an object")
+    wrong = {k: status.get(k) for k, v in CLAUDE_AUTH_REQUIRED.items() if status.get(k) != v}
+    if wrong:
+        return Check("subscription_auth", Status.FAILED, f"not a subscription login: {wrong}")
+    plan = status.get("subscriptionType")
+    if plan not in CLAUDE_SUBSCRIPTIONS:
+        return Check("subscription_auth", Status.FAILED, f"subscription {plan!r} not allowed")
+    return Check("subscription_auth", Status.VERIFIED, f"claude.ai {plan} login (first party)")
+
+
+# executable -> read-only auth verifier; providers without one stay UNVERIFIED.
+AUTH_VERIFIERS: dict[str, Callable[[str, Host], Check]] = {"claude": _claude_auth}
+
+
+def probe_subscription_auth(spec: Mapping[str, Any], host: Host) -> Check:
+    verifier = AUTH_VERIFIERS.get(spec["executable"])
+    if verifier is None:
+        return Check(
+            "subscription_auth",
+            Status.UNVERIFIED,
+            "no read-only, non-mutating auth verifier is available",
+        )
+    path = host.which(spec["executable"])
+    if path is None:
+        return Check("subscription_auth", Status.FAILED, f"{spec['executable']} not found on PATH")
+    return verifier(path, host)
 
 
 def probe_settings(spec: Mapping[str, Any], host: Host) -> Check:
@@ -336,8 +382,10 @@ def probe_sandbox(host: Host) -> dict[str, Check]:
 # ── Report and stage eligibility ─────────────────────────────────────────────
 
 
-NOT_YET_IMPLEMENTED = {
-    "session_separation": "no session-isolation mechanism implemented for cloud tools",
+# Enforced per invocation by adapters, which must declare them (dispatch.py checks).
+ADAPTER_ENFORCED = {
+    "session_separation": "enforced per invocation by cloud adapters: fresh process, "
+    "private config dir, no session persistence",
 }
 
 
@@ -383,7 +431,7 @@ def run_preflight(root: Path = REPO_ROOT, host: Host | None = None) -> Report:
         if spec is None:
             continue
         if provider["access_mode"] == "subscription_tool":
-            checks = [probe_executable(spec, host), probe_subscription_auth()]
+            checks = [probe_executable(spec, host), probe_subscription_auth(spec, host)]
             if "settings_path" in spec:
                 checks.append(probe_settings(spec, host))
         else:
@@ -399,8 +447,8 @@ def run_preflight(root: Path = REPO_ROOT, host: Host | None = None) -> Report:
         Status.VERIFIED,
         "enforced per dispatch: inputs re-hashed against published stage manifests",
     )
-    for name, why in NOT_YET_IMPLEMENTED.items():
-        report.isolation[name] = Check(name, Status.UNVERIFIED, why)
+    for name, why in ADAPTER_ENFORCED.items():
+        report.isolation[name] = Check(name, Status.VERIFIED, why)
     return report
 
 

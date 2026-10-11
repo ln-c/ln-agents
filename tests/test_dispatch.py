@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GRAPH = Graph.load(ROOT / "pipeline" / "graph.yaml")
 REGISTRY = load_yaml(ROOT / "policy" / "model_registry.yaml")
 BUDGETS = load_yaml(ROOT / "policy" / "budgets.yaml")
+DATA_CLASSES = load_yaml(ROOT / "policy" / "data_classes.yaml")
 ISOLATION = (
     "sandbox_enforcement",
     "protected_paths_read_only",
@@ -46,7 +47,9 @@ ISOLATION = (
 UPSTREAM = ("START", "G1", "G4", "DR", "A1", "A2", "A3", "C1", "D1")
 
 
-def seed(run_root: Path, stages: tuple[str, ...] = UPSTREAM) -> None:
+def seed(
+    run_root: Path, stages: tuple[str, ...] = UPSTREAM, data_class: str | None = "internal"
+) -> None:
     """Publish manifests with placeholder content for every sealed artifact of `stages`."""
     for stage in stages:
         produced = {
@@ -65,6 +68,7 @@ def seed(run_root: Path, stages: tuple[str, ...] = UPSTREAM) -> None:
             artifacts=produced,
             operations={},
             provenance_tip=GENESIS_HASH,
+            data_classes=dict.fromkeys(produced, data_class) if data_class else None,
         )
         publish_stage_manifest(run_root, manifest)
 
@@ -91,6 +95,7 @@ class FakeAdapter:
         self.raise_on_invoke = raise_on_invoke
         self.grants: list[DispatchGrant] = []
         self.side_effect: Any = None
+        self.resolved_model: str | None = None
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         return PreparedCall("fake-model", "1.0", "subscription_tool", grant.operation_id.encode())
@@ -102,7 +107,7 @@ class FakeAdapter:
         (grant.write_path / "output.md").write_text(f"{grant.operation_id}\n")
         if self.side_effect:
             self.side_effect()
-        return AdapterResult(self.status)  # type: ignore[arg-type]
+        return AdapterResult(self.status, resolved_model=self.resolved_model)  # type: ignore[arg-type]
 
 
 class FailingLog(JsonlProvenanceLog):
@@ -137,10 +142,11 @@ def make(
     guards: Any = allow_all,
     ledger: BudgetLedger | None = None,
     upstream: tuple[str, ...] = UPSTREAM,
+    data_class: str | None = "internal",
 ) -> Dispatcher:
     run_root = tmp_path / "run"
     if not run_root.exists():
-        seed(run_root, upstream)
+        seed(run_root, upstream, data_class)
     reports = reports or iter(lambda: report(), None)
     kwargs = {"guards": guards} if guards is not None else {}
     return Dispatcher(
@@ -151,6 +157,7 @@ def make(
         adapters=adapters,
         preflight=lambda: next(reports),
         run_root=run_root,
+        data_classes=DATA_CLASSES,
         **kwargs,
     )
 
@@ -373,3 +380,42 @@ def test_grant_carries_verified_input_paths(tmp_path: Path, adapters: dict) -> N
         "protected_tests",
     }
     assert g.inputs["contracts_sealed"] == (d.run_root / "seed" / "contracts_sealed").resolve()
+
+
+# ── Data classes ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("data_class", [None, "unknown", "confidential", "restricted"])
+def test_cloud_backend_blocked_for_non_cloud_data(
+    tmp_path: Path, adapters: dict, data_class: str | None
+) -> None:
+    d = make(tmp_path, adapters, data_class=data_class)
+    expected = data_class or "unknown"  # unclassified inputs count as unknown
+    with pytest.raises(DispatchBlocked, match=f"data class '{expected}' may not be sent"):
+        d.dispatch_stage("G4", "always", "A1", {})
+    assert events(d) == [] and d.ledger.reserved == {} and adapters["claude_pro"].grants == []
+
+
+def test_local_backend_accepts_confidential_data(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters, data_class="confidential")
+    d.dispatch_stage("E0", "always", "E1", {})
+    assert adapters["qwen_local"].grants[0].data_class == "confidential"
+
+
+def test_outputs_inherit_most_restrictive_input_class(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters, data_class="public")
+    manifest_file = d.run_root / "manifests" / "G1.json"
+    doc = json.loads(manifest_file.read_text())
+    doc["artifacts"]["protected_tests"]["data_class"] = "restricted"
+    manifest_file.write_text(json.dumps(doc))
+    d.dispatch_stage("E0", "always", "E1", {})
+    manifest = load_manifest(d.run_root, "E1", "run-1")
+    assert manifest["artifacts"]["implementation_patch"]["data_class"] == "restricted"
+
+
+def test_resolved_model_recorded_in_provenance(tmp_path: Path, adapters: dict) -> None:
+    adapters["claude_pro"].resolved_model = "claude-opus-5-5"
+    d = make(tmp_path, adapters)
+    d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
+    results = [json.loads(line) for line in d.log.path.read_text().splitlines()]
+    assert [r.get("model") for r in results if r["event"] == "model_result"] == ["claude-opus-5-5"]

@@ -31,6 +31,7 @@ from agentic_pipeline.readiness import (
     probe_ollama,
     probe_sandbox,
     probe_settings,
+    probe_subscription_auth,
     run_preflight,
 )
 from agentic_pipeline.sandbox import SandboxResult, SandboxUnavailable
@@ -101,6 +102,72 @@ def test_probe_executable_passes_allowlisted_env(tmp_path: Path) -> None:
     )
     probe_executable(GOOGLE, host)
     assert set(seen) == {"HOME", "LANG", "PATH"}
+
+
+# ── Subscription auth ────────────────────────────────────────────────────────
+
+CLAUDE_OK = {
+    "loggedIn": True,
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "subscriptionType": "pro",
+    "email": "someone@example.com",
+}
+
+
+@pytest.mark.parametrize(
+    ("changes", "code", "expected"),
+    [
+        ({}, 0, Status.VERIFIED),
+        ({"subscriptionType": "max"}, 0, Status.VERIFIED),
+        ({"loggedIn": False}, 0, Status.FAILED),
+        ({"authMethod": "api_key"}, 0, Status.FAILED),
+        ({"apiProvider": "bedrock"}, 0, Status.FAILED),
+        ({"subscriptionType": "free"}, 0, Status.FAILED),
+        ({}, 1, Status.FAILED),
+    ],
+    ids=["pro", "max", "logged-out", "api-key", "third-party", "free-plan", "nonzero-exit"],
+)
+def test_claude_auth_status(tmp_path: Path, changes: dict, code: int, expected: Status) -> None:
+    seen: list[list[str]] = []
+
+    def run(argv: list[str], env: Mapping[str, str]) -> tuple[int, str]:
+        seen.append(argv)
+        return code, json.dumps({**CLAUDE_OK, **changes})
+
+    _claude_config(tmp_path)
+    host = dataclasses.replace(fake_host(tmp_path), run=run)
+    check = probe_subscription_auth(CLAUDE, host)
+    assert check.status is expected, check
+    assert seen == [["/fake/claude", "auth", "status", "--json"]]
+    assert "someone@example.com" not in check.detail
+
+
+def _claude_config(home: Path) -> None:
+    (home / ".claude").mkdir()
+    (home / ".claude.json").write_text("{}")
+
+
+def test_claude_auth_skipped_without_existing_config(tmp_path: Path) -> None:
+    def run(argv: list[str], env: Mapping[str, str]) -> tuple[int, str]:
+        raise AssertionError("auth status would run first-time setup in an empty $HOME")
+
+    host = dataclasses.replace(fake_host(tmp_path), run=run)
+    assert probe_subscription_auth(CLAUDE, host).status is Status.UNVERIFIED
+
+
+def test_claude_auth_malformed_output(tmp_path: Path) -> None:
+    _claude_config(tmp_path)
+    host = fake_host(tmp_path, output="not json")
+    assert probe_subscription_auth(CLAUDE, host).status is Status.FAILED
+
+
+def test_provider_without_verifier_stays_unverified(tmp_path: Path) -> None:
+    def run(argv: list[str], env: Mapping[str, str]) -> tuple[int, str]:
+        raise AssertionError("no command may run for an unverifiable provider")
+
+    host = dataclasses.replace(fake_host(tmp_path), run=run)
+    assert probe_subscription_auth(GOOGLE, host).status is Status.UNVERIFIED
 
 
 # ── Antigravity overage setting ──────────────────────────────────────────────

@@ -36,7 +36,8 @@
         "properties": {
           "path": {"type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\0]+$"},
           "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-          "sealed": {"type": "boolean"}
+          "sealed": {"type": "boolean"},
+          "data_class": {"enum": ["public", "internal", "confidential", "restricted", "unknown"]}
         },
         "additionalProperties": false
       }

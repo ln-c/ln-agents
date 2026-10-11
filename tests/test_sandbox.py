@@ -17,6 +17,7 @@ from agentic_pipeline.sandbox import (
     WORK,
     SandboxLimits,
     SandboxSpec,
+    SandboxUnavailable,
     bwrap_argv,
     run_sandboxed,
     sandbox_command,
@@ -186,3 +187,36 @@ def test_command_wraps_bwrap_in_prlimit() -> None:
     assert cmd[:5] == ["/usr/bin/prlimit", "--fsize=5", "--cpu=6", "--nofile=1024", "--"]
     assert cmd[5] == "/usr/bin/bwrap"
     assert cmd.count("--size") == 3  # /tmp, $HOME, and the tmpfs /work
+
+
+def test_unbrokered_argv_runs_worker_directly() -> None:
+    argv = bwrap_argv("/usr/bin/bwrap", SandboxSpec(argv=["claude", "-p"], network="host"))
+    assert argv[-2:] == ["claude", "-p"] and ENTRY not in argv
+    assert "--share-net" in argv and "/etc/resolv.conf" in argv
+    assert not any(a.startswith("AP_BROKER") for a in argv)
+
+
+def test_isolated_argv_has_no_network_files() -> None:
+    argv = bwrap_argv("/usr/bin/bwrap", SandboxSpec(argv=["true"]), 3, 4)
+    assert "--share-net" not in argv and "/etc/resolv.conf" not in argv
+
+
+def test_brokered_worker_cannot_share_network() -> None:
+    broker = InferenceBroker(BrokerPolicy(MODEL), lambda p, b: (200, {}, iter([])))
+    with pytest.raises(SandboxUnavailable, match="must not share"):
+        run_sandboxed(SandboxSpec(argv=["true"], network="host"), broker)
+
+
+def test_stdin_and_rw_bind_without_broker(tmp_path: Path) -> None:
+    state = tmp_path / "state.txt"
+    state.write_text("before")
+    spec = SandboxSpec(
+        argv=["python3", "-I", "-c",
+              "import sys; d=sys.stdin.read(); open('/opt/state.txt','w').write(d); print(len(d))"],
+        rw_binds={"/opt/state.txt": state},
+        stdin=b"x" * 300_000,  # larger than one argv string may be
+        timeout=30,
+    )  # fmt: skip
+    result = run_sandboxed(spec, None)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "300000" and state.read_text() == "x" * 300_000
