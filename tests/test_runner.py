@@ -172,14 +172,20 @@ def test_unknown_guard_from_handler_is_blocked(rig: Rig) -> None:
     assert stored(rig).current == "START"
 
 
-def test_failing_handler_pauses_the_run(rig: Rig) -> None:
-    def boom(ctx: Any) -> str:
-        raise RuntimeError("index unavailable")
+def test_failing_handler_blocks_and_can_retry(rig: Rig) -> None:
+    calls = {"n": 0}
 
-    runner = rig.open({"START": boom})
+    def flaky(ctx: Any) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("index unavailable")
+        return "task_class_valid"
+
+    runner = rig.open({"START": flaky})
     result = runner.step()
-    assert result.outcome is Outcome.PAUSED and "handler_error: RuntimeError" in result.detail
-    assert stored(rig).status is Status.PAUSED
+    assert result.outcome is Outcome.BLOCKED and "handler_error: RuntimeError" in result.detail
+    assert stored(rig).status is Status.RUNNING  # nothing spent: no human needed
+    assert runner.step().outcome is Outcome.ADVANCED
 
 
 def test_human_state_awaits_a_human(rig: Rig) -> None:
@@ -333,7 +339,9 @@ def test_resume_is_recorded_and_the_edge_is_charged_again(rig: Rig) -> None:
 
     assert state.status is Status.RUNNING and state.resumes[0]["by"] == "ln"
     decisions = [e for e in rig.events() if e["event"] == "decision"]
-    assert decisions[-1]["approver_id"] == "ln" and decisions[-1]["reason_code"] == "human_resume"
+    assert decisions[-1]["approver_id"] == "unverified:ln"
+    assert decisions[-1]["reason_code"] == "human_resume"
+    assert state.resumes[0]["identity"] == "self-asserted"
     assert state.resumes[0]["provenance_tip"] == decisions[-1]["event_hash"]
 
     rig.adapters["claude_pro"].status = "ok"
@@ -550,7 +558,52 @@ def test_terminal_event_is_not_duplicated_after_a_failed_save(rig: Rig) -> None:
 
     store = RunStore(rig.run_dir)
     state = store.load()
-    state.status, state.paused_reason = Status.RUNNING, None  # as a human resume would
+    resume(state, rig.log, by="ln", reason="disk replaced")  # appends a decision event
     store.save(state)
+    assert rig.events()[-1]["event"] == "decision"
     assert rig.open().step().outcome is Outcome.FINISHED
     assert [e["event"] for e in rig.events()].count("terminal") == 1
+
+
+# ── Second review round ──────────────────────────────────────────────────────
+
+
+def test_spent_budget_pauses_with_its_escalation_target(rig: Rig) -> None:
+    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner.ledger.consumed = {"design": 2}  # max_retries for design is 2
+    runner._save()
+    result = runner.step()
+    assert result.outcome is Outcome.PAUSED
+    assert result.detail == "budget_exhausted: design (on_exhausted: H1)"
+    state = stored(rig)
+    assert (state.current, state.entering) == ("A2", None)
+    assert not rig.adapters["claude_pro"].grants
+
+
+def test_spent_budget_on_a_non_model_edge_also_pauses(rig: Rig) -> None:
+    runner = rig.at("X", {"X": lambda ctx: "infra_rerun_e2"})
+    runner.ledger.consumed = {"infra": 2}
+    runner._save()
+    result = runner.step()
+    assert result.outcome is Outcome.PAUSED and result.detail.startswith("budget_exhausted: infra")
+
+
+@pytest.mark.parametrize(
+    ("relative", "content"),
+    [
+        ("policy/budgets.yaml", "budgets: [unclosed"),
+        ("policy/budgets.yaml", "version: 1\nbudgets: 5\n"),
+        ("pipeline/graph.yaml", "states: 7\n"),
+    ],
+    ids=["yaml-syntax", "budgets-wrong-shape", "graph-wrong-shape"],
+)
+def test_malformed_policy_is_a_clean_error(tmp_path: Path, relative: str, content: str) -> None:
+    root = policy_copy(tmp_path)
+    (root / relative).write_text(content)
+    with pytest.raises(RunStateError, match="cannot read graph or policy|malformed"):
+        if relative.startswith("pipeline"):
+            from agentic_pipeline.run_state import load_policy
+
+            load_policy(root)
+        else:
+            Rig(tmp_path, root).open()  # shape errors surface when the ledger is built

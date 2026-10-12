@@ -16,7 +16,7 @@ from pathlib import Path
 
 from agentic_pipeline.dispatch import BackendAdapter, Dispatcher
 from agentic_pipeline.graph import REPO_ROOT
-from agentic_pipeline.provenance import JsonlProvenanceLog
+from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.readiness import run_preflight
 from agentic_pipeline.run_state import (
     PolicySnapshot,
@@ -59,7 +59,7 @@ class LazyAdapters(Mapping[str, BackendAdapter]):
             ):
                 try:
                     built[name] = factory(self._registry)  # type: ignore[arg-type]
-                except (LookupError, OSError, ValueError) as exc:
+                except Exception as exc:  # any failure: dispatch blocks with this reason
                     self._failed[name] = f"{type(exc).__name__}: {exc}"
             self._built = built
         return self._built
@@ -84,7 +84,7 @@ def _dispatcher_factory(root: Path, run_dir: Path) -> MakeDispatcher:
             log=log,
             ledger=ledger,
             adapters=LazyAdapters(policy.registry),
-            preflight=lambda: run_preflight(root),
+            preflight=lambda: run_preflight(root, registry=policy.registry),
             run_root=run_dir,
             data_classes=policy.data_classes,
             guards=guards,
@@ -149,28 +149,55 @@ def _confirm_human(run_id: str) -> bool:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("ERROR: resume must be run by a human at an interactive terminal", file=sys.stderr)
         return False
-    typed = input(f"Type the run id ({run_id}) to confirm the resume: ").strip()
+    try:
+        typed = input(f"Type the run id ({run_id}) to confirm the resume: ").strip()
+    except EOFError:
+        return False
     return typed == run_id
 
 
 def _resume(args: argparse.Namespace, run_dir: Path) -> int:
-    if not _confirm_human(args.run_id):
-        print("resume not confirmed; nothing changed", file=sys.stderr)
-        return 1
+    """Resume only a run that was already paused on disk, after the human sees why.
+
+    If recovery would change the run (a crash that `run status` had not shown yet),
+    the recovered state is saved and the resume is refused, so nobody signs off on
+    model calls they have not been shown.
+    """
     store = RunStore(run_dir)
     store.acquire()
     try:
         state = store.load()
         check_policy(state, load_policy(args.root))
         log = JsonlProvenanceLog(store.provenance_dir, state.run_id)
-        recover(state, log)
+        was = state.status
+        notes = recover(state, log)
+        if notes:
+            store.save(state)
+        if was is not Status.PAUSED:
+            if state.status is Status.PAUSED:
+                print(
+                    f"ERROR: run was {was.value}; recovery has now paused it "
+                    f"({state.paused_reason}). Review `run status`, then resume again.",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"ERROR: run is {state.status.value}, not paused", file=sys.stderr)
+            return 1
+        unresolved = verify_provenance_chain(log.path).unresolved_calls if log.path.exists() else {}
+        print(f"run {state.run_id} is paused at {state.current}: {state.paused_reason}")
+        for invocation_id, call in sorted(unresolved.items()):
+            print(
+                f"  unresolved model call {invocation_id} ({call['state']}."
+                f"{call['operation_id']}) will be marked human_reconciled"
+            )
+        if not _confirm_human(args.run_id):
+            print("resume not confirmed; nothing changed", file=sys.stderr)
+            return 1
         resume(state, log, args.by, args.reason)
         store.save(state)
     finally:
         store.release()
-    print(
-        f"run {state.run_id} resumed by {args.by}; status {Status.RUNNING.value} at {state.current}"
-    )
+    print(f"run {state.run_id} resumed by {args.by} (self-asserted); running at {state.current}")
     return 0
 
 

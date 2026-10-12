@@ -31,6 +31,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from agentic_pipeline.fsutil import atomic_write_json
 from agentic_pipeline.graph import Graph, loads_yaml
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
@@ -94,15 +96,15 @@ def load_policy(root: Path) -> PolicySnapshot:
     try:
         raw = {p.relative_to(root).as_posix(): p.read_bytes() for p in files}
         parsed = {rel: loads_yaml(raw[rel]) for rel in ("pipeline/graph.yaml", *POLICY_PARSED)}
-    except (OSError, KeyError) as exc:
-        raise RunStateError(f"cannot read graph or policy: {exc}") from exc
-    return PolicySnapshot(
-        digests={rel: "sha256:" + hashlib.sha256(data).hexdigest() for rel, data in raw.items()},
-        graph=Graph.from_mapping(parsed["pipeline/graph.yaml"]),
-        registry=parsed["policy/model_registry.yaml"],
-        budgets=parsed["policy/budgets.yaml"],
-        data_classes=parsed["policy/data_classes.yaml"],
-    )
+        return PolicySnapshot(
+            digests={rel: "sha256:" + hashlib.sha256(d).hexdigest() for rel, d in raw.items()},
+            graph=Graph.from_mapping(parsed["pipeline/graph.yaml"]),
+            registry=parsed["policy/model_registry.yaml"],
+            budgets=parsed["policy/budgets.yaml"],
+            data_classes=parsed["policy/data_classes.yaml"],
+        )
+    except (OSError, KeyError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
+        raise RunStateError(f"cannot read graph or policy: {type(exc).__name__}: {exc}") from exc
 
 
 def policy_digests(root: Path) -> dict[str, str]:
@@ -296,7 +298,7 @@ def resume(state: RunState, log: JsonlProvenanceLog, by: str, reason: str) -> No
                     "operation_id": call["operation_id"],
                     "invocation_id": invocation_id,
                     "reason_code": "human_reconciled",
-                    "approver_id": by,
+                    "approver_id": f"unverified:{by}",
                 }
             )
     event = log.append(
@@ -304,12 +306,13 @@ def resume(state: RunState, log: JsonlProvenanceLog, by: str, reason: str) -> No
             "state": state.current,
             "event": "decision",
             "reason_code": "human_resume",
-            "approver_id": by,
+            "approver_id": f"unverified:{by}",
         }
     )
     state.resumes.append(
         {
             "by": by,
+            "identity": "self-asserted",
             "reason": reason,
             "at": _now(),
             "paused_reason": state.paused_reason,

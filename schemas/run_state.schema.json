@@ -45,10 +45,11 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["by", "reason", "at", "paused_reason", "provenance_tip"],
+        "required": ["by", "identity", "reason", "at", "paused_reason", "provenance_tip"],
         "additionalProperties": false,
         "properties": {
           "by": {"type": "string", "minLength": 1},
+          "identity": {"enum": ["self-asserted"]},
           "reason": {"type": "string", "minLength": 1},
           "at": {"type": "string", "minLength": 1},
           "paused_reason": {"type": ["string", "null"]},

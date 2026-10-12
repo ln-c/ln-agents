@@ -44,7 +44,12 @@ from agentic_pipeline.run_state import (
     recover,
     validate_run_id,
 )
-from agentic_pipeline.transition import BudgetLedger, TransitionDenied, check_transition
+from agentic_pipeline.transition import (
+    BudgetExhausted,
+    BudgetLedger,
+    TransitionDenied,
+    check_transition,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,8 +114,10 @@ class Runner:
         guards: ChosenGuard,
         state: RunState,
         handlers: Mapping[str, StateHandler] | None = None,
+        budgets: Mapping[str, Any] | None = None,
     ) -> None:
         self.graph, self.registry, self.store = graph, registry, store
+        self.budgets = dict((budgets or {}).get("budgets") or {})
         self.log, self.ledger, self.dispatcher = log, ledger, dispatcher
         self.state, self.guards = state, guards
         self.handlers = dict(DEFAULT_HANDLERS if handlers is None else handlers)
@@ -156,8 +163,8 @@ class Runner:
             edge = self._edge(node, guard)
         except _Blocked as exc:
             return StepResult(Outcome.BLOCKED, node, str(exc))
-        except Exception as exc:
-            return self._pause(f"handler_error: {type(exc).__name__}: {exc}")
+        except Exception as exc:  # nothing spent or changed yet: retryable, not a pause
+            return StepResult(Outcome.BLOCKED, node, f"handler_error: {type(exc).__name__}: {exc}")
 
         try:
             after_seq = self.log.count()
@@ -182,6 +189,10 @@ class Runner:
                     reservation.commit()
         except (DispatchBlocked, TransitionDenied) as exc:
             st.entering = None
+            spent = exc if isinstance(exc, BudgetExhausted) else exc.__cause__
+            if isinstance(spent, BudgetExhausted):
+                target = (self.budgets.get(spent.budget) or {}).get("on_exhausted", "unknown")
+                return self._pause(f"budget_exhausted: {spent.budget} (on_exhausted: {target})")
             self._try_save()
             return StepResult(Outcome.BLOCKED, node, str(exc))
         except RunPaused as exc:
@@ -244,8 +255,8 @@ class Runner:
 
     def _finish(self, node: str) -> StepResult:
         try:
-            tail = self.log.records(max(self.log.count() - 1, 0))
-            if not any(r["event"] == "terminal" and r["state"] == node for r in tail):
+            # A run reaches a terminal node once, so any earlier terminal event counts.
+            if not any(r["event"] == "terminal" and r["state"] == node for r in self.log.records()):
                 self.log.append({"state": node, "event": "terminal"})
         except Exception as exc:
             return self._pause(f"provenance_unavailable: {exc}")
@@ -300,7 +311,10 @@ def open_run(
         state = store.load()
         policy = load_policy(root)  # one read; everything below uses these checked bytes
         check_policy(state, policy)
-        ledger = BudgetLedger.from_policy(policy.budgets)
+        try:
+            ledger = BudgetLedger.from_policy(policy.budgets)
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise RunStateError(f"malformed policy/budgets.yaml: {exc}") from exc
         store.provenance_dir.mkdir(parents=True, exist_ok=True)
         log = JsonlProvenanceLog(store.provenance_dir, state.run_id)
         if recover(state, log):
@@ -318,6 +332,7 @@ def open_run(
             guards=guards,
             state=state,
             handlers=handlers,
+            budgets=policy.budgets,
         )
     except BaseException:
         store.release()

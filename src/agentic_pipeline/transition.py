@@ -25,7 +25,9 @@ class TransitionDenied(Exception):
 
 
 class BudgetExhausted(TransitionDenied):
-    pass
+    def __init__(self, message: str, budget: str) -> None:
+        super().__init__(message)
+        self.budget = budget
 
 
 class BudgetUnavailable(TransitionDenied):
@@ -120,10 +122,10 @@ class BudgetLedger:
         if edge.budget is None:
             return None
         if edge.budget not in self.limits:
-            raise BudgetExhausted(f"unknown budget {edge.budget!r}")
+            raise BudgetExhausted(f"unknown budget {edge.budget!r}", edge.budget)
         used = self.consumed.get(edge.budget, 0) + self.reserved.get(edge.budget, 0)
         if used >= self.limits[edge.budget]:
-            raise BudgetExhausted(f"budget {edge.budget!r} exhausted ({used} used)")
+            raise BudgetExhausted(f"budget {edge.budget!r} exhausted ({used} used)", edge.budget)
         self.reserved[edge.budget] = self.reserved.get(edge.budget, 0) + 1
         try:
             self.persist()  # reserved on disk before any model call can be logged
