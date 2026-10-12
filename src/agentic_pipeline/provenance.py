@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agentic_pipeline.fsutil import fsync_dir
 from agentic_pipeline.schemas import ValidationError, validate
 
 GENESIS_HASH = "sha256:" + "0" * 64
@@ -57,6 +58,21 @@ class JsonlProvenanceLog:
         self._clock = clock
         self._lock = threading.Lock()
 
+    def count(self) -> int:
+        """Number of records so far; the next append gets this seq."""
+        try:
+            return sum(1 for line in self.path.read_bytes().splitlines() if line.strip())
+        except FileNotFoundError:
+            return 0
+
+    def records(self, from_seq: int = 0) -> list[dict[str, Any]]:
+        """Records with seq >= from_seq (parsed, not verified; verify the chain first)."""
+        try:
+            lines = self.path.read_bytes().splitlines()
+        except FileNotFoundError:
+            return []
+        return [r for r in (json.loads(x) for x in lines if x.strip()) if r["seq"] >= from_seq]
+
     def append(self, event: Mapping[str, Any]) -> dict[str, Any]:
         """Append one event, assigning run_id, seq, timestamp, and hashes."""
         if clash := LOG_ASSIGNED & event.keys():
@@ -72,7 +88,7 @@ class JsonlProvenanceLog:
             finally:
                 os.close(fd)  # closing releases the flock
             if created:
-                _fsync_dir(self.path.parent)
+                fsync_dir(self.path.parent)
         return record
 
     def _next_record(self, fd: int, event: Mapping[str, Any]) -> dict[str, Any]:
@@ -109,20 +125,14 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[os.write(fd, view) :]
 
 
-def _fsync_dir(directory: Path) -> None:
-    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 @dataclass(slots=True)
 class ProvenanceReport:
     count: int = 0
     tip: str = GENESIS_HASH
     errors: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
+    # invocation_id -> {"state", "operation_id"} for each call with no recorded outcome
+    unresolved_calls: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -133,6 +143,7 @@ def verify_provenance_chain(path: Path) -> ProvenanceReport:
     """Check hash continuity, sequence, schema, and model_call resolution."""
     report = ProvenanceReport()
     open_calls: dict[str, str] = {}  # invocation_id -> operation_id
+    call_states: dict[str, str] = {}
     resolved: set[str] = set()
     run_id: str | None = None
     for line_no, line in enumerate(path.read_bytes().splitlines(), start=1):
@@ -160,6 +171,7 @@ def verify_provenance_chain(path: Path) -> ProvenanceReport:
             if invocation in open_calls or invocation in resolved:
                 report.errors.append(f"{where}: duplicate model_call {invocation!r}")
             open_calls[invocation] = record["operation_id"]
+            call_states[invocation] = record["state"]
         elif record["event"] in CORRELATED_TERMINALS and invocation is not None:
             if invocation not in open_calls:
                 kind = "duplicate" if invocation in resolved else "orphaned"
@@ -170,4 +182,7 @@ def verify_provenance_chain(path: Path) -> ProvenanceReport:
                 del open_calls[invocation]
                 resolved.add(invocation)
     report.unresolved = sorted(open_calls)
+    report.unresolved_calls = {
+        i: {"state": call_states[i], "operation_id": op} for i, op in open_calls.items()
+    }
     return report

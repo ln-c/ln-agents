@@ -419,3 +419,13 @@ def test_resolved_model_recorded_in_provenance(tmp_path: Path, adapters: dict) -
     d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
     results = [json.loads(line) for line in d.log.path.read_text().splitlines()]
     assert [r.get("model") for r in results if r["event"] == "model_result"] == ["claude-opus-5-5"]
+
+
+def test_missing_adapter_reason_is_surfaced(tmp_path: Path, adapters: dict) -> None:
+    class Explained(dict):
+        def unavailable(self, name: str) -> str | None:
+            return "LookupError: not signed in" if name == "google_ai_pro" else None
+
+    explained = Explained({k: v for k, v in adapters.items() if k != "google_ai_pro"})
+    with pytest.raises(DispatchBlocked, match="google_ai_pro: LookupError: not signed in"):
+        make(tmp_path, explained).dispatch_stage("G4", "always", "A1", {})

@@ -43,3 +43,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local pipeline run directories (state, manifests, provenance)
+.runs/

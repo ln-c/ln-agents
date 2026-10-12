@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "run_state",
+  "title": "Run state: where a run is, what budget it has spent, and who resumed it",
+  "type": "object",
+  "required": ["version", "run_id", "status", "current", "entering", "paused_reason", "pause_cause", "ledger", "policy", "resumes", "steps", "updated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": 1},
+    "run_id": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"},
+    "status": {"enum": ["running", "paused", "awaiting_human", "finished"]},
+    "current": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9-]*$"},
+    "entering": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["from", "guard", "to", "after_seq", "consumed_before"],
+          "additionalProperties": false,
+          "properties": {
+            "from": {"type": "string", "minLength": 1},
+            "guard": {"type": "string", "minLength": 1},
+            "to": {"type": "string", "minLength": 1},
+            "after_seq": {"type": "integer", "minimum": 0},
+            "consumed_before": {
+              "type": "object",
+              "additionalProperties": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      ]
+    },
+    "paused_reason": {"type": ["string", "null"]},
+    "pause_cause": {
+      "enum": [null, "crash_during_dispatch", "unresolved_invocation", "budget_exhausted",
+               "dispatch_paused", "provenance_unavailable", "state_save_failed",
+               "unexpected_error", "other"]
+    },
+    "ledger": {
+      "type": "object",
+      "required": ["consumed", "reserved"],
+      "additionalProperties": false,
+      "properties": {
+        "consumed": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "reserved": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    },
+    "resumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["by", "identity", "reason", "at", "paused_reason", "provenance_tip"],
+        "additionalProperties": false,
+        "properties": {
+          "by": {"type": "string", "minLength": 1},
+          "identity": {"enum": ["self-asserted"]},
+          "reason": {"type": "string", "minLength": 1},
+          "at": {"type": "string", "minLength": 1},
+          "paused_reason": {"type": ["string", "null"]},
+          "provenance_tip": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "steps": {"type": "integer", "minimum": 0},
+    "updated_at": {"type": "string", "minLength": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "paused"}}},
+      "then": {
+        "properties": {
+          "paused_reason": {"type": "string", "minLength": 1},
+          "pause_cause": {"type": "string"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["running", "awaiting_human", "finished"]}}},
+      "then": {"properties": {"paused_reason": {"type": "null"}, "pause_cause": {"type": "null"}}}
+    }
+  ]
+}

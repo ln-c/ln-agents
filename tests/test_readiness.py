@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import shutil
@@ -482,3 +483,13 @@ def test_cli_preflight_unknown_stage_exits_1(capsys: pytest.CaptureFixture[str])
 def test_cli_preflight_disabled_stage_exits_1(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["preflight", "--stage", "E4"]) == 1
     assert "stage disabled" in capsys.readouterr().err
+
+
+def test_preflight_evaluates_the_registry_it_is_given(tmp_path: Path) -> None:
+    frozen = copy.deepcopy(REGISTRY)
+    frozen["stage_requirements"]["A3"] = {"mode": "disabled", "reason": "frozen for this run"}
+    host = Host(environ={}, home=tmp_path, which=lambda name: None)
+    report = run_preflight(ROOT, host, registry=frozen)
+    assert report.registry is frozen
+    verdict = evaluate_stage("A3", report)
+    assert not verdict.eligible and "frozen for this run" in verdict.reasons[0]

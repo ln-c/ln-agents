@@ -25,7 +25,13 @@ class TransitionDenied(Exception):
 
 
 class BudgetExhausted(TransitionDenied):
-    pass
+    def __init__(self, message: str, budget: str) -> None:
+        super().__init__(message)
+        self.budget = budget
+
+
+class BudgetUnavailable(TransitionDenied):
+    """The ledger could not be persisted, so no budget may be spent."""
 
 
 def deny_all_guards(edge: Edge, run_context: Mapping[str, Any]) -> bool:
@@ -63,11 +69,15 @@ class Reservation:
     state: ReservationState = ReservationState.RESERVED
 
     def commit(self) -> None:
+        """Spend the unit. A persistence failure propagates; on disk it stays 'reserved'."""
         self._settle(ReservationState.COMMITTED)
         self.ledger.consumed[self.budget] = self.ledger.consumed.get(self.budget, 0) + 1
+        self.ledger.persist()
 
     def release(self) -> None:
+        """Return the unit. Never raises: a stale disk copy errs toward 'spent'."""
         self._settle(ReservationState.RELEASED)
+        self.ledger.persist(best_effort=True)
 
     def _settle(self, new: ReservationState) -> None:
         if self.state is not ReservationState.RESERVED:
@@ -83,6 +93,25 @@ class BudgetLedger:
     limits: dict[str, int]
     consumed: dict[str, int] = field(default_factory=dict)
     reserved: dict[str, int] = field(default_factory=dict)
+    # Called with this ledger after every change so it can be written durably.
+    listener: Callable[[BudgetLedger], None] | None = field(default=None, repr=False)
+
+    def snapshot(self) -> dict[str, dict[str, int]]:
+        return {
+            "consumed": {k: v for k, v in sorted(self.consumed.items()) if v},
+            "reserved": {k: v for k, v in sorted(self.reserved.items()) if v},
+        }
+
+    def persist(self, best_effort: bool = False) -> None:
+        if self.listener is None:
+            return
+        try:
+            self.listener(self)
+        except Exception:
+            # A failed best-effort write leaves disk erring toward "spent"; the next
+            # reserve() rewrites the full snapshot and fails closed if it cannot.
+            if not best_effort:
+                raise
 
     @classmethod
     def from_policy(cls, budgets: Mapping[str, Any]) -> BudgetLedger:
@@ -93,9 +122,14 @@ class BudgetLedger:
         if edge.budget is None:
             return None
         if edge.budget not in self.limits:
-            raise BudgetExhausted(f"unknown budget {edge.budget!r}")
+            raise BudgetExhausted(f"unknown budget {edge.budget!r}", edge.budget)
         used = self.consumed.get(edge.budget, 0) + self.reserved.get(edge.budget, 0)
         if used >= self.limits[edge.budget]:
-            raise BudgetExhausted(f"budget {edge.budget!r} exhausted ({used} used)")
+            raise BudgetExhausted(f"budget {edge.budget!r} exhausted ({used} used)", edge.budget)
         self.reserved[edge.budget] = self.reserved.get(edge.budget, 0) + 1
+        try:
+            self.persist()  # reserved on disk before any model call can be logged
+        except Exception as exc:
+            self.reserved[edge.budget] -= 1
+            raise BudgetUnavailable(f"cannot persist budget ledger: {exc}") from exc
         return Reservation(self, edge.budget)

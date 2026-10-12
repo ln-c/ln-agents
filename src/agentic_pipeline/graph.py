@@ -28,8 +28,11 @@ ROUTER_FORBIDDEN = frozenset(
 
 
 def load_yaml(path: Path) -> Any:
-    with path.open("rb") as fh:
-        return yaml.load(fh, Loader=_Loader)  # noqa: S506 - safe loader subclass
+    return loads_yaml(path.read_bytes())
+
+
+def loads_yaml(data: bytes) -> Any:
+    return yaml.load(data, Loader=_Loader)  # noqa: S506 - safe loader subclass
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +110,18 @@ def _find_cycle(nodes: Iterable[str], adj: Mapping[str, list[str]]) -> list[str]
                 stack.append((nxt, iter(adj.get(nxt, ()))))
                 path.append(nxt)
     return None
+
+
+def spent_route(graph: Graph, src: str, target: str) -> Edge | None:
+    """The edge taken from `src` once a budget whose on_exhausted is `target` is spent.
+
+    The single unbudgeted edge from `src` to `target`; if there are several, the single
+    one whose guard ends in `_spent`. None when no unambiguous route exists.
+    """
+    routes = [e for e in graph.edges if e.src == src and e.to == target and e.budget is None]
+    if len(routes) > 1:
+        routes = [e for e in routes if e.guard.endswith("_spent")]
+    return routes[0] if len(routes) == 1 else None
 
 
 def validate(
@@ -191,6 +206,26 @@ def validate(
         for item in sorted(policy ^ edges, key=str):
             side = "policy/routing.yaml" if item in policy else "graph X edges"
             errors.append(f"router mismatch, only in {side}: {item}")
+
+    # 9. Every budgeted retry has a way out: when the budget is spent, its source has
+    #    exactly one route to the budget's on_exhausted target (see spent_route), which
+    #    the runner takes itself. Human states are exempt (a human chooses).
+    exhausted_targets = {
+        key: (spec or {}).get("on_exhausted")
+        for key, spec in (budgets.get("budgets") or {}).items()
+    }
+    for e in graph.edges:
+        if e.budget is None or e.src in graph.human_states:
+            continue
+        target = exhausted_targets.get(e.budget)
+        if target is None or target == e.src:
+            continue
+        if spent_route(graph, e.src, target) is None:
+            errors.append(
+                f"{e.src}: budget {e.budget!r} has no spent route to {target} "
+                f"(its on_exhausted target): need one unbudgeted edge, or exactly one "
+                f"whose guard ends in '_spent'"
+            )
 
     return errors
 

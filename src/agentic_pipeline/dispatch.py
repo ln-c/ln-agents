@@ -38,7 +38,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from agentic_pipeline.graph import Graph
 from agentic_pipeline.manifest import (
@@ -120,6 +120,13 @@ CLOUD_ACCESS_MODES = frozenset({"subscription_tool", "free_allowance_only"})
 DISPATCHER_ENFORCED = frozenset({"proposal_path_layout", "sealed_input_verification"})
 
 
+@runtime_checkable
+class ExplainsUnavailable(Protocol):
+    """Optional on the adapters mapping: why a backend has no adapter."""
+
+    def unavailable(self, backend: str) -> str | None: ...
+
+
 class BackendAdapter(Protocol):
     # Isolation checks (registry isolation_profiles vocabulary) this adapter enforces.
     enforced_isolation: frozenset[str]
@@ -167,8 +174,17 @@ class Dispatcher:
         verdict = evaluate_stage(stage, self.preflight())
         if not verdict.eligible:
             raise DispatchBlocked(f"{stage}: " + "; ".join(verdict.reasons))
-        if missing := sorted(set(verdict.backends.values()) - self.adapters.keys()):
-            raise DispatchBlocked(f"{stage}: no adapter for {missing}")
+        needed = sorted(set(verdict.backends.values()))
+        if missing := [b for b in needed if b not in self.adapters]:
+            why = []
+            for backend in missing:
+                reason = (
+                    self.adapters.unavailable(backend)
+                    if isinstance(self.adapters, ExplainsUnavailable)
+                    else None
+                )
+                why.append(f"{backend}: {reason}" if reason else backend)
+            raise DispatchBlocked(f"{stage}: no adapter for {why}")
         spec = self.registry["stage_requirements"][stage]
         ops = [op for _, op in operations({stage: spec})]
         profiles = self.registry["isolation_profiles"]
