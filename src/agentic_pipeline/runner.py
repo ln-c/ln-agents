@@ -1,0 +1,302 @@
+"""Runner: walks pipeline/graph.yaml one edge at a time, persisting after every step.
+
+The runner never decides anything itself and never trusts a model. At each node:
+
+* a registered deterministic handler may do the node's work and returns the guard
+  to take (PR-8/9 register these; none exist yet), or
+* a model stage with a single `always` edge takes it, or
+* the step is BLOCKED, leaving the run exactly where it was.
+
+Entering a model stage goes through `Dispatcher.dispatch_stage` (all readiness,
+data-class, budget, and provenance gates). Entering any other node checks the edge
+and charges its budget. Human states stop the run (`awaiting_human`); terminal
+states finish it. A step that raises after spending budget pauses the run, and a
+paused run only continues through `run_state.resume`.
+
+Handlers must be idempotent: a crash after a handler ran but before the new state
+was saved re-runs it. Resuming re-enters the edge that was in flight, so a budgeted
+edge is charged again.
+"""
+
+from __future__ import annotations
+
+import contextlib
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
+from agentic_pipeline.graph import NO_EDGE_KINDS, Edge, Graph, load_yaml
+from agentic_pipeline.provenance import JsonlProvenanceLog
+from agentic_pipeline.run_state import (
+    RunState,
+    RunStateError,
+    RunStore,
+    Status,
+    check_policy,
+    policy_digests,
+    recover,
+    validate_run_id,
+)
+from agentic_pipeline.transition import BudgetLedger, TransitionDenied, check_transition
+
+
+@dataclass(frozen=True, slots=True)
+class HandlerContext:
+    run_id: str
+    run_root: Path
+    node: str
+    graph: Graph
+    registry: Mapping[str, Any]
+
+
+type StateHandler = Callable[[HandlerContext], str]
+
+# Deterministic per-node handlers. Empty until grounding and the decision gates land.
+DEFAULT_HANDLERS: dict[str, StateHandler] = {}
+
+
+class Outcome(StrEnum):
+    ADVANCED = "advanced"
+    BLOCKED = "blocked"
+    PAUSED = "paused"
+    AWAITING_HUMAN = "awaiting_human"
+    FINISHED = "finished"
+
+
+@dataclass(frozen=True, slots=True)
+class StepResult:
+    outcome: Outcome
+    node: str
+    detail: str = ""
+
+
+class ChosenGuard:
+    """Guard evaluator: only the guard a deterministic handler chose may fire."""
+
+    def __init__(self) -> None:
+        self.guard: str | None = None
+
+    def __call__(self, edge: Edge, run_context: Mapping[str, Any]) -> bool:
+        return self.guard is not None and edge.guard == self.guard
+
+
+class _Blocked(Exception):
+    pass
+
+
+MakeDispatcher = Callable[[JsonlProvenanceLog, BudgetLedger, ChosenGuard], Dispatcher]
+
+
+class Runner:
+    def __init__(
+        self,
+        *,
+        graph: Graph,
+        registry: Mapping[str, Any],
+        store: RunStore,
+        log: JsonlProvenanceLog,
+        ledger: BudgetLedger,
+        dispatcher: Dispatcher,
+        guards: ChosenGuard,
+        state: RunState,
+        handlers: Mapping[str, StateHandler] | None = None,
+    ) -> None:
+        self.graph, self.registry, self.store = graph, registry, store
+        self.log, self.ledger, self.dispatcher = log, ledger, dispatcher
+        self.state, self.guards = state, guards
+        self.handlers = dict(DEFAULT_HANDLERS if handlers is None else handlers)
+        self.ledger.listener = self._persist_ledger
+
+    # ── persistence ──────────────────────────────────────────────────────────
+
+    def _persist_ledger(self, ledger: BudgetLedger) -> None:
+        self.state.ledger = ledger.snapshot()
+        self.store.save(self.state)
+
+    def _save(self) -> None:
+        self.state.ledger = self.ledger.snapshot()
+        self.store.save(self.state)
+
+    def close(self) -> None:
+        self.store.release()
+
+    # ── stepping ─────────────────────────────────────────────────────────────
+
+    def step(self) -> StepResult:
+        st = self.state
+        if st.status is Status.PAUSED:
+            return StepResult(Outcome.PAUSED, st.current, st.paused_reason or "")
+        if st.status is Status.AWAITING_HUMAN:
+            return StepResult(Outcome.AWAITING_HUMAN, st.current)
+        if st.status is Status.FINISHED:
+            return StepResult(Outcome.FINISHED, st.current)
+
+        node = st.current
+        if self.graph.states[node].get("kind") in NO_EDGE_KINDS:
+            return self._finish(node)
+        if node in self.graph.human_states:
+            st.status = Status.AWAITING_HUMAN
+            self._save()
+            return StepResult(Outcome.AWAITING_HUMAN, node, "human decision required")
+
+        try:
+            guard = self._decide(node)
+            edge = self._edge(node, guard)
+        except _Blocked as exc:
+            return StepResult(Outcome.BLOCKED, node, str(exc))
+        except Exception as exc:
+            return self._pause(f"handler_error: {type(exc).__name__}: {exc}")
+
+        st.entering = {"from": node, "guard": guard, "to": edge.to}
+        try:
+            self._save()  # the crash marker must be durable before anything can be spent
+        except Exception as exc:
+            st.entering = None
+            return StepResult(Outcome.BLOCKED, node, f"cannot persist run state: {exc}")
+
+        self.guards.guard = guard
+        context = {"run_id": st.run_id, "guard": guard}
+        try:
+            if edge.to in self.registry["stage_requirements"]:
+                self.dispatcher.dispatch_stage(node, guard, edge.to, context)
+            else:
+                taken = check_transition(self.graph, node, guard, edge.to, self.guards, context)
+                reservation = self.ledger.reserve(taken)
+                if reservation is not None:
+                    reservation.commit()
+        except (DispatchBlocked, TransitionDenied) as exc:
+            st.entering = None
+            self._try_save()
+            return StepResult(Outcome.BLOCKED, node, str(exc))
+        except RunPaused as exc:
+            st.entering = None
+            return self._pause(f"{type(exc).__name__}: {exc}")
+        except Exception as exc:
+            st.entering = None
+            return self._pause(f"unexpected_error: {type(exc).__name__}: {exc}")
+        finally:
+            self.guards.guard = None
+
+        st.current, st.entering = edge.to, None
+        st.steps += 1
+        self._save()
+        try:
+            self.log.append({"state": edge.to, "event": "enter"})
+        except Exception as exc:
+            return self._pause(f"provenance_unavailable: {exc}")
+        return StepResult(Outcome.ADVANCED, edge.to, f"{node} --{guard}--> {edge.to}")
+
+    def run(self, max_steps: int = 100) -> StepResult:
+        """Step until the run stops advancing or `max_steps` is reached."""
+        result = StepResult(Outcome.BLOCKED, self.state.current, "no steps taken")
+        for _ in range(max_steps):
+            result = self.step()
+            if result.outcome is not Outcome.ADVANCED:
+                break
+        return result
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _decide(self, node: str) -> str:
+        handler = self.handlers.get(node)
+        if handler is not None:
+            ctx = HandlerContext(
+                self.state.run_id, self.store.run_root, node, self.graph, self.registry
+            )
+            return handler(ctx)
+        outgoing = [e for e in self.graph.edges if e.src == node]
+        if (
+            node in self.registry["stage_requirements"]
+            and len(outgoing) == 1
+            and outgoing[0].guard == "always"
+        ):
+            return "always"
+        raise _Blocked(f"no handler registered for {node}")
+
+    def _edge(self, node: str, guard: str) -> Edge:
+        matches = [e for e in self.graph.edges if e.src == node and e.guard == guard]
+        if not matches:
+            raise _Blocked(f"{node} has no edge with guard {guard!r}")
+        if len(matches) > 1:
+            raise _Blocked(f"{node} has {len(matches)} edges with guard {guard!r}")
+        return matches[0]
+
+    def _finish(self, node: str) -> StepResult:
+        try:
+            self.log.append({"state": node, "event": "terminal"})
+        except Exception as exc:
+            return self._pause(f"provenance_unavailable: {exc}")
+        self.state.status = Status.FINISHED
+        self._save()
+        return StepResult(Outcome.FINISHED, node)
+
+    def _pause(self, reason: str) -> StepResult:
+        self.state.pause(reason)
+        self._try_save()  # if this fails, the saved crash marker still forces a pause
+        return StepResult(Outcome.PAUSED, self.state.current, reason)
+
+    def _try_save(self) -> None:
+        with contextlib.suppress(Exception):
+            self._save()
+
+
+# ── lifecycle ────────────────────────────────────────────────────────────────
+
+
+def init_run(root: Path, run_dir: Path, run_id: str, entry: str) -> RunState:
+    """Create a new run at an entrypoint, freezing graph and policy digests."""
+    validate_run_id(run_id)
+    graph = Graph.load(root / "pipeline" / "graph.yaml")
+    if entry not in graph.entrypoints:
+        raise RunStateError(f"{entry!r} is not an entrypoint {graph.entrypoints}")
+    store = RunStore(run_dir)
+    store.acquire()
+    try:
+        store.provenance_dir.mkdir(parents=True, exist_ok=True)
+        state = RunState(run_id=run_id, current=entry, policy=policy_digests(root))
+        store.create(state)
+        JsonlProvenanceLog(store.provenance_dir, run_id).append({"state": entry, "event": "enter"})
+    finally:
+        store.release()
+    return state
+
+
+def open_run(
+    root: Path,
+    run_dir: Path,
+    make_dispatcher: MakeDispatcher,
+    handlers: Mapping[str, StateHandler] | None = None,
+) -> Runner:
+    """Lock and load a run, refuse on policy drift, and apply fail-closed recovery."""
+    store = RunStore(run_dir)
+    store.acquire()
+    try:
+        state = store.load()
+        check_policy(state, root)
+        graph = Graph.load(root / "pipeline" / "graph.yaml")
+        registry = load_yaml(root / "policy" / "model_registry.yaml")
+        ledger = BudgetLedger.from_policy(load_yaml(root / "policy" / "budgets.yaml"))
+        store.provenance_dir.mkdir(parents=True, exist_ok=True)
+        log = JsonlProvenanceLog(store.provenance_dir, state.run_id)
+        if recover(state, log):
+            store.save(state)
+        ledger.consumed = dict(state.ledger["consumed"])
+        guards = ChosenGuard()
+        dispatcher = make_dispatcher(log, ledger, guards)
+        return Runner(
+            graph=graph,
+            registry=registry,
+            store=store,
+            log=log,
+            ledger=ledger,
+            dispatcher=dispatcher,
+            guards=guards,
+            state=state,
+            handlers=handlers,
+        )
+    except BaseException:
+        store.release()
+        raise

@@ -1,4 +1,4 @@
-"""Command line: `python -m agentic_pipeline {validate,preflight} [--root PATH]`."""
+"""Command line: `python -m agentic_pipeline {validate,preflight,run} ...`."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from pathlib import Path
 
 from agentic_pipeline.graph import REPO_ROOT
 from agentic_pipeline.readiness import Check, Report, evaluate_stage, run_preflight
+from agentic_pipeline.run_cli import add_parser as add_run_parser
+from agentic_pipeline.run_cli import run_command
 from agentic_pipeline.validation import validate_repo
 
 
@@ -62,8 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     pre = sub.add_parser("preflight", help="read-only host readiness inspection")
     pre.add_argument("--root", type=Path, default=REPO_ROOT)
     pre.add_argument("--stage", help="exit 1 unless this stage is eligible for dispatch")
+    add_run_parser(sub)
     args = parser.parse_args(argv)
 
+    if args.command == "run":
+        return run_command(args)
     if args.command == "preflight":
         return _preflight(args.root, args.stage)
     return _validate(args.root)

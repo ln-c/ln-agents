@@ -123,6 +123,8 @@ class ProvenanceReport:
     tip: str = GENESIS_HASH
     errors: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
+    # invocation_id -> {"state", "operation_id"} for each call with no recorded outcome
+    unresolved_calls: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -133,6 +135,7 @@ def verify_provenance_chain(path: Path) -> ProvenanceReport:
     """Check hash continuity, sequence, schema, and model_call resolution."""
     report = ProvenanceReport()
     open_calls: dict[str, str] = {}  # invocation_id -> operation_id
+    call_states: dict[str, str] = {}
     resolved: set[str] = set()
     run_id: str | None = None
     for line_no, line in enumerate(path.read_bytes().splitlines(), start=1):
@@ -160,6 +163,7 @@ def verify_provenance_chain(path: Path) -> ProvenanceReport:
             if invocation in open_calls or invocation in resolved:
                 report.errors.append(f"{where}: duplicate model_call {invocation!r}")
             open_calls[invocation] = record["operation_id"]
+            call_states[invocation] = record["state"]
         elif record["event"] in CORRELATED_TERMINALS and invocation is not None:
             if invocation not in open_calls:
                 kind = "duplicate" if invocation in resolved else "orphaned"
@@ -170,4 +174,7 @@ def verify_provenance_chain(path: Path) -> ProvenanceReport:
                 del open_calls[invocation]
                 resolved.add(invocation)
     report.unresolved = sorted(open_calls)
+    report.unresolved_calls = {
+        i: {"state": call_states[i], "operation_id": op} for i, op in open_calls.items()
+    }
     return report

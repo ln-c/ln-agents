@@ -16,15 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agentic_pipeline.fsutil import atomic_write_json
 from agentic_pipeline.schemas import ValidationError, validate
 
 MANIFEST_VERSION = 1
@@ -129,21 +128,7 @@ def publish_stage_manifest(run_root: Path, manifest: Mapping[str, Any]) -> Path:
     except ValidationError as exc:
         raise ManifestError(f"invalid stage manifest: {exc.message}") from exc
     final = manifest_path(run_root, manifest["stage"])
-    final.parent.mkdir(parents=True, exist_ok=True)
-    tmp = final.with_name(f".{final.name}.tmp.{uuid.uuid4().hex}")
-    try:
-        with tmp.open("x", encoding="utf-8") as fh:
-            json.dump(manifest, fh, sort_keys=True, indent=2)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, final)
-    finally:
-        tmp.unlink(missing_ok=True)
-    fd = os.open(final.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    atomic_write_json(final, manifest)
     return final
 
 
