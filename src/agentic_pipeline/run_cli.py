@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import copy
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 
 from agentic_pipeline.dispatch import BackendAdapter, Dispatcher
@@ -35,43 +35,54 @@ from agentic_pipeline.transition import BudgetLedger
 DEFAULT_RUNS_DIR = REPO_ROOT / ".runs"
 
 
+def _adapter_factories() -> dict[str, Callable[[Mapping[str, object]], BackendAdapter]]:
+    from agentic_pipeline.adapters import ClaudeAdapter, PiQwenAdapter
+
+    return {
+        "qwen_local": PiQwenAdapter.from_registry,  # type: ignore[dict-item]
+        "claude_pro": ClaudeAdapter.from_registry,  # type: ignore[dict-item]
+    }
+
+
 class LazyAdapters(Mapping[str, BackendAdapter]):
-    """Real adapters, built on first use so blocked steps never probe the host."""
+    """Real adapters, each built only when its backend is first needed.
+
+    A Qwen-only stage never constructs (or probes credentials for) the Claude adapter.
+    """
 
     def __init__(self, registry: Mapping[str, object]) -> None:
         self._registry = registry
-        self._built: dict[str, BackendAdapter] | None = None
+        self._built: dict[str, BackendAdapter] = {}
         self._failed: dict[str, str] = {}
+
+    def _build(self, name: str) -> BackendAdapter | None:
+        if name in self._built or name in self._failed:
+            return self._built.get(name)
+        factory = _adapter_factories().get(name)
+        if factory is None:
+            return None
+        try:
+            self._built[name] = factory(self._registry)
+        except Exception as exc:  # any failure: dispatch blocks with this reason
+            self._failed[name] = f"{type(exc).__name__}: {exc}"
+        return self._built.get(name)
 
     def unavailable(self, name: str) -> str | None:
         """Why `name` could not be built, if it could not."""
-        self._load()
+        self._build(name)
         return self._failed.get(name)
 
-    def _load(self) -> dict[str, BackendAdapter]:
-        if self._built is None:
-            from agentic_pipeline.adapters import ClaudeAdapter, PiQwenAdapter
-
-            built: dict[str, BackendAdapter] = {}
-            for name, factory in (
-                ("qwen_local", PiQwenAdapter.from_registry),
-                ("claude_pro", ClaudeAdapter.from_registry),
-            ):
-                try:
-                    built[name] = factory(self._registry)  # type: ignore[arg-type]
-                except Exception as exc:  # any failure: dispatch blocks with this reason
-                    self._failed[name] = f"{type(exc).__name__}: {exc}"
-            self._built = built
-        return self._built
-
     def __getitem__(self, key: str) -> BackendAdapter:
-        return self._load()[key]
+        adapter = self._build(key)
+        if adapter is None:
+            raise KeyError(key)
+        return adapter
 
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._load())
+    def __iter__(self) -> Iterator[str]:  # builds everything; dispatch never iterates
+        return (name for name in _adapter_factories() if self._build(name) is not None)
 
     def __len__(self) -> int:
-        return len(self._load())
+        return sum(1 for _ in self)
 
 
 def _dispatcher_factory(root: Path, run_dir: Path) -> MakeDispatcher:
@@ -102,12 +113,16 @@ def _init(args: argparse.Namespace, run_dir: Path) -> int:
 def _status(args: argparse.Namespace, run_dir: Path) -> int:
     store = RunStore(run_dir)
     state = store.load()
-    # Read-only preview: what the next open would do (recovery runs on a copy).
+    active = store.is_locked()
+    # Read-only preview of what the next open would do (recovery runs on a copy). A
+    # live runner's marker and reservations are not a crash, so skip it while one runs.
     preview = copy.deepcopy(state)
-    try:
-        pending = recover(preview, JsonlProvenanceLog(store.provenance_dir, state.run_id))
-    except RunStateError as exc:
-        pending = [f"WILL REFUSE TO OPEN: {exc}"]
+    pending: list[str] = []
+    if not active:
+        try:
+            pending = recover(preview, JsonlProvenanceLog(store.provenance_dir, state.run_id))
+        except RunStateError as exc:
+            pending = [f"WILL REFUSE TO OPEN: {exc}"]
     try:
         check_policy(state, load_policy(args.root))
     except RunStateError as exc:
@@ -122,6 +137,8 @@ def _status(args: argparse.Namespace, run_dir: Path) -> int:
         print(f"entering: {state.entering}")
     print(f"budget:   consumed={state.ledger['consumed']} reserved={state.ledger['reserved']}")
     print(f"resumes:  {len(state.resumes)}")
+    if active:
+        print("runner:   active (recovery preview skipped)")
     if preview.status is not state.status or preview.current != state.current:
         why = f" ({preview.paused_reason})" if preview.paused_reason else ""
         print(f"on open:  {preview.status.value}{why} at {preview.current}")
@@ -169,19 +186,27 @@ def _resume(args: argparse.Namespace, run_dir: Path) -> int:
         state = store.load()
         check_policy(state, load_policy(args.root))
         log = JsonlProvenanceLog(store.provenance_dir, state.run_id)
-        was = state.status
         notes = recover(state, log)
         if notes:
             store.save(state)
-        if was is not Status.PAUSED:
-            if state.status is Status.PAUSED:
-                print(
-                    f"ERROR: run was {was.value}; recovery has now paused it "
-                    f"({state.paused_reason}). Review `run status`, then resume again.",
-                    file=sys.stderr,
-                )
-            else:
-                print(f"ERROR: run is {state.status.value}, not paused", file=sys.stderr)
+            print(
+                f"ERROR: recovery changed this run; now {state.status.value} "
+                f"({state.paused_reason}). Review these, then resume again:",
+                file=sys.stderr,
+            )
+            for note in notes:
+                print(f"  - {note}", file=sys.stderr)
+            return 1
+        if state.status is not Status.PAUSED:
+            print(f"ERROR: run is {state.status.value}, not paused", file=sys.stderr)
+            return 1
+        if (state.paused_reason or "").startswith("budget_exhausted"):
+            print(
+                f"ERROR: {state.paused_reason}. Resuming would retry the same exhausted "
+                "edge. It needs a *_spent route chosen by a deterministic handler, or a "
+                "human decision at H1.",
+                file=sys.stderr,
+            )
             return 1
         unresolved = verify_provenance_chain(log.path).unresolved_calls if log.path.exists() else {}
         print(f"run {state.run_id} is paused at {state.current}: {state.paused_reason}")
@@ -201,6 +226,13 @@ def _resume(args: argparse.Namespace, run_dir: Path) -> int:
     return 0
 
 
+def _positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
 def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     run = sub.add_parser("run", help="drive one pipeline run")
     commands = run.add_subparsers(dest="run_command", required=True)
@@ -212,7 +244,7 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
     init = commands.add_parser("init", parents=[common], help="create a run at an entrypoint")
     init.add_argument("--entry", default="START")
     step = commands.add_parser("step", parents=[common], help="advance until blocked or stopped")
-    step.add_argument("--max-steps", type=int, default=100)
+    step.add_argument("--max-steps", type=_positive_int, default=100)
     commands.add_parser("status", parents=[common], help="show run state")
     res = commands.add_parser(
         "resume",

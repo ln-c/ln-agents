@@ -607,3 +607,27 @@ def test_malformed_policy_is_a_clean_error(tmp_path: Path, relative: str, conten
             load_policy(root)
         else:
             Rig(tmp_path, root).open()  # shape errors surface when the ledger is built
+
+
+def test_error_before_anything_is_spent_blocks_instead_of_pausing(rig: Rig) -> None:
+    runner = rig.at("G4", GROUNDING)
+
+    def broken_preflight() -> Any:
+        raise OSError("probe failed")
+
+    runner.dispatcher.preflight = broken_preflight
+    result = runner.step()
+    assert result.outcome is Outcome.BLOCKED and "unexpected_error: OSError" in result.detail
+    state = stored(rig)
+    assert (state.status, state.current, state.entering) == (Status.RUNNING, "G4", None)
+
+
+def test_error_after_spending_still_pauses(rig: Rig) -> None:
+    def explode() -> None:
+        raise ValueError("adapter bug after the call was logged")
+
+    rig.adapters["claude_pro"].side_effect = explode
+    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    result = runner.step()
+    assert result.outcome is Outcome.PAUSED
+    assert stored(rig).ledger["consumed"] == {"design": 1}

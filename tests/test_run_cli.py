@@ -136,7 +136,7 @@ def test_adapter_build_failures_are_explained(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(adapters.ClaudeAdapter, "from_registry", staticmethod(no_creds))
     monkeypatch.setattr(adapters.PiQwenAdapter, "from_registry", staticmethod(no_ollama))
     lazy = run_cli.LazyAdapters({})
-    assert list(lazy) == []
+    assert "claude_pro" not in lazy and "qwen_local" not in lazy
     assert lazy.unavailable("claude_pro") == "LookupError: credentials.json not found"
     assert lazy.unavailable("qwen_local") == "OSError: connection refused"
     assert lazy.unavailable("google_ai_pro") is None
@@ -152,7 +152,9 @@ def test_resume_refuses_a_crash_it_just_discovered(
     store.save(state)
 
     assert run("resume", "demo", "--by", "ln", "--reason", "x", runs_dir=tmp_path) == 1
-    assert "recovery has now paused it (crash_during_dispatch)" in capsys.readouterr().err
+    assert (
+        "recovery changed this run; now paused (crash_during_dispatch)" in capsys.readouterr().err
+    )
     assert store.load().status is Status.PAUSED  # recovered state was saved, not resumed
 
     assert run("resume", "demo", "--by", "ln", "--reason", "reviewed", runs_dir=tmp_path) == 0
@@ -215,7 +217,7 @@ def test_unexpected_adapter_errors_are_explained(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(adapters.ClaudeAdapter, "from_registry", staticmethod(broken))
     monkeypatch.setattr(adapters.PiQwenAdapter, "from_registry", staticmethod(broken))
     lazy = run_cli.LazyAdapters({})
-    assert list(lazy) == []
+    assert "claude_pro" not in lazy and "qwen_local" not in lazy
     assert lazy.unavailable("claude_pro") == "TypeError: missing field 'readiness'"
 
 
@@ -240,3 +242,88 @@ def test_dispatcher_readiness_uses_the_frozen_registry(
     )
     dispatcher.preflight()
     assert seen["registry"] is policy.registry
+
+
+# ── Third review round ───────────────────────────────────────────────────────
+
+
+def _paused(tmp_path: Path, reason: str) -> RunStore:
+    assert run("init", "demo", runs_dir=tmp_path) == 0
+    store = RunStore(tmp_path / "demo")
+    state = store.load()
+    state.pause(reason)
+    store.save(state)
+    return store
+
+
+def test_resume_refuses_when_recovery_changes_a_paused_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], human: None
+) -> None:
+    store = _paused(tmp_path, "provenance_unavailable: disk")
+    state = store.load()
+    state.ledger["reserved"] = {"design": 1}  # left behind by an interrupted step
+    store.save(state)
+
+    assert run("resume", "demo", "--by", "ln", "--reason", "x", runs_dir=tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "recovery changed this run" in err and "reserved units {'design': 1}" in err
+    assert store.load().ledger == {"consumed": {"design": 1}, "reserved": {}}
+    assert store.load().status is Status.PAUSED
+
+    assert run("resume", "demo", "--by", "ln", "--reason", "reviewed", runs_dir=tmp_path) == 0
+
+
+def test_resume_refuses_an_exhausted_budget(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], human: None
+) -> None:
+    store = _paused(tmp_path, "budget_exhausted: design (on_exhausted: H1)")
+    assert run("resume", "demo", "--by", "ln", "--reason", "x", runs_dir=tmp_path) == 1
+    assert "would retry the same exhausted edge" in capsys.readouterr().err
+    assert store.load().status is Status.PAUSED
+
+
+def test_status_does_not_report_a_live_runner_as_a_crash(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run("init", "demo", runs_dir=tmp_path) == 0
+    store = RunStore(tmp_path / "demo")
+    state = store.load()
+    state.entering = {"from": "START", "guard": "task_class_valid", "to": "G1", "after_seq": 1}
+    store.save(state)
+    live = RunStore(tmp_path / "demo")
+    live.acquire()  # another process is mid-step
+    try:
+        capsys.readouterr()
+        assert run("status", "demo", runs_dir=tmp_path) == 0
+        out = capsys.readouterr().out
+        assert "runner:   active" in out and "crash_during_dispatch" not in out
+    finally:
+        live.release()
+    assert run("status", "demo", runs_dir=tmp_path) == 0
+    assert "on open:  paused (crash_during_dispatch)" in capsys.readouterr().out
+
+
+def test_only_the_needed_adapter_is_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    built: list[str] = []
+
+    def factory(name: str) -> object:
+        def make(registry: object) -> object:
+            built.append(name)
+            return object()
+
+        return make
+
+    monkeypatch.setattr(
+        run_cli,
+        "_adapter_factories",
+        lambda: {"qwen_local": factory("qwen_local"), "claude_pro": factory("claude_pro")},
+    )
+    lazy = run_cli.LazyAdapters({})
+    assert "qwen_local" in lazy and lazy["qwen_local"] is not None
+    assert built == ["qwen_local"]  # the Claude adapter (and its auth probe) never ran
+
+
+@pytest.mark.parametrize("value", ["0", "-3"])
+def test_max_steps_must_be_positive(tmp_path: Path, value: str) -> None:
+    with pytest.raises(SystemExit):
+        run("step", "demo", "--max-steps", value, runs_dir=tmp_path)

@@ -121,13 +121,9 @@ class Runner:
         self.log, self.ledger, self.dispatcher = log, ledger, dispatcher
         self.state, self.guards = state, guards
         self.handlers = dict(DEFAULT_HANDLERS if handlers is None else handlers)
-        self.ledger.listener = self._persist_ledger
+        self.ledger.listener = lambda _ledger: self._save()
 
     # ── persistence ──────────────────────────────────────────────────────────
-
-    def _persist_ledger(self, ledger: BudgetLedger) -> None:
-        self.state.ledger = ledger.snapshot()
-        self.store.save(self.state)
 
     def _save(self) -> None:
         self.state.ledger = self.ledger.snapshot()
@@ -179,6 +175,7 @@ class Runner:
 
         self.guards.guard = guard
         context = {"run_id": st.run_id, "guard": guard}
+        ledger_before = self.ledger.snapshot()
         try:
             if edge.to in self.registry["stage_requirements"]:
                 self.dispatcher.dispatch_stage(node, guard, edge.to, context)
@@ -200,7 +197,11 @@ class Runner:
             return self._pause(f"{type(exc).__name__}: {exc}")
         except Exception as exc:
             st.entering = None
-            return self._pause(f"unexpected_error: {type(exc).__name__}: {exc}")
+            detail = f"unexpected_error: {type(exc).__name__}: {exc}"
+            if self._unchanged_since(ledger_before, after_seq):
+                self._try_save()  # nothing spent or logged: safe to retry
+                return StepResult(Outcome.BLOCKED, node, detail)
+            return self._pause(detail)
         finally:
             self.guards.guard = None
 
@@ -252,6 +253,13 @@ class Runner:
         if len(matches) > 1:
             raise _Blocked(f"{node} has {len(matches)} edges with guard {guard!r}")
         return matches[0]
+
+    def _unchanged_since(self, ledger_before: dict[str, dict[str, int]], seq: int) -> bool:
+        """True only if provably nothing was reserved, spent, or logged."""
+        try:
+            return self.ledger.snapshot() == ledger_before and self.log.count() == seq
+        except Exception:
+            return False
 
     def _finish(self, node: str) -> StepResult:
         try:

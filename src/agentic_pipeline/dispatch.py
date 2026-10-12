@@ -174,7 +174,8 @@ class Dispatcher:
         verdict = evaluate_stage(stage, self.preflight())
         if not verdict.eligible:
             raise DispatchBlocked(f"{stage}: " + "; ".join(verdict.reasons))
-        if missing := sorted(set(verdict.backends.values()) - self.adapters.keys()):
+        needed = sorted(set(verdict.backends.values()))
+        if missing := [b for b in needed if b not in self.adapters]:
             why = []
             for backend in missing:
                 reason = (

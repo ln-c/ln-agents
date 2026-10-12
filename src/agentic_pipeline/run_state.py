@@ -23,7 +23,6 @@ import fcntl
 import hashlib
 import json
 import os
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -35,15 +34,12 @@ import yaml
 
 from agentic_pipeline.fsutil import atomic_write_json
 from agentic_pipeline.graph import Graph, loads_yaml
-from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
+from agentic_pipeline.provenance import RUN_ID_RE, JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.schemas import ValidationError, validate
 
 STATE_FILE = "state.json"
 LOCK_FILE = "state.lock"
 PROVENANCE_DIR = "provenance"
-
-
-RUN_ID_RE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 
 
 def validate_run_id(run_id: str) -> str:
@@ -105,11 +101,6 @@ def load_policy(root: Path) -> PolicySnapshot:
         )
     except (OSError, KeyError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         raise RunStateError(f"cannot read graph or policy: {type(exc).__name__}: {exc}") from exc
-
-
-def policy_digests(root: Path) -> dict[str, str]:
-    """SHA-256 of the graph and every policy file, frozen into the run at start."""
-    return load_policy(root).digests
 
 
 @dataclass(slots=True)
@@ -187,6 +178,20 @@ class RunStore:
             os.close(fd)
             raise RunLocked(f"{self.run_root} is being run by another process") from exc
         self._lock_fd = fd
+
+    def is_locked(self) -> bool:
+        """True if another process holds the runner lock (checked without waiting)."""
+        lock = self.run_root / LOCK_FILE
+        if not lock.exists():
+            return False
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(fd)  # closing also drops the lock if we took it
+        return False
 
     def release(self) -> None:
         if self._lock_fd is not None:
