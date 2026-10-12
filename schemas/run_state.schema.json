@@ -3,7 +3,7 @@
   "$id": "run_state",
   "title": "Run state: where a run is, what budget it has spent, and who resumed it",
   "type": "object",
-  "required": ["version", "run_id", "status", "current", "entering", "paused_reason", "ledger", "policy", "resumes", "steps", "updated_at"],
+  "required": ["version", "run_id", "status", "current", "entering", "paused_reason", "pause_cause", "ledger", "policy", "resumes", "steps", "updated_at"],
   "additionalProperties": false,
   "properties": {
     "version": {"const": 1},
@@ -15,18 +15,27 @@
         {"type": "null"},
         {
           "type": "object",
-          "required": ["from", "guard", "to", "after_seq"],
+          "required": ["from", "guard", "to", "after_seq", "consumed_before"],
           "additionalProperties": false,
           "properties": {
             "from": {"type": "string", "minLength": 1},
             "guard": {"type": "string", "minLength": 1},
             "to": {"type": "string", "minLength": 1},
-            "after_seq": {"type": "integer", "minimum": 0}
+            "after_seq": {"type": "integer", "minimum": 0},
+            "consumed_before": {
+              "type": "object",
+              "additionalProperties": {"type": "integer", "minimum": 0}
+            }
           }
         }
       ]
     },
     "paused_reason": {"type": ["string", "null"]},
+    "pause_cause": {
+      "enum": [null, "crash_during_dispatch", "unresolved_invocation", "budget_exhausted",
+               "dispatch_paused", "provenance_unavailable", "state_save_failed",
+               "unexpected_error", "other"]
+    },
     "ledger": {
       "type": "object",
       "required": ["consumed", "reserved"],
@@ -63,11 +72,16 @@
   "allOf": [
     {
       "if": {"properties": {"status": {"const": "paused"}}},
-      "then": {"properties": {"paused_reason": {"type": "string", "minLength": 1}}}
+      "then": {
+        "properties": {
+          "paused_reason": {"type": "string", "minLength": 1},
+          "pause_cause": {"type": "string"}
+        }
+      }
     },
     {
       "if": {"properties": {"status": {"enum": ["running", "awaiting_human", "finished"]}}},
-      "then": {"properties": {"paused_reason": {"type": "null"}}}
+      "then": {"properties": {"paused_reason": {"type": "null"}, "pause_cause": {"type": "null"}}}
     }
   ]
 }

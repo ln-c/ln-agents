@@ -13,6 +13,8 @@ and charges its budget. Human states stop the run (`awaiting_human`); terminal
 states finish it. A step that raises after spending budget pauses the run, and a
 paused run only continues through `run_state.resume`.
 
+An edge whose budget is spent is replaced by the node's spent route to the budget's
+on_exhausted target (graph rule 9), so an exhausted retry escalates instead of stalling.
 Each transition writes a crash marker first, and its `enter` provenance event is
 the commit record. Recovery uses the two to tell a stage that finished from one
 that was interrupted: the first advances, the second pauses for a human. Resuming
@@ -31,9 +33,10 @@ from pathlib import Path
 from typing import Any
 
 from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
-from agentic_pipeline.graph import NO_EDGE_KINDS, Edge, Graph
+from agentic_pipeline.graph import NO_EDGE_KINDS, REPO_ROOT, Edge, Graph, spent_route
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.run_state import (
+    PauseCause,
     PolicySnapshot,
     RunState,
     RunStateError,
@@ -115,7 +118,9 @@ class Runner:
         state: RunState,
         handlers: Mapping[str, StateHandler] | None = None,
         budgets: Mapping[str, Any] | None = None,
+        root: Path | None = None,
     ) -> None:
+        self.root = root if root is not None else REPO_ROOT  # repo whose policy is frozen
         self.graph, self.registry, self.store = graph, registry, store
         self.budgets = dict((budgets or {}).get("budgets") or {})
         self.log, self.ledger, self.dispatcher = log, ledger, dispatcher
@@ -142,6 +147,16 @@ class Runner:
             return StepResult(Outcome.AWAITING_HUMAN, st.current)
         if st.status is Status.FINISHED:
             return StepResult(Outcome.FINISHED, st.current)
+        try:
+            drifted = load_policy(self.root).digests != st.policy
+        except RunStateError as exc:
+            return StepResult(Outcome.BLOCKED, st.current, f"cannot read policy: {exc}")
+        if drifted:
+            return StepResult(
+                Outcome.BLOCKED,
+                st.current,
+                "graph or policy changed during this session; the run will refuse to reopen",
+            )
 
         node = st.current
         if self.graph.states[node].get("kind") in NO_EDGE_KINDS:
@@ -151,7 +166,7 @@ class Runner:
             try:
                 self._save()
             except Exception as exc:
-                return self._pause(f"state_save_failed: {exc}")
+                return self._pause(f"state_save_failed: {exc}", PauseCause.STATE_SAVE_FAILED)
             return StepResult(Outcome.AWAITING_HUMAN, node, "human decision required")
 
         try:
@@ -162,11 +177,29 @@ class Runner:
         except Exception as exc:  # nothing spent or changed yet: retryable, not a pause
             return StepResult(Outcome.BLOCKED, node, f"handler_error: {type(exc).__name__}: {exc}")
 
+        return self._take(node, guard, edge)
+
+    def _take(
+        self, node: str, guard: str, edge: Edge, spent_budget: str | None = None
+    ) -> StepResult:
+        """Take one edge: crash marker, gated transition, commit record, save.
+
+        If the edge's budget is spent, the runner itself takes the node's spent route
+        to the budget's on_exhausted target (graph rule 9 guarantees one exists). That
+        is a deterministic policy route, not a model decision; with no route it pauses.
+        """
+        st = self.state
         try:
             after_seq = self.log.count()
         except Exception as exc:
             return StepResult(Outcome.BLOCKED, node, f"cannot read provenance log: {exc}")
-        st.entering = {"from": node, "guard": guard, "to": edge.to, "after_seq": after_seq}
+        st.entering = {
+            "from": node,
+            "guard": guard,
+            "to": edge.to,
+            "after_seq": after_seq,
+            "consumed_before": self.ledger.snapshot()["consumed"],
+        }
         try:
             self._save()  # the crash marker must be durable before anything can be spent
         except Exception as exc:
@@ -186,22 +219,30 @@ class Runner:
                     reservation.commit()
         except (DispatchBlocked, TransitionDenied) as exc:
             st.entering = None
-            spent = exc if isinstance(exc, BudgetExhausted) else exc.__cause__
-            if isinstance(spent, BudgetExhausted):
-                target = (self.budgets.get(spent.budget) or {}).get("on_exhausted", "unknown")
-                return self._pause(f"budget_exhausted: {spent.budget} (on_exhausted: {target})")
-            self._try_save()
+            exhausted = exc if isinstance(exc, BudgetExhausted) else exc.__cause__
+            if isinstance(exhausted, BudgetExhausted):
+                target = (self.budgets.get(exhausted.budget) or {}).get("on_exhausted")
+                route = spent_route(self.graph, node, target) if target else None
+                if route is not None and spent_budget is None:
+                    self.guards.guard = None
+                    return self._take(node, route.guard, route, spent_budget=exhausted.budget)
+                return self._pause(
+                    f"budget_exhausted: {exhausted.budget} (on_exhausted: {target}); "
+                    f"no spent route from {node}",
+                    PauseCause.BUDGET_EXHAUSTED,
+                )
+            self._try_save()  # if this fails, recovery sees an untouched marker and clears it
             return StepResult(Outcome.BLOCKED, node, str(exc))
         except RunPaused as exc:
             st.entering = None
-            return self._pause(f"{type(exc).__name__}: {exc}")
+            return self._pause(f"{type(exc).__name__}: {exc}", PauseCause.DISPATCH_PAUSED)
         except Exception as exc:
             st.entering = None
             detail = f"unexpected_error: {type(exc).__name__}: {exc}"
             if self._unchanged_since(ledger_before, after_seq):
                 self._try_save()  # nothing spent or logged: safe to retry
                 return StepResult(Outcome.BLOCKED, node, detail)
-            return self._pause(detail)
+            return self._pause(detail, PauseCause.UNEXPECTED_ERROR)
         finally:
             self.guards.guard = None
 
@@ -209,15 +250,16 @@ class Runner:
         try:
             self.log.append({"state": edge.to, "event": "enter"})
         except Exception as exc:
-            return self._pause(f"provenance_unavailable: {exc}")
+            return self._pause(f"provenance_unavailable: {exc}", PauseCause.PROVENANCE_UNAVAILABLE)
         st.current, st.entering = edge.to, None
         st.steps += 1
         try:
             self._save()
         except Exception as exc:
             # Disk still holds the marker; recovery finds the enter event and advances.
-            return self._pause(f"state_save_failed: {exc}")
-        return StepResult(Outcome.ADVANCED, edge.to, f"{node} --{guard}--> {edge.to}")
+            return self._pause(f"state_save_failed: {exc}", PauseCause.STATE_SAVE_FAILED)
+        how = f"budget {spent_budget} spent: " if spent_budget else ""
+        return StepResult(Outcome.ADVANCED, edge.to, f"{how}{node} --{guard}--> {edge.to}")
 
     def run(self, max_steps: int = 100) -> StepResult:
         """Step until the run stops advancing or `max_steps` is reached."""
@@ -267,16 +309,16 @@ class Runner:
             if not any(r["event"] == "terminal" and r["state"] == node for r in self.log.records()):
                 self.log.append({"state": node, "event": "terminal"})
         except Exception as exc:
-            return self._pause(f"provenance_unavailable: {exc}")
+            return self._pause(f"provenance_unavailable: {exc}", PauseCause.PROVENANCE_UNAVAILABLE)
         self.state.status = Status.FINISHED
         try:
             self._save()
         except Exception as exc:  # the terminal event is not repeated on the next attempt
-            return self._pause(f"state_save_failed: {exc}")
+            return self._pause(f"state_save_failed: {exc}", PauseCause.STATE_SAVE_FAILED)
         return StepResult(Outcome.FINISHED, node)
 
-    def _pause(self, reason: str) -> StepResult:
-        self.state.pause(reason)
+    def _pause(self, reason: str, cause: PauseCause) -> StepResult:
+        self.state.pause(reason, cause)
         self._try_save()  # if this fails, the saved crash marker still forces a pause
         return StepResult(Outcome.PAUSED, self.state.current, reason)
 
@@ -341,6 +383,7 @@ def open_run(
             state=state,
             handlers=handlers,
             budgets=policy.budgets,
+            root=root,
         )
     except BaseException:
         store.release()

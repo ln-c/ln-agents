@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
+import shutil
+import threading
 from pathlib import Path
 
 import pytest
 
 from agentic_pipeline import run_cli
 from agentic_pipeline.cli import main
-from agentic_pipeline.run_state import RunStore, Status
+from agentic_pipeline.run_state import PauseCause, RunStore, Status
 
 
 def run(*args: str, runs_dir: Path) -> int:
@@ -113,7 +117,13 @@ def test_status_previews_recovery(tmp_path: Path, capsys: pytest.CaptureFixture[
     assert run("init", "demo", runs_dir=tmp_path) == 0
     store = RunStore(tmp_path / "demo")
     state = store.load()
-    state.entering = {"from": "START", "guard": "task_class_valid", "to": "G1", "after_seq": 1}
+    state.entering = {
+        "from": "START",
+        "guard": "task_class_valid",
+        "to": "G1",
+        "after_seq": 1,
+        "consumed_before": {},
+    }
     state.ledger["reserved"] = {"design": 1}
     store.save(state)
     capsys.readouterr()
@@ -147,8 +157,15 @@ def test_resume_refuses_a_crash_it_just_discovered(
 ) -> None:
     assert run("init", "demo", runs_dir=tmp_path) == 0
     store = RunStore(tmp_path / "demo")
-    state = store.load()  # on disk: running, but a dispatch was in flight
-    state.entering = {"from": "START", "guard": "task_class_valid", "to": "G1", "after_seq": 1}
+    state = store.load()  # on disk: running, but a dispatch was in flight and reserved budget
+    state.entering = {
+        "from": "START",
+        "guard": "task_class_valid",
+        "to": "G1",
+        "after_seq": 1,
+        "consumed_before": {},
+    }
+    state.ledger["reserved"] = {"design": 1}
     store.save(state)
 
     assert run("resume", "demo", "--by", "ln", "--reason", "x", runs_dir=tmp_path) == 1
@@ -247,11 +264,11 @@ def test_dispatcher_readiness_uses_the_frozen_registry(
 # ── Third review round ───────────────────────────────────────────────────────
 
 
-def _paused(tmp_path: Path, reason: str) -> RunStore:
+def _paused(tmp_path: Path, reason: str, cause: PauseCause = PauseCause.OTHER) -> RunStore:
     assert run("init", "demo", runs_dir=tmp_path) == 0
     store = RunStore(tmp_path / "demo")
     state = store.load()
-    state.pause(reason)
+    state.pause(reason, cause)
     store.save(state)
     return store
 
@@ -276,10 +293,35 @@ def test_resume_refuses_when_recovery_changes_a_paused_run(
 def test_resume_refuses_an_exhausted_budget(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], human: None
 ) -> None:
-    store = _paused(tmp_path, "budget_exhausted: design (on_exhausted: H1)")
+    store = _paused(tmp_path, "budget gone", PauseCause.BUDGET_EXHAUSTED)
     assert run("resume", "demo", "--by", "ln", "--reason", "x", runs_dir=tmp_path) == 1
     assert "would retry the same exhausted edge" in capsys.readouterr().err
     assert store.load().status is Status.PAUSED
+
+
+def test_resume_decides_by_cause_not_reason_text(tmp_path: Path, human: None) -> None:
+    store = _paused(tmp_path, "budget_exhausted: looks like it, but is not")
+    assert run("resume", "demo", "--by", "ln", "--reason", "x", runs_dir=tmp_path) == 0
+    assert store.load().status is Status.RUNNING
+
+
+def test_copied_run_directory_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run("init", "demo", runs_dir=tmp_path) == 0
+    shutil.copytree(tmp_path / "demo", tmp_path / "copy")
+    assert run("status", "copy", runs_dir=tmp_path) == 1
+    assert "belongs to run 'demo', not 'copy'" in capsys.readouterr().err
+
+
+def test_acquire_waits_out_a_momentary_holder(tmp_path: Path) -> None:
+    assert run("init", "demo", runs_dir=tmp_path) == 0
+    store = RunStore(tmp_path / "demo")
+    fd = os.open(tmp_path / "demo" / "state.lock", os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    threading.Timer(0.2, os.close, args=(fd,)).start()  # e.g. `run status` probing
+    store.acquire()  # waits instead of failing
+    store.release()
 
 
 def test_status_does_not_report_a_live_runner_as_a_crash(
@@ -288,7 +330,14 @@ def test_status_does_not_report_a_live_runner_as_a_crash(
     assert run("init", "demo", runs_dir=tmp_path) == 0
     store = RunStore(tmp_path / "demo")
     state = store.load()
-    state.entering = {"from": "START", "guard": "task_class_valid", "to": "G1", "after_seq": 1}
+    state.entering = {
+        "from": "START",
+        "guard": "task_class_valid",
+        "to": "G1",
+        "after_seq": 1,
+        "consumed_before": {},
+    }
+    state.ledger["reserved"] = {"design": 1}  # the in-flight step had reserved budget
     store.save(state)
     live = RunStore(tmp_path / "demo")
     live.acquire()  # another process is mid-step

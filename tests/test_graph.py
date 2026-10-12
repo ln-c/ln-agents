@@ -8,6 +8,7 @@ from pathlib import Path
 from agentic_pipeline.graph import (
     Graph,
     load_yaml,
+    spent_route,
     validate,
     validate_repo,
 )
@@ -98,7 +99,46 @@ def test_budgeted_retry_needs_a_spent_route() -> None:
     routing = copy.deepcopy(routing)
     del routing["routes"]["local_spent"]
     errors = validate(Graph.from_mapping(mutated), budgets, routing)
-    assert "X: budget 'local' has no spent route to E3 (its on_exhausted target)" in errors
+    assert any(e.startswith("X: budget 'local' has no spent route to E3") for e in errors)
+
+
+def _rule9_errors(mutate) -> list[str]:  # noqa: ANN001
+    graph_dict = copy.deepcopy(load_yaml(ROOT / "pipeline" / "graph.yaml"))
+    mutate(graph_dict["states"])
+    budgets = load_yaml(ROOT / "policy" / "budgets.yaml")
+    routing = load_yaml(ROOT / "policy" / "routing.yaml")
+    return [e for e in validate(Graph.from_mapping(graph_dict), budgets, routing) if "spent" in e]
+
+
+def test_two_candidate_routes_need_exactly_one_spent_guard() -> None:
+    def rename(states: dict) -> None:  # A4 -> H1: design_spent and constraint_sources_conflict
+        for e in states["A4"]["edges"]:
+            if e["guard"] == "design_spent":
+                e["guard"] = "design_over"
+
+    assert any(
+        e.startswith("A4: budget 'design' has no spent route to H1") for e in _rule9_errors(rename)
+    )
+
+
+def test_a_budgeted_edge_is_not_a_spent_route() -> None:
+    def charge(states: dict) -> None:
+        for e in states["A2"]["edges"]:
+            if e["guard"] == "design_spent":
+                e["budget"] = "design"
+
+    assert any(
+        e.startswith("A2: budget 'design' has no spent route to H1") for e in _rule9_errors(charge)
+    )
+
+
+def test_spent_route_is_unique_for_every_budgeted_retry_in_the_real_graph() -> None:
+    graph = Graph.load(ROOT / "pipeline" / "graph.yaml")
+    budgets = load_yaml(ROOT / "policy" / "budgets.yaml")["budgets"]
+    for e in graph.edges:
+        if e.budget and e.src not in graph.human_states:
+            route = spent_route(graph, e.src, budgets[e.budget]["on_exhausted"])
+            assert route is not None and route.budget is None, e
 
 
 def test_human_states_are_exempt_from_spent_routes() -> None:

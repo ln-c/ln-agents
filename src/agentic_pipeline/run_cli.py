@@ -19,6 +19,7 @@ from agentic_pipeline.graph import REPO_ROOT
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.readiness import run_preflight
 from agentic_pipeline.run_state import (
+    PauseCause,
     PolicySnapshot,
     RunStateError,
     RunStore,
@@ -130,7 +131,7 @@ def _status(args: argparse.Namespace, run_dir: Path) -> int:
     print(f"run:      {state.run_id}")
     print(
         f"status:   {state.status.value}"
-        + (f" ({state.paused_reason})" if state.paused_reason else "")
+        + (f" [{state.pause_cause.value}] ({state.paused_reason})" if state.pause_cause else "")
     )
     print(f"at:       {state.current}   steps: {state.steps}")
     if state.entering:
@@ -200,11 +201,10 @@ def _resume(args: argparse.Namespace, run_dir: Path) -> int:
         if state.status is not Status.PAUSED:
             print(f"ERROR: run is {state.status.value}, not paused", file=sys.stderr)
             return 1
-        if (state.paused_reason or "").startswith("budget_exhausted"):
+        if state.pause_cause is PauseCause.BUDGET_EXHAUSTED:
             print(
                 f"ERROR: {state.paused_reason}. Resuming would retry the same exhausted "
-                "edge. It needs a *_spent route chosen by a deterministic handler, or a "
-                "human decision at H1.",
+                "edge; the graph needs a spent route (rule 9) or a new run.",
                 file=sys.stderr,
             )
             return 1
@@ -260,9 +260,6 @@ def run_command(args: argparse.Namespace) -> int:
     try:
         run_dir = args.runs_dir / validate_run_id(args.run_id)
         return handler(args, run_dir)
-    except RunStateError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    except ValueError as exc:  # invalid run id etc.
+    except (RunStateError, ValueError) as exc:  # ValueError: e.g. an invalid run id
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

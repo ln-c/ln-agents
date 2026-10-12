@@ -23,6 +23,7 @@ import fcntl
 import hashlib
 import json
 import os
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -40,6 +41,7 @@ from agentic_pipeline.schemas import ValidationError, validate
 STATE_FILE = "state.json"
 LOCK_FILE = "state.lock"
 PROVENANCE_DIR = "provenance"
+LOCK_WAIT_SECONDS = 1.0
 
 
 def validate_run_id(run_id: str) -> str:
@@ -59,6 +61,19 @@ class RunLocked(RunStateError):
 
 class PolicyDrift(RunStateError):
     """Graph or policy files changed since the run started."""
+
+
+class PauseCause(StrEnum):
+    """Why a run paused; resume decisions use this, never the free-text reason."""
+
+    CRASH_DURING_DISPATCH = "crash_during_dispatch"
+    UNRESOLVED_INVOCATION = "unresolved_invocation"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    DISPATCH_PAUSED = "dispatch_paused"  # quota, auth, or adapter failure after spending
+    PROVENANCE_UNAVAILABLE = "provenance_unavailable"
+    STATE_SAVE_FAILED = "state_save_failed"
+    UNEXPECTED_ERROR = "unexpected_error"
+    OTHER = "other"
 
 
 class Status(StrEnum):
@@ -108,8 +123,10 @@ class RunState:
     run_id: str
     current: str
     status: Status = Status.RUNNING
-    entering: dict[str, Any] | None = None  # crash marker: from, guard, to, after_seq
+    # crash marker: from, guard, to, after_seq, consumed_before
+    entering: dict[str, Any] | None = None
     paused_reason: str | None = None
+    pause_cause: PauseCause | None = None
     ledger: dict[str, dict[str, int]] = field(
         default_factory=lambda: {"consumed": {}, "reserved": {}}
     )
@@ -126,6 +143,7 @@ class RunState:
             "current": self.current,
             "entering": self.entering,
             "paused_reason": self.paused_reason,
+            "pause_cause": self.pause_cause.value if self.pause_cause else None,
             "ledger": self.ledger,
             "policy": self.policy,
             "resumes": self.resumes,
@@ -141,6 +159,7 @@ class RunState:
             status=Status(doc["status"]),
             entering=dict(doc["entering"]) if doc["entering"] else None,
             paused_reason=doc["paused_reason"],
+            pause_cause=PauseCause(doc["pause_cause"]) if doc["pause_cause"] else None,
             ledger={k: dict(v) for k, v in doc["ledger"].items()},
             policy=dict(doc["policy"]),
             resumes=list(doc["resumes"]),
@@ -148,9 +167,10 @@ class RunState:
             updated_at=doc["updated_at"],
         )
 
-    def pause(self, reason: str) -> None:
+    def pause(self, reason: str, cause: PauseCause = PauseCause.OTHER) -> None:
         self.status = Status.PAUSED
         self.paused_reason = reason
+        self.pause_cause = cause
 
 
 class RunStore:
@@ -168,19 +188,31 @@ class RunStore:
     def exists(self) -> bool:
         return self.path.is_file()
 
-    def acquire(self) -> None:
-        """Take the single-runner lock; raises RunLocked if another process holds it."""
+    def acquire(self, wait: float = LOCK_WAIT_SECONDS) -> None:
+        """Take the single-runner lock; raises RunLocked if it is still held after `wait`.
+
+        The short wait rides out momentary holders such as `run status` probing it.
+        """
         self.run_root.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.run_root / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            os.close(fd)
-            raise RunLocked(f"{self.run_root} is being run by another process") from exc
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    raise RunLocked(f"{self.run_root} is being run by another process") from exc
+                time.sleep(0.05)
         self._lock_fd = fd
 
     def is_locked(self) -> bool:
-        """True if another process holds the runner lock (checked without waiting)."""
+        """True if another process holds the runner lock.
+
+        Probing takes the lock for an instant; acquire() waits briefly, so a runner
+        starting at the same moment is not refused.
+        """
         lock = self.run_root / LOCK_FILE
         if not lock.exists():
             return False
@@ -209,6 +241,11 @@ class RunStore:
             validate("run_state", doc)
         except ValidationError as exc:
             raise RunStateError(f"invalid run state: {exc.message}") from exc
+        if doc["run_id"] != self.run_root.name:
+            raise RunStateError(
+                f"{self.path} belongs to run {doc['run_id']!r}, not {self.run_root.name!r}; "
+                "copied or renamed run directories are refused"
+            )
         return RunState.from_dict(doc)
 
     def save(self, state: RunState) -> None:
@@ -264,19 +301,28 @@ def recover(state: RunState, log: JsonlProvenanceLog) -> list[str]:
             r["event"] == "enter" and r["state"] == marker["to"]
             for r in log.records(marker["after_seq"])
         )
+        untouched = (
+            not reserved
+            and not log.records(marker["after_seq"])
+            and state.ledger["consumed"] == marker["consumed_before"]
+        )
         if committed:
             state.current = marker["to"]
             state.steps += 1
             notes.append(f"transition {marker['from']} -> {marker['to']} had completed; advanced")
+        elif untouched:
+            # Nothing was reserved, spent, or logged after the marker: a stale marker
+            # (e.g. a blocked step whose cleanup save failed), not a crash.
+            notes.append(f"stale marker {marker['from']} -> {marker['to']} cleared; nothing ran")
         else:
             notes.append(f"transition {marker['from']} -> {marker['to']} did not complete")
             if state.status is Status.RUNNING:
-                state.pause("crash_during_dispatch")
+                state.pause("crash_during_dispatch", PauseCause.CRASH_DURING_DISPATCH)
     elif reserved and state.status is Status.RUNNING:
-        state.pause("crash_during_dispatch")
+        state.pause("crash_during_dispatch", PauseCause.CRASH_DURING_DISPATCH)
 
     if report is not None and report.unresolved and state.status is Status.RUNNING:
-        state.pause("unresolved_invocation")
+        state.pause("unresolved_invocation", PauseCause.UNRESOLVED_INVOCATION)
         notes.append(f"model calls with no recorded outcome: {report.unresolved}")
     return notes
 
@@ -326,4 +372,5 @@ def resume(state: RunState, log: JsonlProvenanceLog, by: str, reason: str) -> No
     )
     state.status = Status.RUNNING
     state.paused_reason = None
+    state.pause_cause = None
     state.entering = None

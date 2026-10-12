@@ -15,6 +15,7 @@ from test_dispatch import DATA_CLASSES, GRAPH, REGISTRY, FakeAdapter, report, se
 from agentic_pipeline.dispatch import Dispatcher
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.run_state import (
+    PauseCause,
     PolicyDrift,
     PolicySnapshot,
     RunLocked,
@@ -40,7 +41,7 @@ GROUNDING: dict[str, StateHandler] = {
 class Rig:
     def __init__(self, tmp_path: Path, root: Path = ROOT) -> None:
         self.root = root
-        self.run_dir = tmp_path / "run"
+        self.run_dir = tmp_path / RUN_ID  # state.run_id must match the directory
         self.adapters = {b: FakeAdapter() for b in ("claude_pro", "google_ai_pro", "qwen_local")}
         self.unready: tuple[str, ...] = ()
         seed(self.run_dir, PRE_MODEL)
@@ -252,7 +253,13 @@ def test_marker_and_reservation_are_durable_before_any_model_call(rig: Rig) -> N
     assert runner.step().outcome is Outcome.ADVANCED
     # While the adapter was running: marker set, unit already spent on disk.
     assert seen[0] == {
-        "entering": {"from": "A2", "guard": "blocking_flaw", "to": "A1", "after_seq": 1},
+        "entering": {
+            "from": "A2",
+            "guard": "blocking_flaw",
+            "to": "A1",
+            "after_seq": 1,
+            "consumed_before": {},
+        },
         "ledger": {"consumed": {"design": 1}, "reserved": {}},
     }
     final = stored(rig)
@@ -371,6 +378,7 @@ def crash_after_model_call(rig: Rig) -> None:
         "guard": "blocking_flaw",
         "to": "A1",
         "after_seq": rig.log.count(),
+        "consumed_before": {},
     }
     runner.state.ledger = {"consumed": {}, "reserved": {"design": 1}}
     runner.store.save(runner.state)
@@ -505,6 +513,7 @@ def test_crash_after_enter_event_recovers_forward(rig: Rig) -> None:
         "guard": "always",
         "to": "A1",
         "after_seq": rig.log.count(),
+        "consumed_before": {},
     }
     runner.store.save(runner.state)
     rig.log.append({"state": "A1", "event": "enter"})
@@ -521,7 +530,9 @@ def test_older_enter_for_the_same_target_does_not_count(rig: Rig) -> None:
         "guard": "always",
         "to": "A1",
         "after_seq": rig.log.count(),
+        "consumed_before": {},
     }
+    runner.state.ledger = {"consumed": {}, "reserved": {"design": 1}}  # work had started
     runner.store.save(runner.state)
     runner.close()
     state = rig.open().state
@@ -568,24 +579,70 @@ def test_terminal_event_is_not_duplicated_after_a_failed_save(rig: Rig) -> None:
 # ── Second review round ──────────────────────────────────────────────────────
 
 
-def test_spent_budget_pauses_with_its_escalation_target(rig: Rig) -> None:
+def test_spent_budget_takes_the_spent_route(rig: Rig) -> None:
     runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
     runner.ledger.consumed = {"design": 2}  # max_retries for design is 2
     runner._save()
     result = runner.step()
-    assert result.outcome is Outcome.PAUSED
-    assert result.detail == "budget_exhausted: design (on_exhausted: H1)"
+    assert result.outcome is Outcome.ADVANCED
+    assert result.detail == "budget design spent: A2 --design_spent--> H1"
     state = stored(rig)
-    assert (state.current, state.entering) == ("A2", None)
+    assert (state.current, state.entering, state.status) == ("H1", None, Status.RUNNING)
+    assert state.ledger["consumed"] == {"design": 2}  # nothing more spent
     assert not rig.adapters["claude_pro"].grants
+    assert runner.step().outcome is Outcome.AWAITING_HUMAN
 
 
-def test_spent_budget_on_a_non_model_edge_also_pauses(rig: Rig) -> None:
+def test_spent_budget_on_a_non_model_edge_takes_its_route(rig: Rig) -> None:
     runner = rig.at("X", {"X": lambda ctx: "infra_rerun_e2"})
     runner.ledger.consumed = {"infra": 2}
     runner._save()
     result = runner.step()
-    assert result.outcome is Outcome.PAUSED and result.detail.startswith("budget_exhausted: infra")
+    assert (result.outcome, result.node) == (Outcome.ADVANCED, "H1")
+    assert result.detail == "budget infra spent: X --unknown_or_spent--> H1"
+
+
+def test_spent_budget_without_a_route_pauses_with_a_typed_cause(rig: Rig) -> None:
+    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner.budgets["design"] = {**runner.budgets["design"], "on_exhausted": "B2"}  # no A2->B2
+    runner.ledger.consumed = {"design": 2}
+    runner._save()
+    result = runner.step()
+    assert result.outcome is Outcome.PAUSED and "no spent route from A2" in result.detail
+    assert stored(rig).pause_cause is PauseCause.BUDGET_EXHAUSTED
+
+
+def test_pauses_record_their_cause(rig: Rig) -> None:
+    rig.adapters["claude_pro"].status = "quota_exhausted"
+    rig.at("A2", {"A2": lambda ctx: "blocking_flaw"}).step()
+    assert stored(rig).pause_cause is PauseCause.DISPATCH_PAUSED
+
+
+def test_stale_marker_is_cleared_without_pausing(rig: Rig) -> None:
+    runner = rig.at("G4")
+    runner.state.entering = {
+        "from": "G4",
+        "guard": "always",
+        "to": "A1",
+        "after_seq": rig.log.count(),
+        "consumed_before": {},
+    }  # e.g. a blocked step whose cleanup save failed: nothing ran
+    runner.store.save(runner.state)
+    runner.close()
+    state = rig.open().state
+    assert (state.status, state.current, state.entering) == (Status.RUNNING, "G4", None)
+
+
+def test_policy_edit_mid_session_blocks_the_next_step(tmp_path: Path) -> None:
+    root = policy_copy(tmp_path)
+    rig = Rig(tmp_path, root)
+    runner = rig.open(GROUNDING)
+    assert runner.step().outcome is Outcome.ADVANCED
+    weights = root / "policy" / "weights.yaml"
+    weights.write_text(weights.read_text() + "\n# edited mid-run\n")
+    result = runner.step()
+    assert result.outcome is Outcome.BLOCKED and "changed during this session" in result.detail
+    assert stored(rig).current == "G1"
 
 
 @pytest.mark.parametrize(
