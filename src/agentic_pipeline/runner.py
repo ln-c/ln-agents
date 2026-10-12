@@ -13,9 +13,12 @@ and charges its budget. Human states stop the run (`awaiting_human`); terminal
 states finish it. A step that raises after spending budget pauses the run, and a
 paused run only continues through `run_state.resume`.
 
-Handlers must be idempotent: a crash after a handler ran but before the new state
-was saved re-runs it. Resuming re-enters the edge that was in flight, so a budgeted
-edge is charged again.
+Each transition writes a crash marker first, and its `enter` provenance event is
+the commit record. Recovery uses the two to tell a stage that finished from one
+that was interrupted: the first advances, the second pauses for a human. Resuming
+an interrupted transition re-enters its edge, so a budgeted edge is charged again.
+Handlers must be idempotent: a crash after a handler ran but before the marker was
+written re-runs it.
 """
 
 from __future__ import annotations
@@ -28,15 +31,16 @@ from pathlib import Path
 from typing import Any
 
 from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
-from agentic_pipeline.graph import NO_EDGE_KINDS, Edge, Graph, load_yaml
+from agentic_pipeline.graph import NO_EDGE_KINDS, Edge, Graph
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.run_state import (
+    PolicySnapshot,
     RunState,
     RunStateError,
     RunStore,
     Status,
     check_policy,
-    policy_digests,
+    load_policy,
     recover,
     validate_run_id,
 )
@@ -87,7 +91,9 @@ class _Blocked(Exception):
     pass
 
 
-MakeDispatcher = Callable[[JsonlProvenanceLog, BudgetLedger, ChosenGuard], Dispatcher]
+MakeDispatcher = Callable[
+    [PolicySnapshot, JsonlProvenanceLog, BudgetLedger, ChosenGuard], Dispatcher
+]
 
 
 class Runner:
@@ -139,7 +145,10 @@ class Runner:
             return self._finish(node)
         if node in self.graph.human_states:
             st.status = Status.AWAITING_HUMAN
-            self._save()
+            try:
+                self._save()
+            except Exception as exc:
+                return self._pause(f"state_save_failed: {exc}")
             return StepResult(Outcome.AWAITING_HUMAN, node, "human decision required")
 
         try:
@@ -150,7 +159,11 @@ class Runner:
         except Exception as exc:
             return self._pause(f"handler_error: {type(exc).__name__}: {exc}")
 
-        st.entering = {"from": node, "guard": guard, "to": edge.to}
+        try:
+            after_seq = self.log.count()
+        except Exception as exc:
+            return StepResult(Outcome.BLOCKED, node, f"cannot read provenance log: {exc}")
+        st.entering = {"from": node, "guard": guard, "to": edge.to, "after_seq": after_seq}
         try:
             self._save()  # the crash marker must be durable before anything can be spent
         except Exception as exc:
@@ -180,13 +193,18 @@ class Runner:
         finally:
             self.guards.guard = None
 
-        st.current, st.entering = edge.to, None
-        st.steps += 1
-        self._save()
+        # Commit record. If it cannot be written the marker stays set and the run pauses.
         try:
             self.log.append({"state": edge.to, "event": "enter"})
         except Exception as exc:
             return self._pause(f"provenance_unavailable: {exc}")
+        st.current, st.entering = edge.to, None
+        st.steps += 1
+        try:
+            self._save()
+        except Exception as exc:
+            # Disk still holds the marker; recovery finds the enter event and advances.
+            return self._pause(f"state_save_failed: {exc}")
         return StepResult(Outcome.ADVANCED, edge.to, f"{node} --{guard}--> {edge.to}")
 
     def run(self, max_steps: int = 100) -> StepResult:
@@ -226,11 +244,16 @@ class Runner:
 
     def _finish(self, node: str) -> StepResult:
         try:
-            self.log.append({"state": node, "event": "terminal"})
+            tail = self.log.records(max(self.log.count() - 1, 0))
+            if not any(r["event"] == "terminal" and r["state"] == node for r in tail):
+                self.log.append({"state": node, "event": "terminal"})
         except Exception as exc:
             return self._pause(f"provenance_unavailable: {exc}")
         self.state.status = Status.FINISHED
-        self._save()
+        try:
+            self._save()
+        except Exception as exc:  # the terminal event is not repeated on the next attempt
+            return self._pause(f"state_save_failed: {exc}")
         return StepResult(Outcome.FINISHED, node)
 
     def _pause(self, reason: str) -> StepResult:
@@ -249,14 +272,14 @@ class Runner:
 def init_run(root: Path, run_dir: Path, run_id: str, entry: str) -> RunState:
     """Create a new run at an entrypoint, freezing graph and policy digests."""
     validate_run_id(run_id)
-    graph = Graph.load(root / "pipeline" / "graph.yaml")
-    if entry not in graph.entrypoints:
-        raise RunStateError(f"{entry!r} is not an entrypoint {graph.entrypoints}")
+    policy = load_policy(root)
+    if entry not in policy.graph.entrypoints:
+        raise RunStateError(f"{entry!r} is not an entrypoint {policy.graph.entrypoints}")
     store = RunStore(run_dir)
     store.acquire()
     try:
         store.provenance_dir.mkdir(parents=True, exist_ok=True)
-        state = RunState(run_id=run_id, current=entry, policy=policy_digests(root))
+        state = RunState(run_id=run_id, current=entry, policy=policy.digests)
         store.create(state)
         JsonlProvenanceLog(store.provenance_dir, run_id).append({"state": entry, "event": "enter"})
     finally:
@@ -275,20 +298,19 @@ def open_run(
     store.acquire()
     try:
         state = store.load()
-        check_policy(state, root)
-        graph = Graph.load(root / "pipeline" / "graph.yaml")
-        registry = load_yaml(root / "policy" / "model_registry.yaml")
-        ledger = BudgetLedger.from_policy(load_yaml(root / "policy" / "budgets.yaml"))
+        policy = load_policy(root)  # one read; everything below uses these checked bytes
+        check_policy(state, policy)
+        ledger = BudgetLedger.from_policy(policy.budgets)
         store.provenance_dir.mkdir(parents=True, exist_ok=True)
         log = JsonlProvenanceLog(store.provenance_dir, state.run_id)
         if recover(state, log):
             store.save(state)
         ledger.consumed = dict(state.ledger["consumed"])
         guards = ChosenGuard()
-        dispatcher = make_dispatcher(log, ledger, guards)
+        dispatcher = make_dispatcher(policy, log, ledger, guards)
         return Runner(
-            graph=graph,
-            registry=registry,
+            graph=policy.graph,
+            registry=policy.registry,
             store=store,
             log=log,
             ledger=ledger,

@@ -16,6 +16,7 @@ from agentic_pipeline.dispatch import Dispatcher
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.run_state import (
     PolicyDrift,
+    PolicySnapshot,
     RunLocked,
     RunState,
     RunStateError,
@@ -46,7 +47,13 @@ class Rig:
         init_run(root, self.run_dir, RUN_ID, "START")
 
     def open(self, handlers: Mapping[str, StateHandler] | None = None) -> Runner:
-        def make(log: JsonlProvenanceLog, ledger: BudgetLedger, guards: ChosenGuard) -> Dispatcher:
+        def make(
+            policy: PolicySnapshot,
+            log: JsonlProvenanceLog,
+            ledger: BudgetLedger,
+            guards: ChosenGuard,
+        ) -> Dispatcher:
+            self.policy_seen = policy
             return Dispatcher(
                 graph=GRAPH,
                 registry=REGISTRY,
@@ -239,7 +246,7 @@ def test_marker_and_reservation_are_durable_before_any_model_call(rig: Rig) -> N
     assert runner.step().outcome is Outcome.ADVANCED
     # While the adapter was running: marker set, unit already spent on disk.
     assert seen[0] == {
-        "entering": {"from": "A2", "guard": "blocking_flaw", "to": "A1"},
+        "entering": {"from": "A2", "guard": "blocking_flaw", "to": "A1", "after_seq": 1},
         "ledger": {"consumed": {"design": 1}, "reserved": {}},
     }
     final = stored(rig)
@@ -351,7 +358,12 @@ def test_resume_needs_a_paused_run_and_a_named_human(rig: Rig) -> None:
 def crash_after_model_call(rig: Rig) -> None:
     """Leave the run as a process killed right after logging a model_call would."""
     runner = rig.at("A2")
-    runner.state.entering = {"from": "A2", "guard": "blocking_flaw", "to": "A1"}
+    runner.state.entering = {
+        "from": "A2",
+        "guard": "blocking_flaw",
+        "to": "A1",
+        "after_seq": rig.log.count(),
+    }
     runner.state.ledger = {"consumed": {}, "reserved": {"design": 1}}
     runner.store.save(runner.state)
     rig.log.append(
@@ -445,3 +457,100 @@ def test_changed_policy_refuses_to_continue(
     path.write_text(mutate(path.read_text()))
     with pytest.raises(PolicyDrift, match=relative):
         rig.open()
+
+
+# ── Review fixes: commit record, guarded saves, policy snapshot ──────────────
+
+
+def test_dispatcher_gets_the_policy_that_was_checked(rig: Rig) -> None:
+    runner = rig.open()
+    assert rig.policy_seen.digests == runner.state.policy
+    assert runner.registry is rig.policy_seen.registry and runner.graph is rig.policy_seen.graph
+
+
+def test_save_failure_after_a_finished_stage_pauses_then_recovers_forward(rig: Rig) -> None:
+    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    real_save = runner.store.save
+
+    def fail_final(state: RunState) -> None:
+        if state.current == "A1":  # only the post-commit save fails
+            raise OSError("fsync failed")
+        real_save(state)
+
+    runner.store.save = fail_final  # type: ignore[method-assign]
+    result = runner.step()
+    assert result.outcome is Outcome.PAUSED and "state_save_failed" in result.detail
+    calls = len(rig.adapters["claude_pro"].grants)
+    runner.close()
+
+    reopened = rig.open()  # disk: marker still set, enter event logged
+    state = reopened.state
+    assert (state.status, state.current, state.entering) == (Status.RUNNING, "A1", None)
+    assert state.ledger["consumed"] == {"design": 1}  # charged once, not twice
+    assert len(rig.adapters["claude_pro"].grants) == calls  # nothing re-run
+
+
+def test_crash_after_enter_event_recovers_forward(rig: Rig) -> None:
+    runner = rig.at("G4")
+    runner.state.entering = {
+        "from": "G4",
+        "guard": "always",
+        "to": "A1",
+        "after_seq": rig.log.count(),
+    }
+    runner.store.save(runner.state)
+    rig.log.append({"state": "A1", "event": "enter"})
+    runner.close()
+    state = rig.open().state
+    assert (state.status, state.current, state.steps) == (Status.RUNNING, "A1", 1)
+
+
+def test_older_enter_for_the_same_target_does_not_count(rig: Rig) -> None:
+    rig.log.append({"state": "A1", "event": "enter"})  # an earlier visit
+    runner = rig.at("G4")
+    runner.state.entering = {
+        "from": "G4",
+        "guard": "always",
+        "to": "A1",
+        "after_seq": rig.log.count(),
+    }
+    runner.store.save(runner.state)
+    runner.close()
+    state = rig.open().state
+    assert (state.status, state.paused_reason) == (Status.PAUSED, "crash_during_dispatch")
+
+
+def test_unwritable_enter_event_pauses_without_advancing(rig: Rig) -> None:
+    runner = rig.at("X", {"X": lambda ctx: "infra_rerun_e2"})
+    real_append = runner.log.append
+
+    def refuse_enter(event: Mapping[str, Any]) -> dict[str, Any]:
+        if event.get("event") == "enter":
+            raise OSError("log volume read-only")
+        return real_append(event)
+
+    runner.log.append = refuse_enter  # type: ignore[method-assign]
+    result = runner.step()
+    assert result.outcome is Outcome.PAUSED and "provenance_unavailable" in result.detail
+    assert stored(rig).current == "X"
+
+
+def test_terminal_event_is_not_duplicated_after_a_failed_save(rig: Rig) -> None:
+    runner = rig.at("T-REJECTED")
+    real_save = runner.store.save
+
+    def fail_finished(state: RunState) -> None:
+        if state.status is Status.FINISHED:
+            raise OSError("disk full")
+        real_save(state)
+
+    runner.store.save = fail_finished  # type: ignore[method-assign]
+    assert runner.step().outcome is Outcome.PAUSED
+    runner.close()
+
+    store = RunStore(rig.run_dir)
+    state = store.load()
+    state.status, state.paused_reason = Status.RUNNING, None  # as a human resume would
+    store.save(state)
+    assert rig.open().step().outcome is Outcome.FINISHED
+    assert [e["event"] for e in rig.events()].count("terminal") == 1

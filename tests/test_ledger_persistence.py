@@ -65,16 +65,16 @@ def test_failed_commit_write_propagates_but_stays_spent() -> None:
     assert led.consumed == {"design": 1}  # memory says spent; disk still says reserved
 
 
-def test_failed_release_write_is_swallowed_and_marked_stale() -> None:
+def test_failed_release_write_is_swallowed_and_corrected_by_next_write() -> None:
     rec = Recorder()
     led = ledger(rec)
     reservation = led.reserve(EDGE)
     rec.fail = True
     reservation.release()  # must not raise inside error handlers
-    assert led.stale and led.reserved == {"design": 0}
+    assert led.reserved == {"design": 0}
     rec.fail = False
-    led.reserve(EDGE).release()
-    assert not led.stale
+    led.reserve(EDGE)
+    assert rec.snapshots[-1] == {"consumed": {}, "reserved": {"design": 1}}  # full rewrite
 
 
 def test_snapshot_omits_zero_counts() -> None:

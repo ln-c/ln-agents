@@ -168,7 +168,9 @@ class Dispatcher:
         if not verdict.eligible:
             raise DispatchBlocked(f"{stage}: " + "; ".join(verdict.reasons))
         if missing := sorted(set(verdict.backends.values()) - self.adapters.keys()):
-            raise DispatchBlocked(f"{stage}: no adapter for {missing}")
+            explain = getattr(self.adapters, "unavailable", None)
+            why = [f"{b}: {explain(b)}" if explain and explain(b) else b for b in missing]
+            raise DispatchBlocked(f"{stage}: no adapter for {why}")
         spec = self.registry["stage_requirements"][stage]
         ops = [op for _, op in operations({stage: spec})]
         profiles = self.registry["isolation_profiles"]

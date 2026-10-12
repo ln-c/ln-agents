@@ -93,7 +93,6 @@ class BudgetLedger:
     reserved: dict[str, int] = field(default_factory=dict)
     # Called with this ledger after every change so it can be written durably.
     listener: Callable[[BudgetLedger], None] | None = field(default=None, repr=False)
-    stale: bool = field(default=False, repr=False)  # a best-effort write failed
 
     def snapshot(self) -> dict[str, dict[str, int]]:
         return {
@@ -107,11 +106,10 @@ class BudgetLedger:
         try:
             self.listener(self)
         except Exception:
+            # A failed best-effort write leaves disk erring toward "spent"; the next
+            # reserve() rewrites the full snapshot and fails closed if it cannot.
             if not best_effort:
                 raise
-            self.stale = True
-        else:
-            self.stale = False
 
     @classmethod
     def from_policy(cls, budgets: Mapping[str, Any]) -> BudgetLedger:

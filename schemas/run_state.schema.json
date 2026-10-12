@@ -15,12 +15,13 @@
         {"type": "null"},
         {
           "type": "object",
-          "required": ["from", "guard", "to"],
+          "required": ["from", "guard", "to", "after_seq"],
           "additionalProperties": false,
           "properties": {
             "from": {"type": "string", "minLength": 1},
             "guard": {"type": "string", "minLength": 1},
-            "to": {"type": "string", "minLength": 1}
+            "to": {"type": "string", "minLength": 1},
+            "after_seq": {"type": "integer", "minimum": 0}
           }
         }
       ]

@@ -32,6 +32,10 @@ def load_yaml(path: Path) -> Any:
         return yaml.load(fh, Loader=_Loader)  # noqa: S506 - safe loader subclass
 
 
+def loads_yaml(data: bytes) -> Any:
+    return yaml.load(data, Loader=_Loader)  # noqa: S506 - safe loader subclass
+
+
 @dataclass(frozen=True, slots=True)
 class Edge:
     src: str

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from agentic_pipeline.fsutil import atomic_write_json
+from agentic_pipeline.graph import Graph, loads_yaml
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.schemas import ValidationError, validate
 
@@ -73,13 +74,40 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+POLICY_PARSED = ("policy/model_registry.yaml", "policy/budgets.yaml", "policy/data_classes.yaml")
+
+
+@dataclass(frozen=True, slots=True)
+class PolicySnapshot:
+    """Graph and policy as checked: digests and parsed documents come from the same bytes."""
+
+    digests: dict[str, str]
+    graph: Graph
+    registry: Mapping[str, Any]
+    budgets: Mapping[str, Any]
+    data_classes: Mapping[str, Any]
+
+
+def load_policy(root: Path) -> PolicySnapshot:
+    """Read the graph and every policy file once; hash and parse those exact bytes."""
+    files = [root / "pipeline" / "graph.yaml", *sorted((root / "policy").glob("*.yaml"))]
+    try:
+        raw = {p.relative_to(root).as_posix(): p.read_bytes() for p in files}
+        parsed = {rel: loads_yaml(raw[rel]) for rel in ("pipeline/graph.yaml", *POLICY_PARSED)}
+    except (OSError, KeyError) as exc:
+        raise RunStateError(f"cannot read graph or policy: {exc}") from exc
+    return PolicySnapshot(
+        digests={rel: "sha256:" + hashlib.sha256(data).hexdigest() for rel, data in raw.items()},
+        graph=Graph.from_mapping(parsed["pipeline/graph.yaml"]),
+        registry=parsed["policy/model_registry.yaml"],
+        budgets=parsed["policy/budgets.yaml"],
+        data_classes=parsed["policy/data_classes.yaml"],
+    )
+
+
 def policy_digests(root: Path) -> dict[str, str]:
     """SHA-256 of the graph and every policy file, frozen into the run at start."""
-    files = [root / "pipeline" / "graph.yaml", *sorted((root / "policy").glob("*.yaml"))]
-    return {
-        p.relative_to(root).as_posix(): "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in files
-    }
+    return load_policy(root).digests
 
 
 @dataclass(slots=True)
@@ -87,7 +115,7 @@ class RunState:
     run_id: str
     current: str
     status: Status = Status.RUNNING
-    entering: dict[str, str] | None = None
+    entering: dict[str, Any] | None = None  # crash marker: from, guard, to, after_seq
     paused_reason: str | None = None
     ledger: dict[str, dict[str, int]] = field(
         default_factory=lambda: {"consumed": {}, "reserved": {}}
@@ -191,8 +219,8 @@ class RunStore:
         self.save(state)
 
 
-def check_policy(state: RunState, root: Path) -> None:
-    now = policy_digests(root)
+def check_policy(state: RunState, policy: PolicySnapshot) -> None:
+    now = policy.digests
     if now != state.policy:
         changed = sorted(
             k for k in now.keys() | state.policy.keys() if now.get(k) != state.policy.get(k)
@@ -201,31 +229,48 @@ def check_policy(state: RunState, root: Path) -> None:
 
 
 def recover(state: RunState, log: JsonlProvenanceLog) -> list[str]:
-    """Apply fail-closed recovery in place; return notes describing what was changed."""
+    """Apply fail-closed recovery in place; return notes describing what was changed.
+
+    A transition is committed by its `enter` provenance event. If the crash marker
+    (`entering`) is still set but an `enter` for its target was logged after the
+    marker was written, the stage finished and the run advances; nothing is re-run.
+    Otherwise the run pauses, because model calls may already have happened.
+    """
     notes: list[str] = []
     if state.status is Status.FINISHED:
         return notes
+    report = verify_provenance_chain(log.path) if log.path.exists() else None
+    if report is not None and report.errors:
+        raise RunStateError(f"provenance chain does not verify: {report.errors[:3]}")
 
     reserved = {k: v for k, v in state.ledger["reserved"].items() if v}
-    if reserved or state.entering:
+    if reserved:
         for budget, count in reserved.items():
             state.ledger["consumed"][budget] = state.ledger["consumed"].get(budget, 0) + count
         state.ledger["reserved"] = {}
-        notes.append(
-            f"unfinished dispatch (reserved={reserved}, entering={state.entering}): "
-            "reserved units counted as spent"
-        )
-        state.entering = None
-        if state.status is Status.RUNNING:
-            state.pause("crash_during_dispatch")
+        notes.append(f"reserved units {reserved} counted as spent")
 
-    if log.path.exists():
-        report = verify_provenance_chain(log.path)
-        if report.errors:
-            raise RunStateError(f"provenance chain does not verify: {report.errors[:3]}")
-        if report.unresolved and state.status is Status.RUNNING:
-            state.pause("unresolved_invocation")
-            notes.append(f"model calls with no recorded outcome: {report.unresolved}")
+    marker = state.entering
+    if marker is not None:
+        state.entering = None
+        committed = any(
+            r["event"] == "enter" and r["state"] == marker["to"]
+            for r in log.records(marker["after_seq"])
+        )
+        if committed:
+            state.current = marker["to"]
+            state.steps += 1
+            notes.append(f"transition {marker['from']} -> {marker['to']} had completed; advanced")
+        else:
+            notes.append(f"transition {marker['from']} -> {marker['to']} did not complete")
+            if state.status is Status.RUNNING:
+                state.pause("crash_during_dispatch")
+    elif reserved and state.status is Status.RUNNING:
+        state.pause("crash_during_dispatch")
+
+    if report is not None and report.unresolved and state.status is Status.RUNNING:
+        state.pause("unresolved_invocation")
+        notes.append(f"model calls with no recorded outcome: {report.unresolved}")
     return notes
 
 

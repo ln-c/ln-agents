@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agentic_pipeline.fsutil import fsync_dir
 from agentic_pipeline.schemas import ValidationError, validate
 
 GENESIS_HASH = "sha256:" + "0" * 64
@@ -57,6 +58,21 @@ class JsonlProvenanceLog:
         self._clock = clock
         self._lock = threading.Lock()
 
+    def count(self) -> int:
+        """Number of records so far; the next append gets this seq."""
+        try:
+            return sum(1 for line in self.path.read_bytes().splitlines() if line.strip())
+        except FileNotFoundError:
+            return 0
+
+    def records(self, from_seq: int = 0) -> list[dict[str, Any]]:
+        """Records with seq >= from_seq (parsed, not verified; verify the chain first)."""
+        try:
+            lines = self.path.read_bytes().splitlines()
+        except FileNotFoundError:
+            return []
+        return [r for r in (json.loads(x) for x in lines if x.strip()) if r["seq"] >= from_seq]
+
     def append(self, event: Mapping[str, Any]) -> dict[str, Any]:
         """Append one event, assigning run_id, seq, timestamp, and hashes."""
         if clash := LOG_ASSIGNED & event.keys():
@@ -72,7 +88,7 @@ class JsonlProvenanceLog:
             finally:
                 os.close(fd)  # closing releases the flock
             if created:
-                _fsync_dir(self.path.parent)
+                fsync_dir(self.path.parent)
         return record
 
     def _next_record(self, fd: int, event: Mapping[str, Any]) -> dict[str, Any]:
@@ -107,14 +123,6 @@ def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
         view = view[os.write(fd, view) :]
-
-
-def _fsync_dir(directory: Path) -> None:
-    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 @dataclass(slots=True)

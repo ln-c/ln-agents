@@ -9,24 +9,27 @@ provenance chain, a second runner) is an error with exit 1.
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 from agentic_pipeline.dispatch import BackendAdapter, Dispatcher
-from agentic_pipeline.graph import REPO_ROOT, Graph, load_yaml
+from agentic_pipeline.graph import REPO_ROOT
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.readiness import run_preflight
 from agentic_pipeline.run_state import (
+    PolicySnapshot,
     RunStateError,
     RunStore,
     Status,
     check_policy,
+    load_policy,
     recover,
     resume,
     validate_run_id,
 )
-from agentic_pipeline.runner import ChosenGuard, Outcome, init_run, open_run
+from agentic_pipeline.runner import ChosenGuard, MakeDispatcher, Outcome, init_run, open_run
 from agentic_pipeline.transition import BudgetLedger
 
 DEFAULT_RUNS_DIR = REPO_ROOT / ".runs"
@@ -38,6 +41,12 @@ class LazyAdapters(Mapping[str, BackendAdapter]):
     def __init__(self, registry: Mapping[str, object]) -> None:
         self._registry = registry
         self._built: dict[str, BackendAdapter] | None = None
+        self._failed: dict[str, str] = {}
+
+    def unavailable(self, name: str) -> str | None:
+        """Why `name` could not be built, if it could not."""
+        self._load()
+        return self._failed.get(name)
 
     def _load(self) -> dict[str, BackendAdapter]:
         if self._built is None:
@@ -50,8 +59,8 @@ class LazyAdapters(Mapping[str, BackendAdapter]):
             ):
                 try:
                     built[name] = factory(self._registry)  # type: ignore[arg-type]
-                except (LookupError, OSError, ValueError, KeyError):
-                    continue  # missing backend: dispatch reports "no adapter"
+                except (LookupError, OSError, ValueError) as exc:
+                    self._failed[name] = f"{type(exc).__name__}: {exc}"
             self._built = built
         return self._built
 
@@ -65,21 +74,19 @@ class LazyAdapters(Mapping[str, BackendAdapter]):
         return len(self._load())
 
 
-def _dispatcher_factory(root: Path, run_dir: Path):  # noqa: ANN202
-    registry = load_yaml(root / "policy" / "model_registry.yaml")
-    graph = Graph.load(root / "pipeline" / "graph.yaml")
-    data_classes = load_yaml(root / "policy" / "data_classes.yaml")
-
-    def make(log: JsonlProvenanceLog, ledger: BudgetLedger, guards: ChosenGuard) -> Dispatcher:
+def _dispatcher_factory(root: Path, run_dir: Path) -> MakeDispatcher:
+    def make(
+        policy: PolicySnapshot, log: JsonlProvenanceLog, ledger: BudgetLedger, guards: ChosenGuard
+    ) -> Dispatcher:
         return Dispatcher(
-            graph=graph,
-            registry=registry,
+            graph=policy.graph,
+            registry=policy.registry,
             log=log,
             ledger=ledger,
-            adapters=LazyAdapters(registry),
+            adapters=LazyAdapters(policy.registry),
             preflight=lambda: run_preflight(root),
             run_root=run_dir,
-            data_classes=data_classes,
+            data_classes=policy.data_classes,
             guards=guards,
         )
 
@@ -93,7 +100,18 @@ def _init(args: argparse.Namespace, run_dir: Path) -> int:
 
 
 def _status(args: argparse.Namespace, run_dir: Path) -> int:
-    state = RunStore(run_dir).load()
+    store = RunStore(run_dir)
+    state = store.load()
+    # Read-only preview: what the next open would do (recovery runs on a copy).
+    preview = copy.deepcopy(state)
+    try:
+        pending = recover(preview, JsonlProvenanceLog(store.provenance_dir, state.run_id))
+    except RunStateError as exc:
+        pending = [f"WILL REFUSE TO OPEN: {exc}"]
+    try:
+        check_policy(state, load_policy(args.root))
+    except RunStateError as exc:
+        pending.append(f"WILL REFUSE TO OPEN: {exc}")
     print(f"run:      {state.run_id}")
     print(
         f"status:   {state.status.value}"
@@ -104,6 +122,11 @@ def _status(args: argparse.Namespace, run_dir: Path) -> int:
         print(f"entering: {state.entering}")
     print(f"budget:   consumed={state.ledger['consumed']} reserved={state.ledger['reserved']}")
     print(f"resumes:  {len(state.resumes)}")
+    if preview.status is not state.status or preview.current != state.current:
+        why = f" ({preview.paused_reason})" if preview.paused_reason else ""
+        print(f"on open:  {preview.status.value}{why} at {preview.current}")
+    for note in pending:
+        print(f"recovery: {note}")
     return 0
 
 
@@ -117,12 +140,28 @@ def _step(args: argparse.Namespace, run_dir: Path) -> int:
     return {Outcome.BLOCKED: 1, Outcome.PAUSED: 2}.get(result.outcome, 0)
 
 
+def _confirm_human(run_id: str) -> bool:
+    """Interim human check (until signed approvals): a real terminal, run id retyped.
+
+    This is a barrier against non-interactive callers such as a model's shell tool,
+    not authentication; anything that drives a terminal can still pass it.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("ERROR: resume must be run by a human at an interactive terminal", file=sys.stderr)
+        return False
+    typed = input(f"Type the run id ({run_id}) to confirm the resume: ").strip()
+    return typed == run_id
+
+
 def _resume(args: argparse.Namespace, run_dir: Path) -> int:
+    if not _confirm_human(args.run_id):
+        print("resume not confirmed; nothing changed", file=sys.stderr)
+        return 1
     store = RunStore(run_dir)
     store.acquire()
     try:
         state = store.load()
-        check_policy(state, args.root)
+        check_policy(state, load_policy(args.root))
         log = JsonlProvenanceLog(store.provenance_dir, state.run_id)
         recover(state, log)
         resume(state, log, args.by, args.reason)
@@ -148,7 +187,11 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
     step = commands.add_parser("step", parents=[common], help="advance until blocked or stopped")
     step.add_argument("--max-steps", type=int, default=100)
     commands.add_parser("status", parents=[common], help="show run state")
-    res = commands.add_parser("resume", parents=[common], help="record a human resume decision")
+    res = commands.add_parser(
+        "resume",
+        parents=[common],
+        help="record a human resume decision (interactive terminal only)",
+    )
     res.add_argument("--by", required=True, help="who is resuming (self-asserted, not verified)")
     res.add_argument("--reason", required=True)
 
