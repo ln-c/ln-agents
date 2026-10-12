@@ -64,6 +64,7 @@ states:
     edges:
       - {to: A1, guard: blocking_flaw, budget: design}
       - {to: A3, guard: no_blocking_flaw}
+      - {to: H1, guard: design_spent}
   A3:
     kind: model
     executor: model

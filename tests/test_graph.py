@@ -83,3 +83,27 @@ def test_router_must_not_have_may_modify() -> None:
     bad_graph = Graph.from_mapping(mutated)
     errors = validate(bad_graph, budgets, routing)
     assert any("X: router must declare may_modify: []" in err for err in errors)
+
+
+def test_budgeted_retry_needs_a_spent_route() -> None:
+    graph_dict = load_yaml(ROOT / "pipeline" / "graph.yaml")
+    budgets = load_yaml(ROOT / "policy" / "budgets.yaml")
+    routing = load_yaml(ROOT / "policy" / "routing.yaml")
+
+    # X retries E1 on the `local` budget; local is exhausted to E3 via local_spent.
+    mutated = copy.deepcopy(graph_dict)
+    mutated["states"]["X"]["edges"] = [
+        e for e in mutated["states"]["X"]["edges"] if e["guard"] != "local_spent"
+    ]
+    routing = copy.deepcopy(routing)
+    del routing["routes"]["local_spent"]
+    errors = validate(Graph.from_mapping(mutated), budgets, routing)
+    assert "X: budget 'local' has no spent route to E3 (its on_exhausted target)" in errors
+
+
+def test_human_states_are_exempt_from_spent_routes() -> None:
+    graph_dict = load_yaml(ROOT / "pipeline" / "graph.yaml")
+    budgets = load_yaml(ROOT / "policy" / "budgets.yaml")
+    routing = load_yaml(ROOT / "policy" / "routing.yaml")
+    errors = validate(Graph.from_mapping(graph_dict), budgets, routing)
+    assert not any(err.startswith("H1:") for err in errors)  # H1 -> A1 uses `design`

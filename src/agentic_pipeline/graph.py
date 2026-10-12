@@ -196,6 +196,25 @@ def validate(
             side = "policy/routing.yaml" if item in policy else "graph X edges"
             errors.append(f"router mismatch, only in {side}: {item}")
 
+    # 9. Every budgeted retry has a way out: when the budget is spent, the edge's
+    #    source must have its own edge to the budget's on_exhausted target. Human
+    #    states are exempt (a human chooses the next step).
+    exhausted_targets = {
+        key: (spec or {}).get("on_exhausted")
+        for key, spec in (budgets.get("budgets") or {}).items()
+    }
+    for e in graph.edges:
+        if e.budget is None or e.src in graph.human_states:
+            continue
+        target = exhausted_targets.get(e.budget)
+        if target is None or target == e.src:
+            continue
+        if not any(x.src == e.src and x.to == target for x in graph.edges):
+            errors.append(
+                f"{e.src}: budget {e.budget!r} has no spent route to {target} "
+                f"(its on_exhausted target)"
+            )
+
     return errors
 
 
