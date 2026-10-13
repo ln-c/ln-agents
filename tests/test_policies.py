@@ -8,6 +8,7 @@ from pathlib import Path
 from agentic_pipeline.graph import load_yaml
 from agentic_pipeline.policies import (
     POLICY_FILES,
+    check_artifact_defaults,
     check_data_classes,
     check_escalation,
     check_fast_path,
@@ -110,3 +111,35 @@ def test_fast_path_allowlist_must_name_declared_classes() -> None:
     fast_path["task_class_allowlist"] = ["refactoring", "mystery"]
     errors = check_task_classes(DOCS["task_classes"], fast_path)
     assert errors == ["fast_path: task_class_allowlist names unknown task class 'mystery'"]
+
+
+REGISTRY = load_yaml(ROOT / "policy" / "model_registry.yaml")
+
+
+def test_repo_artifact_defaults_valid() -> None:
+    assert check_artifact_defaults(DOCS["data_classes"], REGISTRY) == []
+
+
+def _defaults(**patch: str | None) -> list[str]:
+    doc = copy.deepcopy(DOCS["data_classes"])
+    for key, value in patch.items():
+        if value is None:
+            del doc["artifact_defaults"][key]
+        else:
+            doc["artifact_defaults"][key] = value
+    return check_artifact_defaults(doc, REGISTRY)
+
+
+def test_source_tree_must_not_be_cloud_allowed() -> None:
+    assert any("pinned_source_tree must be" in e for e in _defaults(pinned_source_tree="internal"))
+    assert any("protected_tests must be" in e for e in _defaults(protected_tests="public"))
+
+
+def test_artifact_defaults_must_cover_every_grounding_artifact() -> None:
+    errors = _defaults(requirements=None)
+    assert any("missing grounding artifact 'requirements'" in e for e in errors)
+
+
+def test_artifact_defaults_reject_unknown_class_and_foreign_artifact() -> None:
+    assert any("unknown class 'secret'" in e for e in _defaults(adr_snapshot="secret"))
+    assert any("non-grounding artifact" in e for e in _defaults(proposal_a_sealed="internal"))

@@ -148,7 +148,14 @@ def test_walk_through_grounding_seals_a_valid_context(repo: Path, tmp_path: Path
         ],
     )
     assert not errors, errors
-    assert {s.data_class for s in sealed.values()} == {"unknown"}  # no rules: never cloud
+    assert {name: s.data_class for name, s in sealed.items()} == {
+        "requirements": "internal",
+        "pinned_source_tree": "confidential",
+        "applicable_contracts": "confidential",
+        "adr_snapshot": "internal",
+        "protected_tests": "confidential",
+        "pinned_context_manifest": "confidential",  # inherits the most restrictive input
+    }
 
     path = sealed["pinned_context_manifest"].path / "context_manifest.json"
     doc = json.loads(path.read_text())
@@ -161,14 +168,34 @@ def test_walk_through_grounding_seals_a_valid_context(repo: Path, tmp_path: Path
     assert (sealed["pinned_source_tree"].path / "docs" / "adr" / "0001-first.md").is_file()
 
 
-def test_declared_classification_is_never_applied(repo: Path, tmp_path: Path) -> None:
-    rig = Rig(repo, tmp_path)
+def requirements_class(repo: Path, tmp_path: Path, declared: str | None) -> str:
+    rig = Rig(repo, tmp_path, write_spec(tmp_path, data__declared_classification=declared))
     runner = rig.runner()
     for _ in range(3):  # START, G1, G2 handlers
         runner.step()
     audit = json.loads((rig.run_dir / "grounding" / "G2" / "classification.json").read_text())
-    assert audit["declared_classification"] == "public"
-    assert set(audit["classes"].values()) == {"unknown"}
+    assert audit["rules"] == "artifact_defaults"
+    manifest = rig.manifest("START")
+    assert manifest is not None
+    assert manifest["artifacts"]["requirements"]["data_class"] == audit["classes"]["requirements"]
+    return str(audit["classes"]["requirements"])
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        (None, "internal"),
+        ("public", "internal"),  # a declaration can never lower a class
+        ("Internal", "internal"),
+        ("Confidential", "confidential"),
+        ("restricted", "restricted"),
+        ("top secret", "unknown"),  # not a policy class: assume the worst
+    ],
+)
+def test_declared_classification_only_raises_requirements(
+    repo: Path, tmp_path: Path, declared: str | None, expected: str
+) -> None:
+    assert requirements_class(repo, tmp_path, declared) == expected
 
 
 @pytest.mark.parametrize(

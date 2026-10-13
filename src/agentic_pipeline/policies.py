@@ -12,6 +12,9 @@ from collections.abc import Mapping
 from typing import Any
 
 MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
+# Code artifacts must stay off cloud backends; weakening one is a policy-review event.
+CODE_ARTIFACTS = ("pinned_source_tree", "protected_tests")
+GROUNDING_PRODUCERS = ("START", "G1")
 POLICY_FILES = ("weights", "vetoes", "data_classes", "escalation", "fast_path", "task_classes")
 
 
@@ -61,6 +64,34 @@ def check_data_classes(doc: Mapping[str, Any]) -> list[str]:
     for name in MUST_BLOCK_CLOUD:
         if (classes.get(name) or {}).get("cloud_allowed") is not False:
             errors.append(f"data_classes: {name} must have cloud_allowed: false")
+    return errors
+
+
+def check_artifact_defaults(doc: Mapping[str, Any], registry: Mapping[str, Any]) -> list[str]:
+    """artifact_defaults: grounding artifacts only, declared classes, code kept off the cloud."""
+    errors: list[str] = []
+    classes = doc.get("classes") or {}
+    defaults = doc.get("artifact_defaults")
+    if not isinstance(defaults, dict):
+        return ["data_classes: artifact_defaults must be a mapping"]
+    catalog = registry.get("artifacts") or {}
+    grounding = {
+        name
+        for name, spec in catalog.items()
+        if set(spec.get("producer") or []) & set(GROUNDING_PRODUCERS)
+    }
+    for artifact, cls in defaults.items():
+        if artifact not in grounding:
+            errors.append(
+                f"data_classes: artifact_defaults names non-grounding artifact {artifact!r}"
+            )
+        if cls not in classes:
+            errors.append(f"data_classes: artifact_defaults.{artifact} unknown class {cls!r}")
+    for artifact in sorted(grounding - set(defaults)):
+        errors.append(f"data_classes: artifact_defaults is missing grounding artifact {artifact!r}")
+    for artifact in CODE_ARTIFACTS:
+        if (classes.get(defaults.get(artifact)) or {}).get("cloud_allowed") is not False:
+            errors.append(f"data_classes: {artifact} must be a class with cloud_allowed: false")
     return errors
 
 

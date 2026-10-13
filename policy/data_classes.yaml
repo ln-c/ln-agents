@@ -9,3 +9,15 @@ classes:
   confidential: {cloud_allowed: false}
   restricted:   {cloud_allowed: false}
   unknown:      {cloud_allowed: false}
+
+# G2 classification by artifact role. Production code is confidential and never leaves
+# the host; specs may reach cloud design stages. An artifact missing here is `unknown`
+# (cloud blocked). An entry spec's declared classification can only RAISE a class.
+# Derived artifacts (the G3 index, the G4 context manifest) inherit the most restrictive
+# class of their inputs, so as long as pinned_source_tree is confidential they are too.
+artifact_defaults:
+  pinned_source_tree:    confidential
+  protected_tests:       confidential
+  applicable_contracts:  confidential
+  requirements:          internal
+  adr_snapshot:          internal

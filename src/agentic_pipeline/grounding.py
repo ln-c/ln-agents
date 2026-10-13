@@ -16,9 +16,11 @@ Every stage publishes (or, for G2, updates) a stage manifest, which is how downs
 stages find its sealed artifacts. These sit outside every `workspace_roots` path.
 
 Limits, stated plainly:
-* G2 has no classification rules to apply (policy/data_classes.yaml defines classes
-  but no path-to-class mapping), so every artifact is `unknown`, which blocks cloud
-  dispatch. The entry spec's `declared_classification` is recorded but never applied.
+* G2 classifies by artifact role from `artifact_defaults` in policy/data_classes.yaml
+  (code and contracts confidential, specs internal); an artifact missing there is
+  `unknown`. The entry spec's `declared_classification` may only RAISE `requirements`:
+  a label that is not a policy class counts as `unknown`. There are no path or content
+  rules, so one class covers a whole artifact.
 * G3 builds a file-level index only. SCIP, Tree-sitter, vector and graph indexes are
   not built; the index file says so.
 * `applicable_contracts` is whatever `contracts/` holds at the SHA (empty today).
@@ -290,11 +292,19 @@ def pin_snapshot(ctx: HandlerContext) -> str:
 # ── G2 ───────────────────────────────────────────────────────────────────────
 
 
-def classify_artifact(artifact_id: str, policy: PolicySnapshot) -> str:
-    """Data class of one artifact. No rules exist yet, so the answer is always unknown."""
-    cls = "unknown"
-    if cls not in policy.data_classes["classes"]:
-        raise GroundingError("policy/data_classes.yaml has no 'unknown' class")
+def classify_artifact(artifact_id: str, policy: PolicySnapshot, declared: str | None = None) -> str:
+    """Policy class of one artifact; `declared` (a human label) can only raise it."""
+    classes = policy.data_classes["classes"]
+    order = policy.data_classes["order"]
+    cls = (policy.data_classes.get("artifact_defaults") or {}).get(artifact_id, "unknown")
+    if cls not in classes:
+        raise GroundingError(
+            f"policy/data_classes.yaml: {artifact_id} maps to unknown class {cls!r}"
+        )
+    if declared is not None:
+        label = declared.strip().lower()
+        claimed = label if label in classes else "unknown"  # unrecognized: assume the worst
+        cls = max(cls, claimed, key=order.index)
     return cls
 
 
@@ -302,18 +312,19 @@ def classify(ctx: HandlerContext) -> str:
     """Record a data class on every artifact START and G1 published."""
     snap = _policy(ctx)
     stages = {"START": ("requirements",), "G1": G1_ARTIFACTS}
+    spec = json.loads((ctx.run_root / INPUTS_DIR / ENTRY_SPEC_FILE).read_bytes())
+    declared = spec["data"]["declared_classification"]
     classes = {
-        artifact: classify_artifact(artifact, snap) for ids in stages.values() for artifact in ids
+        artifact: classify_artifact(
+            artifact, snap, declared if artifact == "requirements" else None
+        )
+        for ids in stages.values()
+        for artifact in ids
     }
     audit = _fresh(_stage_dir(ctx, "G2"))
-    spec = json.loads((ctx.run_root / INPUTS_DIR / ENTRY_SPEC_FILE).read_bytes())
     atomic_write_json(
         audit / "classification.json",
-        {
-            "rules": "none",
-            "declared_classification": spec["data"]["declared_classification"],
-            "classes": classes,
-        },
+        {"rules": "artifact_defaults", "declared_classification": declared, "classes": classes},
     )
     for stage, ids in stages.items():
         doc = _published(ctx, stage, ids)
