@@ -22,6 +22,15 @@ from agentic_pipeline.provenance import GENESIS_HASH
 from agentic_pipeline.runner import Outcome, Runner
 from agentic_pipeline.schemas import validate
 
+# Recorded backend per operation (the registry's A1/A2 assignment): independent by design.
+BACKENDS = {
+    "proposal_a": "claude_pro",
+    "proposal_b": "google_ai_pro",
+    "synthesis": "claude_pro",
+    "critique_b_by_a": "claude_pro",
+    "critique_a_by_b": "google_ai_pro",
+}
+
 
 def proposal(pid: str, context_hash: str, *, synthesized: bool = False, **extra: Any) -> dict:
     doc: dict[str, Any] = {
@@ -33,6 +42,39 @@ def proposal(pid: str, context_hash: str, *, synthesized: bool = False, **extra:
     }
     if synthesized:
         doc["sources"] = {"api": "prop-a"}
+    return {**doc, **extra}
+
+
+def blocking(fid: str, pid: str) -> dict:
+    return {
+        "id": fid,
+        "severity": "blocking",
+        "description": "stores secrets in the clear",
+        "proposal_id": pid,
+        "subject": "api",
+        "impact": "credential disclosure",
+        "violated": "security constraint S-1",
+        "evidence": ["api component writes config.secret to disk unencrypted"],
+        "remediation": "encrypt at rest",
+    }
+
+
+def critique(
+    cid: str, target: str, context_hash: str, findings: list | None = None, **extra: Any
+) -> dict:
+    findings = findings or []
+    counts = {"blocking": 0, "non_blocking": 0, "informational": 0}
+    for finding in findings:
+        counts[finding["severity"]] += 1
+    doc = {
+        "id": cid,
+        "author_model": "test",
+        "target_proposal_id": target,
+        "manifest_hash": context_hash,
+        "review_complete": True,
+        "counts": counts,
+        "findings": findings,
+    }
     return {**doc, **extra}
 
 
@@ -71,7 +113,10 @@ class Design:
             stage=stage,
             attempt="t",
             artifacts=built,
-            operations={},
+            operations={
+                op: {"backend": BACKENDS[op], "invocation_id": f"i-{op}", "status": "ok"}
+                for op, _ in artifacts.values()
+            },
             provenance_tip=GENESIS_HASH,
             data_classes=dict.fromkeys(built, "internal"),
         )
@@ -88,6 +133,22 @@ class Design:
         )
         self.seal(
             "A3", {"synthesis_sealed": ("synthesis", proposal("prop-s", h, synthesized=True))}
+        )
+
+    def seal_critiques(self, a_on_b: dict | None = None, b_on_a: dict | None = None) -> None:
+        h = self.context_hash
+        self.seal(
+            "A2",
+            {
+                "critique_b_by_a_sealed": (
+                    "critique_b_by_a",
+                    a_on_b or critique("c1", "prop-b", h),
+                ),
+                "critique_a_by_b_sealed": (
+                    "critique_a_by_b",
+                    b_on_a or critique("c2", "prop-a", h),
+                ),
+            },
         )
 
     def guard(self, node: str) -> str:
@@ -355,4 +416,128 @@ def test_the_spent_route_is_never_chosen_by_a_gate(design: Design) -> None:
     design.seal_valid()
     for node in ("A4", "B1", "B3"):
         assert design.guard(node) not in {"design_spent", "constraint_sources_conflict"}
-    assert copy.deepcopy(GATE_HANDLERS).keys() == {"A4", "B1", "B2", "B3", "DR"}
+    assert copy.deepcopy(GATE_HANDLERS).keys() == {"A2", "A4", "B1", "B2", "B3", "DR"}
+
+
+# ── A2 critiques ─────────────────────────────────────────────────────────────
+
+
+def a2_ready(design: Design, **kw: Any) -> None:
+    design.seal_valid()
+    design.seal_critiques(**kw)
+
+
+def test_clean_critiques_allow_synthesis(design: Design) -> None:
+    a2_ready(design)
+    assert design.guard("A2") == "no_blocking_flaw"
+    assert design.records("A2")[0]["blocking_findings"] == {
+        "critique_b_by_a": 0,
+        "critique_a_by_b": 0,
+    }
+
+
+def test_non_blocking_findings_do_not_stop_synthesis(design: Design) -> None:
+    h = design.context_hash
+    note = {"id": "f1", "severity": "non_blocking", "description": "verbose naming"}
+    a2_ready(design, a_on_b=critique("c1", "prop-b", h, [note]))
+    assert design.guard("A2") == "no_blocking_flaw"
+
+
+@pytest.mark.parametrize("side", ["a_on_b", "b_on_a", "both"])
+def test_a_blocking_finding_in_either_critique_is_a_flaw(design: Design, side: str) -> None:
+    h = design.context_hash
+    on_b = critique("c1", "prop-b", h, [blocking("f1", "prop-b")])
+    on_a = critique("c2", "prop-a", h, [blocking("f2", "prop-a")])
+    kw = (
+        {"a_on_b": on_b}
+        if side == "a_on_b"
+        else {"b_on_a": on_a}
+        if side == "b_on_a"
+        else {"a_on_b": on_b, "b_on_a": on_a}
+    )
+    a2_ready(design, **kw)
+    assert design.guard("A2") == "blocking_flaw"
+
+
+def _drop_evidence(doc: dict) -> None:
+    del doc["findings"][0]["evidence"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (_drop_evidence, "schema"),
+        (lambda d: d.update(review_complete=False), "review_complete"),
+        (lambda d: d["counts"].update(blocking=0), "counts"),
+        (lambda d: d.update(manifest_hash="sha256:" + "0" * 64), "manifest_hash"),
+        (lambda d: d.update(target_proposal_id="prop-a"), "target_proposal_id"),
+        (lambda d: d["findings"][0].update(proposal_id="prop-a"), "different proposal"),
+    ],
+    ids=[
+        "no-evidence",
+        "incomplete",
+        "wrong-counts",
+        "wrong-hash",
+        "wrong-target",
+        "foreign-finding",
+    ],
+)
+def test_an_unusable_critique_blocks_instead_of_reading_as_clean(
+    design: Design, mutate: Any, message: str
+) -> None:
+    h = design.context_hash
+    bad = critique("c1", "prop-b", h, [blocking("f1", "prop-b")])
+    mutate(bad)
+    a2_ready(design, a_on_b=bad)
+    with pytest.raises(GateError, match=message):
+        design.guard("A2")
+
+
+def test_a_critic_on_the_proposals_backend_is_a_self_critique(
+    design: Design, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(BACKENDS, "critique_b_by_a", "google_ai_pro")  # same as proposal_b
+    a2_ready(design)
+    with pytest.raises(GateError, match="same backend"):
+        design.guard("A2")
+
+
+def test_a_text_only_critique_blocks(design: Design) -> None:
+    design.seal_valid()
+    h = design.context_hash
+    design.seal(
+        "A2",
+        {
+            "critique_b_by_a_sealed": ("critique_b_by_a", None),
+            "critique_a_by_b_sealed": ("critique_a_by_b", critique("c2", "prop-a", h)),
+        },
+    )
+    with pytest.raises(GateError, match="critique_b_by_a.json"):
+        design.guard("A2")
+
+
+def test_a2_guards_are_real_edges_and_never_the_spent_route(design: Design) -> None:
+    edges = {e.guard for e in design.runner.graph.edges if e.src == "A2"}
+    assert {"blocking_flaw", "no_blocking_flaw"} <= edges
+    a2_ready(design)
+    assert design.guard("A2") != "design_spent"
+
+
+def test_a2_rerun_sees_new_critiques(design: Design) -> None:
+    h = design.context_hash
+    a2_ready(design)
+    assert design.guard("A2") == "no_blocking_flaw"
+    design.seal_critiques(a_on_b=critique("c1", "prop-b", h, [blocking("f1", "prop-b")]))
+    assert design.guard("A2") == "blocking_flaw"
+    assert len(design.records("A2")) == 2
+
+
+def test_critique_schema_requires_evidence_only_for_blocking() -> None:
+    h = "sha256:" + "0" * 64
+    info = {"id": "f", "severity": "informational", "description": "note"}
+    validate("critique", critique("c", "p", h, [info]))
+    thin = {"id": "f", "severity": "blocking", "description": "bad"}
+    from agentic_pipeline.schemas import ValidationError
+
+    with pytest.raises(ValidationError):
+        validate("critique", critique("c", "p", h, [thin]))

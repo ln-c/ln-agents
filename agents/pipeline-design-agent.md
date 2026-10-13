@@ -118,6 +118,14 @@ Each critic must assess:
 8. Acceptance criteria and testability.
 9. Assumptions, missing evidence, and unbounded risks.
 
+### Critique format
+
+> A critic writes `<operation_id>.json` (e.g. `critique_b_by_a.json`) conforming to
+> `schemas/critique.schema.json`: `id`, `author_model`, `target_proposal_id`, `manifest_hash`,
+> `review_complete`, `counts`, and `findings`. The A2 gate recomputes the counts from the
+> findings. Any `blocking` finding sends the run back to A1 (budgeted); an invalid or
+> incomplete critique blocks the step and is never read as "no flaws".
+
 ### Finding severity
 
 Use only these severity values:

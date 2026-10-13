@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "critique",
+  "title": "Cross-critique of one proposal (A2). Severity rules follow agents/pipeline-design-agent.md.",
+  "type": "object",
+  "required": ["id", "author_model", "target_proposal_id", "manifest_hash", "review_complete", "counts", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "author_model": {"type": "string", "minLength": 1},
+    "target_proposal_id": {"type": "string", "minLength": 1},
+    "manifest_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "review_complete": {"type": "boolean"},
+    "counts": {
+      "type": "object",
+      "required": ["blocking", "non_blocking", "informational"],
+      "additionalProperties": false,
+      "properties": {
+        "blocking": {"type": "integer", "minimum": 0},
+        "non_blocking": {"type": "integer", "minimum": 0},
+        "informational": {"type": "integer", "minimum": 0}
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "severity": {"enum": ["blocking", "non_blocking", "informational"]},
+          "description": {"type": "string", "minLength": 1},
+          "proposal_id": {"type": "string", "minLength": 1},
+          "subject": {"type": "string", "minLength": 1, "description": "Affected component, decision, contract, or data flow id."},
+          "impact": {"type": "string", "minLength": 1},
+          "violated": {"type": "string", "minLength": 1, "description": "Manifest constraint, contract, security requirement, or invariant alleged to be violated."},
+          "evidence": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "remediation": {"type": "string", "minLength": 1, "description": "A proposed fix, or why none can be determined."}
+        },
+        "if": {"properties": {"severity": {"const": "blocking"}}},
+        "then": {"required": ["proposal_id", "subject", "impact", "violated", "evidence", "remediation"]}
+      }
+    }
+  }
+}
