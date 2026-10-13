@@ -21,6 +21,7 @@ PREAMBLE = (
 
 GUIDANCE: Mapping[str, str] = {
     "proposal": (
+        "Field rules:\n"
         "- `id`: a short unique id you choose for this proposal.\n"
         "- `author_model`: the name of the model writing it.\n"
         "- `manifest_hash`: copy the `hash` value from the pinned context manifest input "
@@ -31,6 +32,21 @@ GUIDANCE: Mapping[str, str] = {
         "proposal it came from (use only ids that appear in the proposal inputs)."
     ),
     "critique": (
+        "Review the proposal on all nine dimensions: (1) explicit and implied context "
+        "manifest constraints; (2) API and data-contract satisfaction, versioning and "
+        "compatibility; (3) security boundaries, access control, threat exposure, secrets "
+        "handling and data classification; (4) logical consistency and architectural "
+        "feasibility; (5) concurrency, consistency, idempotency, failure handling and "
+        "recovery; (6) observability, operability and diagnosability; (7) dependency and "
+        "cross-service boundary changes; (8) acceptance criteria and testability; (9) "
+        "assumptions, missing evidence and unbounded risks.\n"
+        "Severity values: `blocking` is a substantiated violation of the context manifest or "
+        "a required contract, a credible security vulnerability, or a material logical "
+        "contradiction that prevents a mandatory requirement from being met; `non_blocking` "
+        "is a weakness, inefficiency or trade-off that violates no mandatory constraint; "
+        "`informational` is an uncertainty or observation with no established defect. Sparse "
+        "or missing detail is not by itself a blocking finding.\n"
+        "Field rules:\n"
         "- `target_proposal_id`: copy the `id` of the one proposal you were given to review.\n"
         "- `manifest_hash`: copy the `hash` value from the pinned context manifest input "
         "exactly.\n"
@@ -54,7 +70,7 @@ def json_task(role: str, stage: str, operation: str, schema: str) -> str:
     return (
         f"Act as the {role} for pipeline stage {stage}, operation {operation}.\n"
         f"{PREAMBLE}\n\n"
-        f"Field rules:\n{guidance}\n\n"
+        f"{guidance}\n\n"
         f"JSON Schema ({schema}):\n{load_schema_text(schema)}"
     )
 
