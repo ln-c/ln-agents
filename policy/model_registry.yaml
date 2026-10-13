@@ -41,6 +41,10 @@ providers:
     access_mode: subscription_tool
     subscription: Google AI Pro
     api_billing_allowed: false
+    # agy also offers non-Google models (it lists Claude and GPT-OSS), so the model is
+    # pinned here: independent design needs Design B to stay off Claude. Change it
+    # deliberately; `agy models` lists the ids.
+    model_id: gemini-3.8-flash-high
     readiness:
       executable: agy
       version_pattern: '^(\d+)\.(\d+)\.(\d+)$'

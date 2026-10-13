@@ -145,12 +145,18 @@ def test_adapter_build_failures_are_explained(monkeypatch: pytest.MonkeyPatch) -
         raise OSError("connection refused")
 
     monkeypatch.setattr(adapters.ClaudeAdapter, "from_registry", staticmethod(no_creds))
+
+    def no_token(registry: object) -> object:
+        raise LookupError("antigravity-oauth-token not found")
+
     monkeypatch.setattr(adapters.PiQwenAdapter, "from_registry", staticmethod(no_ollama))
+    monkeypatch.setattr(adapters.AgyAdapter, "from_registry", staticmethod(no_token))
     lazy = run_cli.LazyAdapters({})
-    assert "claude_pro" not in lazy and "qwen_local" not in lazy
+    assert "claude_pro" not in lazy and "qwen_local" not in lazy and "google_ai_pro" not in lazy
     assert lazy.unavailable("claude_pro") == "LookupError: credentials.json not found"
     assert lazy.unavailable("qwen_local") == "OSError: connection refused"
-    assert lazy.unavailable("google_ai_pro") is None
+    assert lazy.unavailable("google_ai_pro") == "LookupError: antigravity-oauth-token not found"
+    assert lazy.unavailable("clef_flash_free") is None  # no adapter exists for it at all
 
 
 def test_resume_refuses_a_crash_it_just_discovered(
