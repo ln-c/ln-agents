@@ -11,6 +11,7 @@ from agentic_pipeline.policies import (
     check_data_classes,
     check_escalation,
     check_fast_path,
+    check_task_classes,
     check_vetoes,
     check_weights,
     validate_policies,
@@ -86,3 +87,26 @@ def test_fast_path_requires_veto_check() -> None:
     doc = copy.deepcopy(DOCS["fast_path"])
     doc["require_all"].remove("no_active_veto")
     assert any("no_active_veto" in e for e in check_fast_path(doc))
+
+
+def test_task_class_id_must_be_snake_case() -> None:
+    doc = copy.deepcopy(DOCS["task_classes"])
+    doc["classes"]["Bad Class"] = {"description": "x"}
+    assert any("snake_case" in e for e in check_task_classes(doc, DOCS["fast_path"]))
+
+
+def test_task_class_needs_description() -> None:
+    doc = copy.deepcopy(DOCS["task_classes"])
+    doc["classes"]["refactoring"] = {"description": " "}
+    assert any("description" in e for e in check_task_classes(doc, DOCS["fast_path"]))
+
+
+def test_task_classes_must_not_be_empty() -> None:
+    assert check_task_classes({"classes": {}}, DOCS["fast_path"])
+
+
+def test_fast_path_allowlist_must_name_declared_classes() -> None:
+    fast_path = copy.deepcopy(DOCS["fast_path"])
+    fast_path["task_class_allowlist"] = ["refactoring", "mystery"]
+    errors = check_task_classes(DOCS["task_classes"], fast_path)
+    assert errors == ["fast_path: task_class_allowlist names unknown task class 'mystery'"]
