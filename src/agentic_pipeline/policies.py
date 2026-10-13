@@ -14,7 +14,7 @@ from typing import Any
 MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
 # Code artifacts must stay off cloud backends; weakening one is a policy-review event.
 CODE_ARTIFACTS = ("pinned_source_tree", "protected_tests")
-GROUNDING_PRODUCERS = ("START", "G1")
+GROUNDING_PRODUCERS = ("START", "G1", "G4")
 POLICY_FILES = ("weights", "vetoes", "data_classes", "escalation", "fast_path", "task_classes")
 
 

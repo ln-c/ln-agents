@@ -17,7 +17,7 @@ stages find its sealed artifacts. These sit outside every `workspace_roots` path
 
 Limits, stated plainly:
 * G2 classifies by artifact role from `artifact_defaults` in policy/data_classes.yaml
-  (code and contracts confidential, specs internal); an artifact missing there is
+  (code confidential, specs and contracts internal); an artifact missing there is
   `unknown`. The entry spec's `declared_classification` may only RAISE `requirements`:
   a label that is not a policy class counts as `unknown`. There are no path or content
   rules, so one class covers a whole artifact.
@@ -415,9 +415,10 @@ def write_context(ctx: HandlerContext) -> str:
     out = _fresh(_stage_dir(ctx, "G4")) / "pinned_context_manifest"
     out.mkdir()
     atomic_write_json(out / "context_manifest.json", document)
-    order = snap.data_classes["order"]
-    strictest = max(classes.values(), key=order.index)
-    _publish(ctx, "G4", {"pinned_context_manifest": out}, {"pinned_context_manifest": strictest})
+    # Classified by role, not inherited: the schema fixes the manifest's fields (see
+    # policy/data_classes.yaml), so it cannot carry the source tree's content.
+    label = classify_artifact("pinned_context_manifest", snap)
+    _publish(ctx, "G4", {"pinned_context_manifest": out}, {"pinned_context_manifest": label})
     return "always"
 
 

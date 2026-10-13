@@ -151,10 +151,10 @@ def test_walk_through_grounding_seals_a_valid_context(repo: Path, tmp_path: Path
     assert {name: s.data_class for name, s in sealed.items()} == {
         "requirements": "internal",
         "pinned_source_tree": "confidential",
-        "applicable_contracts": "confidential",
+        "applicable_contracts": "internal",
         "adr_snapshot": "internal",
         "protected_tests": "confidential",
-        "pinned_context_manifest": "confidential",  # inherits the most restrictive input
+        "pinned_context_manifest": "internal",  # by role: its schema cannot carry code
     }
 
     path = sealed["pinned_context_manifest"].path / "context_manifest.json"

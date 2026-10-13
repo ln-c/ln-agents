@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 from agentic_pipeline.graph import load_yaml
@@ -143,3 +144,32 @@ def test_artifact_defaults_must_cover_every_grounding_artifact() -> None:
 def test_artifact_defaults_reject_unknown_class_and_foreign_artifact() -> None:
     assert any("unknown class 'secret'" in e for e in _defaults(adr_snapshot="secret"))
     assert any("non-grounding artifact" in e for e in _defaults(proposal_a_sealed="internal"))
+
+
+def test_design_stage_inputs_are_all_cloud_eligible() -> None:
+    """A1's cloud proposals must not be blocked by a grounding artifact's class."""
+    classes = DOCS["data_classes"]["classes"]
+    defaults = DOCS["data_classes"]["artifact_defaults"]
+    for op in REGISTRY["stage_requirements"]["A1"]["operations"]:
+        for artifact in op["allowed_reads"]:
+            if artifact in defaults:
+                assert classes[defaults[artifact]]["cloud_allowed"], (op["id"], artifact)
+
+
+def test_context_manifest_schema_cannot_carry_free_form_content() -> None:
+    """The context manifest is classified by role because its fields are fixed."""
+    schema = json.loads((ROOT / "schemas" / "context_manifest.schema.json").read_text())
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {
+        "run_id",
+        "parent_run_id",
+        "commit_sha",
+        "adrs",
+        "contract_versions",
+        "data_classes",
+        "policy_version",
+        "scorer_version",
+        "hash",
+    }
+    assert schema["properties"]["adrs"]["items"]["additionalProperties"] is False
+    assert schema["properties"]["contract_versions"]["additionalProperties"] == {"type": "string"}
