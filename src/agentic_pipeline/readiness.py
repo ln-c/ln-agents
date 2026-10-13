@@ -4,6 +4,12 @@ Probes the host for what `policy/model_registry.yaml` requires before a model
 stage may be dispatched. Probes never write files, change settings, log in, or
 start services; anything that cannot be proven read-only is reported UNVERIFIED,
 and only VERIFIED counts toward stage eligibility.
+
+For subscription-tool providers the pipeline checks only that the agent is available (its
+executable is on PATH at an accepted version) and that no prohibited credential variable is
+set. Which account or plan the tool is logged into, and its billing settings, are the
+user's responsibility: the pipeline neither inspects nor depends on any provider's login
+state. A call that fails on auth or quota is reported by the adapter at run time.
 """
 
 from __future__ import annotations
@@ -132,69 +138,6 @@ def probe_executable(spec: Mapping[str, Any], host: Host) -> Check:
     except LookupError as exc:
         return Check("executable", Status.FAILED, str(exc))
     return Check("executable", Status.VERIFIED, f"{spec['executable']} {version} at {path}")
-
-
-# Subscription-login requirements for `claude auth status --json` (read-only).
-CLAUDE_AUTH_REQUIRED = {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty"}
-CLAUDE_SUBSCRIPTIONS = frozenset({"pro", "max"})
-
-
-def _claude_auth(path: str, host: Host) -> Check:
-    # With no existing config, `auth status` runs first-time setup and writes files.
-    # It changed nothing when the config already existed, so only run it then.
-    if not ((host.home / ".claude.json").is_file() and (host.home / ".claude").is_dir()):
-        return Check("subscription_auth", Status.UNVERIFIED, "no Claude config in $HOME")
-    code, out = host.run([path, "auth", "status", "--json"], host.child_env())
-    if code != 0:
-        return Check("subscription_auth", Status.FAILED, f"auth status exited {code}")
-    try:
-        status = json.loads(out)
-    except ValueError:
-        return Check("subscription_auth", Status.FAILED, "auth status output is not JSON")
-    if not isinstance(status, dict):
-        return Check("subscription_auth", Status.FAILED, "auth status output is not an object")
-    wrong = {k: status.get(k) for k, v in CLAUDE_AUTH_REQUIRED.items() if status.get(k) != v}
-    if wrong:
-        return Check("subscription_auth", Status.FAILED, f"not a subscription login: {wrong}")
-    plan = status.get("subscriptionType")
-    if plan not in CLAUDE_SUBSCRIPTIONS:
-        return Check("subscription_auth", Status.FAILED, f"subscription {plan!r} not allowed")
-    return Check("subscription_auth", Status.VERIFIED, f"claude.ai {plan} login (first party)")
-
-
-# executable -> read-only auth verifier; providers without one stay UNVERIFIED.
-AUTH_VERIFIERS: dict[str, Callable[[str, Host], Check]] = {"claude": _claude_auth}
-
-
-def probe_subscription_auth(spec: Mapping[str, Any], host: Host) -> Check:
-    verifier = AUTH_VERIFIERS.get(spec["executable"])
-    if verifier is None:
-        return Check(
-            "subscription_auth",
-            Status.UNVERIFIED,
-            "no read-only, non-mutating auth verifier is available",
-        )
-    path = host.which(spec["executable"])
-    if path is None:
-        return Check("subscription_auth", Status.FAILED, f"{spec['executable']} not found on PATH")
-    return verifier(path, host)
-
-
-def probe_settings(spec: Mapping[str, Any], host: Host) -> Check:
-    rel = spec["settings_path"].removeprefix("~/")
-    path = host.home / rel
-    key, wanted = spec["settings_key"], spec["settings_required_value"]
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return Check("overage_policy", Status.UNVERIFIED, f"{spec['settings_path']} not found")
-    except (OSError, ValueError) as exc:
-        return Check("overage_policy", Status.UNVERIFIED, f"unreadable settings: {exc}")
-    if not isinstance(doc, dict) or key not in doc:
-        return Check("overage_policy", Status.UNVERIFIED, f"{key} not set; default unconfirmed")
-    if doc[key] != wanted:
-        return Check("overage_policy", Status.FAILED, f"{key} is {doc[key]!r}, need {wanted!r}")
-    return Check("overage_policy", Status.VERIFIED, f"{key} is {wanted!r}")
 
 
 def _ollama_tags(spec: Mapping[str, Any]) -> tuple[int, bytes]:
@@ -437,9 +380,7 @@ def run_preflight(
         if spec is None:
             continue
         if provider["access_mode"] == "subscription_tool":
-            checks = [probe_executable(spec, host), probe_subscription_auth(spec, host)]
-            if "settings_path" in spec:
-                checks.append(probe_settings(spec, host))
+            checks = [probe_executable(spec, host)]
         else:
             checks = [*probe_ollama(spec), probe_listeners(spec["port"], host.proc_root)]
         report.providers[name] = checks

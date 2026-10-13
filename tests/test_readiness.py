@@ -31,8 +31,6 @@ from agentic_pipeline.readiness import (
     probe_listeners,
     probe_ollama,
     probe_sandbox,
-    probe_settings,
-    probe_subscription_auth,
     run_preflight,
 )
 from agentic_pipeline.sandbox import SandboxResult, SandboxUnavailable
@@ -103,94 +101,6 @@ def test_probe_executable_passes_allowlisted_env(tmp_path: Path) -> None:
     )
     probe_executable(GOOGLE, host)
     assert set(seen) == {"HOME", "LANG", "PATH"}
-
-
-# ── Subscription auth ────────────────────────────────────────────────────────
-
-CLAUDE_OK = {
-    "loggedIn": True,
-    "authMethod": "claude.ai",
-    "apiProvider": "firstParty",
-    "subscriptionType": "pro",
-    "email": "someone@example.com",
-}
-
-
-@pytest.mark.parametrize(
-    ("changes", "code", "expected"),
-    [
-        ({}, 0, Status.VERIFIED),
-        ({"subscriptionType": "max"}, 0, Status.VERIFIED),
-        ({"loggedIn": False}, 0, Status.FAILED),
-        ({"authMethod": "api_key"}, 0, Status.FAILED),
-        ({"apiProvider": "bedrock"}, 0, Status.FAILED),
-        ({"subscriptionType": "free"}, 0, Status.FAILED),
-        ({}, 1, Status.FAILED),
-    ],
-    ids=["pro", "max", "logged-out", "api-key", "third-party", "free-plan", "nonzero-exit"],
-)
-def test_claude_auth_status(tmp_path: Path, changes: dict, code: int, expected: Status) -> None:
-    seen: list[list[str]] = []
-
-    def run(argv: list[str], env: Mapping[str, str]) -> tuple[int, str]:
-        seen.append(argv)
-        return code, json.dumps({**CLAUDE_OK, **changes})
-
-    _claude_config(tmp_path)
-    host = dataclasses.replace(fake_host(tmp_path), run=run)
-    check = probe_subscription_auth(CLAUDE, host)
-    assert check.status is expected, check
-    assert seen == [["/fake/claude", "auth", "status", "--json"]]
-    assert "someone@example.com" not in check.detail
-
-
-def _claude_config(home: Path) -> None:
-    (home / ".claude").mkdir()
-    (home / ".claude.json").write_text("{}")
-
-
-def test_claude_auth_skipped_without_existing_config(tmp_path: Path) -> None:
-    def run(argv: list[str], env: Mapping[str, str]) -> tuple[int, str]:
-        raise AssertionError("auth status would run first-time setup in an empty $HOME")
-
-    host = dataclasses.replace(fake_host(tmp_path), run=run)
-    assert probe_subscription_auth(CLAUDE, host).status is Status.UNVERIFIED
-
-
-def test_claude_auth_malformed_output(tmp_path: Path) -> None:
-    _claude_config(tmp_path)
-    host = fake_host(tmp_path, output="not json")
-    assert probe_subscription_auth(CLAUDE, host).status is Status.FAILED
-
-
-def test_provider_without_verifier_stays_unverified(tmp_path: Path) -> None:
-    def run(argv: list[str], env: Mapping[str, str]) -> tuple[int, str]:
-        raise AssertionError("no command may run for an unverifiable provider")
-
-    host = dataclasses.replace(fake_host(tmp_path), run=run)
-    assert probe_subscription_auth(GOOGLE, host).status is Status.UNVERIFIED
-
-
-# ── Antigravity overage setting ──────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    ("content", "expected"),
-    [
-        (None, Status.UNVERIFIED),
-        ("{}", Status.UNVERIFIED),
-        ("not json", Status.UNVERIFIED),
-        (json.dumps({"useG1Credits": False}), Status.VERIFIED),
-        (json.dumps({"useG1Credits": True}), Status.FAILED),
-    ],
-    ids=["missing-file", "missing-key", "malformed", "disabled", "enabled"],
-)
-def test_probe_settings(tmp_path: Path, content: str | None, expected: Status) -> None:
-    if content is not None:
-        path = tmp_path / ".gemini" / "antigravity-cli" / "settings.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(content, encoding="utf-8")
-    assert probe_settings(GOOGLE, fake_host(tmp_path)).status is expected
 
 
 # ── Ollama endpoint ──────────────────────────────────────────────────────────
@@ -394,8 +304,8 @@ def ready_report() -> Report:
         static_errors=[],
         global_checks=[Check("credential_env_absent", ok, "")],
         providers={
-            "claude_pro": [Check("executable", ok, ""), Check("subscription_auth", ok, "")],
-            "google_ai_pro": [Check("subscription_auth", ok, ""), Check("overage_policy", ok, "")],
+            "claude_pro": [Check("executable", ok, "")],
+            "google_ai_pro": [Check("executable", ok, "")],
             "qwen_local": [Check("daemon", ok, ""), Check("listener_binding", ok, "")],
         },
         isolation={name: Check(name, ok, "") for name in ISOLATION},
@@ -414,17 +324,17 @@ def test_all_verified_a1_eligible_with_role_backends() -> None:
     assert verdict.backends == {"proposal_a": "claude_pro", "proposal_b": "google_ai_pro"}
 
 
-def test_a1_blocked_when_one_cloud_auth_unverified() -> None:
+def test_a1_blocked_when_one_cloud_agent_unavailable() -> None:
     report = ready_report()
-    _downgrade(report.providers["google_ai_pro"], "subscription_auth")
+    _downgrade(report.providers["google_ai_pro"], "executable")
     verdict = evaluate_stage("A1", report)
     assert not verdict.eligible
-    assert "proposal_b: google_ai_pro.subscription_auth UNVERIFIED" in verdict.reasons
+    assert "proposal_b: google_ai_pro.executable UNVERIFIED" in verdict.reasons
 
 
 def test_a3_falls_back_in_declared_order() -> None:
     report = ready_report()
-    _downgrade(report.providers["claude_pro"], "subscription_auth")
+    _downgrade(report.providers["claude_pro"], "executable")
     verdict = evaluate_stage("A3", report)
     assert verdict.eligible and verdict.backends == {"synthesis": "google_ai_pro"}
 

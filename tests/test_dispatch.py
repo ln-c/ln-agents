@@ -76,7 +76,7 @@ def seed(
 def report(*, unready: tuple[str, ...] = (), credential: Status = Status.VERIFIED) -> Report:
     def checks(name: str) -> list[Check]:
         status = Status.UNVERIFIED if name in unready else Status.VERIFIED
-        return [Check("subscription_auth", status, "")]
+        return [Check("executable", status, "")]
 
     return Report(
         static_errors=[],
@@ -195,7 +195,7 @@ def test_grant_carries_only_declared_scope(tmp_path: Path, adapters: dict) -> No
 
 def test_ineligible_stage_blocked_before_anything(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, reports=iter([report(unready=("google_ai_pro",))]))
-    with pytest.raises(DispatchBlocked, match="google_ai_pro.subscription_auth"):
+    with pytest.raises(DispatchBlocked, match="google_ai_pro.executable"):
         d.dispatch_stage("A2", "blocking_flaw", "A1", {})
     assert events(d) == [] and d.ledger.consumed == {} and d.ledger.reserved == {}
 

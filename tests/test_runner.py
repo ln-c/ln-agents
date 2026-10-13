@@ -224,7 +224,7 @@ def test_unready_backend_blocks_without_pausing(rig: Rig) -> None:
     rig.unready = ("google_ai_pro",)
     runner = rig.at("G4", GROUNDING)
     result = runner.step()
-    assert result.outcome is Outcome.BLOCKED and "google_ai_pro.subscription_auth" in result.detail
+    assert result.outcome is Outcome.BLOCKED and "google_ai_pro.executable" in result.detail
     state = stored(rig)
     assert (state.status, state.current, state.entering) == (Status.RUNNING, "G4", None)
     assert state.ledger == {"consumed": {}, "reserved": {}}

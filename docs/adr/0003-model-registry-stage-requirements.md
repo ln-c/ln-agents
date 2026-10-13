@@ -36,4 +36,4 @@ Every event carries `prev_hash` and `event_hash`. A new `model_result` event cor
 ## Consequences
 
 - Validators in `src/agentic_pipeline/` must cross-check `stage_requirements` against the graph, the artifact catalog, workspace roots, and isolation profiles (follow-up PR).
-- All model stages stay blocked on hosts where auth, overage settings, or sandbox enforcement cannot be verified.
+- All model stages stay blocked on hosts where a provider's agent is unavailable (executable missing or below the minimum version), a prohibited credential variable is set, or sandbox enforcement cannot be verified. The pipeline does not inspect login state, plan, or billing settings; those are the user's responsibility, and a call that fails on auth or quota is reported by the adapter at run time.

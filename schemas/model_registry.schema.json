@@ -80,14 +80,7 @@
                   "properties": {
                     "executable": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
                     "version_pattern": {"type": "string", "minLength": 1},
-                    "min_version": {"$ref": "#/definitions/version_triple"},
-                    "settings_path": {"type": "string", "pattern": "^~/[^\\0]+$"},
-                    "settings_key": {"type": "string", "minLength": 1},
-                    "settings_required_value": {}
-                  },
-                  "dependencies": {
-                    "settings_path": ["settings_key", "settings_required_value"],
-                    "settings_key": ["settings_path", "settings_required_value"]
+                    "min_version": {"$ref": "#/definitions/version_triple"}
                   },
                   "additionalProperties": false
                 }
