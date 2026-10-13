@@ -65,6 +65,11 @@ class JsonlProvenanceLog:
         except FileNotFoundError:
             return 0
 
+    def tip(self) -> str:
+        """Hash of the newest record (the genesis hash for an empty log); not verified."""
+        records = self.records()
+        return records[-1]["event_hash"] if records else GENESIS_HASH
+
     def records(self, from_seq: int = 0) -> list[dict[str, Any]]:
         """Records with seq >= from_seq (parsed, not verified; verify the chain first)."""
         try:

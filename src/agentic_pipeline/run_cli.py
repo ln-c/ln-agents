@@ -106,7 +106,7 @@ def _dispatcher_factory(root: Path, run_dir: Path) -> MakeDispatcher:
 
 
 def _init(args: argparse.Namespace, run_dir: Path) -> int:
-    state = init_run(args.root, run_dir, args.run_id, args.entry)
+    state = init_run(args.root, run_dir, args.run_id, args.entry, args.entry_spec)
     print(f"run {state.run_id} created at {state.current} in {run_dir}")
     return 0
 
@@ -243,6 +243,9 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
 
     init = commands.add_parser("init", parents=[common], help="create a run at an entrypoint")
     init.add_argument("--entry", default="START")
+    init.add_argument(
+        "--entry-spec", type=Path, help="grounding agent's entry_spec JSON (required for START)"
+    )
     step = commands.add_parser("step", parents=[common], help="advance until blocked or stopped")
     step.add_argument("--max-steps", type=_positive_int, default=100)
     commands.add_parser("status", parents=[common], help="show run state")
