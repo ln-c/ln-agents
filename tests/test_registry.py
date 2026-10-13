@@ -33,6 +33,10 @@ def _self_critique(r: Registry) -> None:
     critic["allowed_reads"] = ["pinned_context_manifest", "proposal_a_sealed"]
 
 
+def _unknown_output_schema(r: Registry) -> None:
+    op(r, "A1", "proposal_a")["output_schema"] = "ghost"
+
+
 def _read_other_scratch(r: Registry) -> None:
     op(r, "A1", "proposal_a")["allowed_reads"].append("proposal_b_scratch")
     op(r, "A1", "proposal_a")["denied_reads"].remove("proposal_b_scratch")
@@ -138,6 +142,7 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ("unknown profile", _unknown_profile, "registry R13 A3.synthesis"),
     ("unknown producer state", _unknown_producer_state, "registry R13 artifact requirements"),
     ("unknown producer op", _unknown_producer_op, "registry R13 artifact synthesis_sealed"),
+    ("unknown output schema", _unknown_output_schema, "registry R15 A1.proposal_a"),
     ("same backend for A and B", _swap_proposal_a_backend, "registry R14 A1.proposal_b"),
     ("self-critique", _self_critique, "registry R14 A2.critique_b_by_a"),
 ]

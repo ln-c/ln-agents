@@ -16,6 +16,7 @@ R11  an operation never reads output of another operation in the same stage
 R12  write roots are declared, unshared, distinct, and non-nested
 R13  isolation profiles are declared; artifact producers name real states/operations
 R14  isolated operations use distinct backends; no critic reviews its own agent's work
+R15  an operation's output_schema names a schema that exists in schemas/
 """
 
 from __future__ import annotations
@@ -215,6 +216,15 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
                 errors.append(f"registry R13 artifact {name}: unknown producer state {state!r}")
             elif op_id and producer not in op_index:
                 errors.append(f"registry R13 artifact {name}: unknown producer {producer!r}")
+
+    # R15. Output schemas exist.
+    for stage, spec in stage_reqs.items():
+        for op in spec.get("operations", []):  # a disabled stage has none
+            name = op.get("output_schema")
+            if name is not None and not (root / "schemas" / f"{name}.schema.json").is_file():
+                errors.append(
+                    f"registry R15 {stage}.{op['id']}: output_schema {name!r} has no schema file"
+                )
 
     # R14. Independence: distinct backends under session separation; no self-critique.
     for stage, spec in stage_reqs.items():

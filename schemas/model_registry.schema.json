@@ -21,7 +21,8 @@
         "allowed_reads": {"allOf": [{"$ref": "#/definitions/id_list"}, {"minItems": 1}]},
         "denied_reads": {"$ref": "#/definitions/id_list"},
         "write_root": {"$ref": "#/definitions/id"},
-        "isolation_profile": {"$ref": "#/definitions/id"}
+        "isolation_profile": {"$ref": "#/definitions/id"},
+        "output_schema": {"$ref": "#/definitions/id"}
       },
       "additionalProperties": false
     }
