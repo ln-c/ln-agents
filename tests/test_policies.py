@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 from agentic_pipeline.graph import load_yaml
 from agentic_pipeline.policies import (
     POLICY_FILES,
+    check_artifact_defaults,
     check_data_classes,
     check_escalation,
     check_fast_path,
+    check_task_classes,
     check_vetoes,
     check_weights,
     validate_policies,
@@ -86,3 +89,87 @@ def test_fast_path_requires_veto_check() -> None:
     doc = copy.deepcopy(DOCS["fast_path"])
     doc["require_all"].remove("no_active_veto")
     assert any("no_active_veto" in e for e in check_fast_path(doc))
+
+
+def test_task_class_id_must_be_snake_case() -> None:
+    doc = copy.deepcopy(DOCS["task_classes"])
+    doc["classes"]["Bad Class"] = {"description": "x"}
+    assert any("snake_case" in e for e in check_task_classes(doc, DOCS["fast_path"]))
+
+
+def test_task_class_needs_description() -> None:
+    doc = copy.deepcopy(DOCS["task_classes"])
+    doc["classes"]["refactoring"] = {"description": " "}
+    assert any("description" in e for e in check_task_classes(doc, DOCS["fast_path"]))
+
+
+def test_task_classes_must_not_be_empty() -> None:
+    assert check_task_classes({"classes": {}}, DOCS["fast_path"])
+
+
+def test_fast_path_allowlist_must_name_declared_classes() -> None:
+    fast_path = copy.deepcopy(DOCS["fast_path"])
+    fast_path["task_class_allowlist"] = ["refactoring", "mystery"]
+    errors = check_task_classes(DOCS["task_classes"], fast_path)
+    assert errors == ["fast_path: task_class_allowlist names unknown task class 'mystery'"]
+
+
+REGISTRY = load_yaml(ROOT / "policy" / "model_registry.yaml")
+
+
+def test_repo_artifact_defaults_valid() -> None:
+    assert check_artifact_defaults(DOCS["data_classes"], REGISTRY) == []
+
+
+def _defaults(**patch: str | None) -> list[str]:
+    doc = copy.deepcopy(DOCS["data_classes"])
+    for key, value in patch.items():
+        if value is None:
+            del doc["artifact_defaults"][key]
+        else:
+            doc["artifact_defaults"][key] = value
+    return check_artifact_defaults(doc, REGISTRY)
+
+
+def test_source_tree_must_not_be_cloud_allowed() -> None:
+    assert any("pinned_source_tree must be" in e for e in _defaults(pinned_source_tree="internal"))
+    assert any("protected_tests must be" in e for e in _defaults(protected_tests="public"))
+
+
+def test_artifact_defaults_must_cover_every_grounding_artifact() -> None:
+    errors = _defaults(requirements=None)
+    assert any("missing grounding artifact 'requirements'" in e for e in errors)
+
+
+def test_artifact_defaults_reject_unknown_class_and_foreign_artifact() -> None:
+    assert any("unknown class 'secret'" in e for e in _defaults(adr_snapshot="secret"))
+    assert any("non-grounding artifact" in e for e in _defaults(proposal_a_sealed="internal"))
+
+
+def test_design_stage_inputs_are_all_cloud_eligible() -> None:
+    """A1's cloud proposals must not be blocked by a grounding artifact's class."""
+    classes = DOCS["data_classes"]["classes"]
+    defaults = DOCS["data_classes"]["artifact_defaults"]
+    for op in REGISTRY["stage_requirements"]["A1"]["operations"]:
+        for artifact in op["allowed_reads"]:
+            if artifact in defaults:
+                assert classes[defaults[artifact]]["cloud_allowed"], (op["id"], artifact)
+
+
+def test_context_manifest_schema_cannot_carry_free_form_content() -> None:
+    """The context manifest is classified by role because its fields are fixed."""
+    schema = json.loads((ROOT / "schemas" / "context_manifest.schema.json").read_text())
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {
+        "run_id",
+        "parent_run_id",
+        "commit_sha",
+        "adrs",
+        "contract_versions",
+        "data_classes",
+        "policy_version",
+        "scorer_version",
+        "hash",
+    }
+    assert schema["properties"]["adrs"]["items"]["additionalProperties"] is False
+    assert schema["properties"]["contract_versions"]["additionalProperties"] == {"type": "string"}

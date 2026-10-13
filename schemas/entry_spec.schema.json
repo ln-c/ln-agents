@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "entry_spec",
+  "title": "Entry spec: the grounding agent's handoff to START (agents/pipeline-grounding-agent.md)",
+  "type": "object",
+  "required": ["schema_version", "task", "classification", "scope", "guardrails", "data", "acceptance", "interview", "handoff"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.1"},
+    "task": {
+      "type": "object",
+      "required": ["objective", "problem_statement", "non_goals"],
+      "additionalProperties": false,
+      "properties": {
+        "objective": {"type": "string", "minLength": 1},
+        "problem_statement": {"type": ["string", "null"]},
+        "non_goals": {"type": "array"}
+      }
+    },
+    "classification": {
+      "type": "object",
+      "required": ["primary_class", "impact_labels", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "primary_class": {"type": ["string", "null"]},
+        "impact_labels": {"type": "array"},
+        "confidence": {"enum": ["high", "medium", "low"]}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": ["declared_modules", "inferred_impacts", "declared_contracts", "excluded_scope", "dependency_constraints"],
+      "additionalProperties": false,
+      "properties": {
+        "declared_modules": {"type": "array"},
+        "inferred_impacts": {"type": "array"},
+        "declared_contracts": {"type": "array"},
+        "excluded_scope": {"type": "array"},
+        "dependency_constraints": {"type": "array"}
+      }
+    },
+    "guardrails": {
+      "type": "object",
+      "required": ["required_adrs", "compatibility_constraints", "security_constraints"],
+      "additionalProperties": false,
+      "properties": {
+        "required_adrs": {"type": "array"},
+        "compatibility_constraints": {"type": "array"},
+        "security_constraints": {"type": "array"}
+      }
+    },
+    "data": {
+      "type": "object",
+      "required": ["known_flows", "declared_classification", "unresolved_classification"],
+      "additionalProperties": false,
+      "properties": {
+        "known_flows": {"type": "array"},
+        "declared_classification": {"type": ["string", "null"]},
+        "unresolved_classification": {"type": "array"}
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["criteria", "required_tests", "quality_gates"],
+      "additionalProperties": false,
+      "properties": {
+        "criteria": {"type": "array"},
+        "required_tests": {"type": "array"},
+        "quality_gates": {"type": "array"}
+      }
+    },
+    "interview": {
+      "type": "object",
+      "required": ["unresolved_questions", "assumptions", "user_confirmations"],
+      "additionalProperties": false,
+      "properties": {
+        "unresolved_questions": {"type": "array"},
+        "assumptions": {"type": "array"},
+        "user_confirmations": {"type": "array"}
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"enum": ["pending_validation", "blocked_pending_clarification"]}
+      }
+    }
+  }
+}

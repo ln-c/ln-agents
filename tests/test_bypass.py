@@ -22,6 +22,7 @@ RESTRICTED_OS_CALLS = frozenset(
 APPROVED = {
     "readiness.py": frozenset({"subprocess", "http"}),  # version probes, Ollama health check
     "sandbox.py": frozenset({"subprocess"}),  # launches bwrap
+    "grounding.py": frozenset({"subprocess"}),  # G1 runs read-only `git rev-parse` / `git archive`
     "broker.py": frozenset({"http"}),  # the only route from a worker to a model
     "sandbox_entry.py": frozenset({"subprocess", "http", "urllib"}),  # runs inside bwrap only
 }

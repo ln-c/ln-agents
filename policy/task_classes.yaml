@@ -1,0 +1,13 @@
+# START task-class taxonomy. Human-owned: a class is the KIND of work, not a priority.
+# START blocks any entry_spec whose classification.primary_class is not listed here,
+# and the B3 fast path may only allowlist classes listed here (policy/fast_path.yaml).
+# Seeded from the examples in agents/pipeline-grounding-agent.md; add, remove, or
+# rename to suit your repositories.
+version: 1
+classes:
+  api_addition:          {description: Add or extend a public or internal API}
+  database_migration:    {description: Change a database schema or migrate stored data}
+  security_patch:        {description: Fix or mitigate a security issue}
+  ui_feature:            {description: Add or change user-interface behavior}
+  refactoring:           {description: Restructure code without changing behavior}
+  infrastructure_change: {description: Change build, deploy, or runtime infrastructure}

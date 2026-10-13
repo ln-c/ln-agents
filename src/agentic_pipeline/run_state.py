@@ -87,7 +87,13 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-POLICY_PARSED = ("policy/model_registry.yaml", "policy/budgets.yaml", "policy/data_classes.yaml")
+POLICY_PARSED = (
+    "policy/model_registry.yaml",
+    "policy/budgets.yaml",
+    "policy/data_classes.yaml",
+    "policy/task_classes.yaml",
+    "policy/weights.yaml",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +105,8 @@ class PolicySnapshot:
     registry: Mapping[str, Any]
     budgets: Mapping[str, Any]
     data_classes: Mapping[str, Any]
+    task_classes: Mapping[str, Any]
+    weights: Mapping[str, Any]
 
 
 def load_policy(root: Path) -> PolicySnapshot:
@@ -113,6 +121,8 @@ def load_policy(root: Path) -> PolicySnapshot:
             registry=parsed["policy/model_registry.yaml"],
             budgets=parsed["policy/budgets.yaml"],
             data_classes=parsed["policy/data_classes.yaml"],
+            task_classes=parsed["policy/task_classes.yaml"],
+            weights=parsed["policy/weights.yaml"],
         )
     except (OSError, KeyError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         raise RunStateError(f"cannot read graph or policy: {type(exc).__name__}: {exc}") from exc

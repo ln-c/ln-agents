@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import shutil
 import threading
@@ -25,8 +26,8 @@ def test_init_status_and_blocked_step(tmp_path: Path, capsys: pytest.CaptureFixt
     out = capsys.readouterr().out
     assert "created at START" in out and "status:   running" in out
 
-    assert run("step", "demo", runs_dir=tmp_path) == 1  # blocked: no START handler yet
-    assert "blocked: at START no handler registered for START" in capsys.readouterr().out
+    assert run("step", "demo", runs_dir=tmp_path) == 1  # blocked: no entry spec was supplied
+    assert "blocked: at START" in capsys.readouterr().out
     assert RunStore(tmp_path / "demo").load().steps == 0
 
 
@@ -376,3 +377,17 @@ def test_only_the_needed_adapter_is_built(monkeypatch: pytest.MonkeyPatch) -> No
 def test_max_steps_must_be_positive(tmp_path: Path, value: str) -> None:
     with pytest.raises(SystemExit):
         run("step", "demo", "--max-steps", value, runs_dir=tmp_path)
+
+
+def test_init_copies_a_valid_entry_spec_and_rejects_a_bad_one(tmp_path: Path) -> None:
+    from test_grounding import SPEC  # the grounding agent's example payload
+
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps(SPEC))
+    assert run("init", "demo", "--entry-spec", str(good), runs_dir=tmp_path) == 0
+    assert (tmp_path / "demo" / "inputs" / "entry_spec.json").read_text() == good.read_text()
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}")
+    assert run("init", "other", "--entry-spec", str(bad), runs_dir=tmp_path) == 1
+    assert not (tmp_path / "other").exists()

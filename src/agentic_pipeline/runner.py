@@ -27,14 +27,21 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
 from agentic_pipeline.graph import NO_EDGE_KINDS, REPO_ROOT, Edge, Graph, spent_route
-from agentic_pipeline.provenance import JsonlProvenanceLog
+from agentic_pipeline.grounding import (
+    ENTRY_SPEC_FILE,
+    GROUNDING_HANDLERS,
+    INPUTS_DIR,
+    GroundingError,
+    load_entry_spec,
+)
+from agentic_pipeline.provenance import GENESIS_HASH, JsonlProvenanceLog
 from agentic_pipeline.run_state import (
     PauseCause,
     PolicySnapshot,
@@ -62,12 +69,15 @@ class HandlerContext:
     node: str
     graph: Graph
     registry: Mapping[str, Any]
+    root: Path = REPO_ROOT  # repository whose pinned snapshot the run grounds
+    policy_digests: Mapping[str, str] = field(default_factory=dict)  # frozen at run start
+    provenance_tip: Callable[[], str] = lambda: GENESIS_HASH  # chain tip, for manifests
 
 
 type StateHandler = Callable[[HandlerContext], str]
 
-# Deterministic per-node handlers. Empty until grounding and the decision gates land.
-DEFAULT_HANDLERS: dict[str, StateHandler] = {}
+# Deterministic per-node handlers: grounding (PR-8); decision gates land in PR-9.
+DEFAULT_HANDLERS: dict[str, StateHandler] = dict(GROUNDING_HANDLERS)
 
 
 class Outcome(StrEnum):
@@ -276,7 +286,14 @@ class Runner:
         handler = self.handlers.get(node)
         if handler is not None:
             ctx = HandlerContext(
-                self.state.run_id, self.store.run_root, node, self.graph, self.registry
+                self.state.run_id,
+                self.store.run_root,
+                node,
+                self.graph,
+                self.registry,
+                root=self.root,
+                policy_digests=self.state.policy,
+                provenance_tip=self.log.tip,
             )
             return handler(ctx)
         outgoing = [e for e in self.graph.edges if e.src == node]
@@ -330,18 +347,35 @@ class Runner:
 # ── lifecycle ────────────────────────────────────────────────────────────────
 
 
-def init_run(root: Path, run_dir: Path, run_id: str, entry: str) -> RunState:
-    """Create a new run at an entrypoint, freezing graph and policy digests."""
+def init_run(
+    root: Path, run_dir: Path, run_id: str, entry: str, entry_spec: Path | None = None
+) -> RunState:
+    """Create a new run at an entrypoint, freezing graph and policy digests.
+
+    `entry_spec` is the grounding agent's payload; it is validated here so a bad one never
+    creates a run, and copied into the run for START to seal. START validates it again.
+    """
     validate_run_id(run_id)
     policy = load_policy(root)
     if entry not in policy.graph.entrypoints:
         raise RunStateError(f"{entry!r} is not an entrypoint {policy.graph.entrypoints}")
+    spec_bytes = None
+    if entry_spec is not None:
+        try:
+            spec_bytes = entry_spec.read_bytes()
+            load_entry_spec(spec_bytes)  # schema only; START checks the class and handoff
+        except (OSError, GroundingError) as exc:
+            raise RunStateError(f"cannot use entry spec {entry_spec}: {exc}") from exc
     store = RunStore(run_dir)
     store.acquire()
     try:
         store.provenance_dir.mkdir(parents=True, exist_ok=True)
         state = RunState(run_id=run_id, current=entry, policy=policy.digests)
         store.create(state)
+        if spec_bytes is not None:
+            target = run_dir / INPUTS_DIR / ENTRY_SPEC_FILE
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(spec_bytes)
         JsonlProvenanceLog(store.provenance_dir, run_id).append({"state": entry, "event": "enter"})
     finally:
         store.release()

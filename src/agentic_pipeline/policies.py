@@ -1,17 +1,21 @@
 """Invariants for human-owned policy files not covered by `graph.validate`.
 
 Budgets and routing are checked against the graph in `graph.validate`; this
-module covers weights, vetoes, data classes, escalation, and the fast path.
+module covers weights, vetoes, data classes, escalation, task classes, and the fast path.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from typing import Any
 
 MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
-POLICY_FILES = ("weights", "vetoes", "data_classes", "escalation", "fast_path")
+# Code artifacts must stay off cloud backends; weakening one is a policy-review event.
+CODE_ARTIFACTS = ("pinned_source_tree", "protected_tests")
+GROUNDING_PRODUCERS = ("START", "G1", "G4")
+POLICY_FILES = ("weights", "vetoes", "data_classes", "escalation", "fast_path", "task_classes")
 
 
 def check_weights(doc: Mapping[str, Any]) -> list[str]:
@@ -63,6 +67,34 @@ def check_data_classes(doc: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+def check_artifact_defaults(doc: Mapping[str, Any], registry: Mapping[str, Any]) -> list[str]:
+    """artifact_defaults: grounding artifacts only, declared classes, code kept off the cloud."""
+    errors: list[str] = []
+    classes = doc.get("classes") or {}
+    defaults = doc.get("artifact_defaults")
+    if not isinstance(defaults, dict):
+        return ["data_classes: artifact_defaults must be a mapping"]
+    catalog = registry.get("artifacts") or {}
+    grounding = {
+        name
+        for name, spec in catalog.items()
+        if set(spec.get("producer") or []) & set(GROUNDING_PRODUCERS)
+    }
+    for artifact, cls in defaults.items():
+        if artifact not in grounding:
+            errors.append(
+                f"data_classes: artifact_defaults names non-grounding artifact {artifact!r}"
+            )
+        if cls not in classes:
+            errors.append(f"data_classes: artifact_defaults.{artifact} unknown class {cls!r}")
+    for artifact in sorted(grounding - set(defaults)):
+        errors.append(f"data_classes: artifact_defaults is missing grounding artifact {artifact!r}")
+    for artifact in CODE_ARTIFACTS:
+        if (classes.get(defaults.get(artifact)) or {}).get("cloud_allowed") is not False:
+            errors.append(f"data_classes: {artifact} must be a class with cloud_allowed: false")
+    return errors
+
+
 def check_escalation(doc: Mapping[str, Any], data_classes: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     classes = data_classes.get("classes") or {}
@@ -92,6 +124,26 @@ def check_fast_path(doc: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+TASK_CLASS_ID = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def check_task_classes(doc: Mapping[str, Any], fast_path: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    classes = doc.get("classes")
+    if not isinstance(classes, dict) or not classes:
+        return ["task_classes: classes must be a non-empty mapping"]
+    for name, spec in classes.items():
+        if not isinstance(name, str) or not TASK_CLASS_ID.fullmatch(name):
+            errors.append(f"task_classes: {name!r} is not a lowercase snake_case id")
+        if not isinstance(spec, dict) or not str(spec.get("description") or "").strip():
+            errors.append(f"task_classes: {name} needs a non-empty description")
+    allowlist = fast_path.get("task_class_allowlist")
+    for name in allowlist if isinstance(allowlist, list) else []:
+        if name not in classes:
+            errors.append(f"fast_path: task_class_allowlist names unknown task class {name!r}")
+    return errors
+
+
 def validate_policies(docs: Mapping[str, Mapping[str, Any]]) -> list[str]:
     """Validate loaded policy documents keyed by file stem (see POLICY_FILES)."""
     return [
@@ -100,4 +152,5 @@ def validate_policies(docs: Mapping[str, Mapping[str, Any]]) -> list[str]:
         *check_data_classes(docs["data_classes"]),
         *check_escalation(docs["escalation"], docs["data_classes"]),
         *check_fast_path(docs["fast_path"]),
+        *check_task_classes(docs["task_classes"], docs["fast_path"]),
     ]
