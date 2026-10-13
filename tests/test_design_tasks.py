@@ -58,3 +58,18 @@ def test_task_embeds_role_stage_and_the_exact_schema() -> None:
 )
 def test_extract_json_object(text: str, expected: object) -> None:
     assert extract_json_object(text) == expected
+
+
+def test_critique_task_carries_the_review_dimensions_and_severity_rules() -> None:
+    """A critic that is not told the dimensions cannot honestly set review_complete."""
+    text = json_task("cross_reviewer", "A2", "critique_b_by_a", "critique")
+    for dimension in ("(1)", "(5)", "(9)", "observability", "idempotency", "testability"):
+        assert dimension in text
+    for severity in ("`blocking`", "`non_blocking`", "`informational`"):
+        assert severity in text
+    assert "Field rules:" in text
+
+
+def test_every_task_has_field_rules_exactly_once() -> None:
+    for schema in GUIDANCE:
+        assert json_task("r", "S", "op", schema).count("Field rules:") == 1
