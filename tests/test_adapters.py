@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -376,3 +377,58 @@ def test_live_claude_text_only(tmp_path: Path) -> None:
     assert outcome.status == "ok", outcome.detail
     assert (g.write_path / "implementation_patch.md").read_text().strip().lower() == "sealed"
     assert outcome.resolved_model and outcome.resolved_model.startswith("claude-")
+
+
+# ── JSON output contract (registry output_schema) ────────────────────────────
+
+
+def json_grant(tmp_path: Path, schema: str | None = "proposal") -> DispatchGrant:
+    base = grant(tmp_path)
+    return dataclasses.replace(base, stage="A1", operation_id="proposal_a", output_schema=schema)
+
+
+def test_json_operation_gets_the_schema_and_a_json_system_prompt(tmp_path: Path) -> None:
+    call = claude(tmp_path).prepare(json_grant(tmp_path))
+    prompt = json.loads(call.prompt)
+    assert "exactly one JSON object" in prompt["user"] and '"$id": "proposal"' in prompt["user"]
+    assert "manifest_hash" in prompt["user"]
+    assert "Markdown" not in prompt["system"] and "parsed as JSON" in prompt["system"]
+
+
+def test_markdown_operation_prompt_is_unchanged(tmp_path: Path) -> None:
+    prompt = json.loads(claude(tmp_path).prepare(json_grant(tmp_path, None)).prompt)
+    assert "JSON Schema" not in prompt["user"] and "Markdown" in prompt["system"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['{"id": "p"}', '```json\n{"id": "p"}\n```', '  \n{"id": "p"}\n'],
+    ids=["bare", "fenced", "padded"],
+)
+def test_json_reply_is_written_as_json(tmp_path: Path, text: str) -> None:
+    a = claude(tmp_path, run=claude_run(reply(result=text)))
+    g = json_grant(tmp_path)
+    assert a.invoke(g, a.prepare(g)).status == "ok"
+    assert json.loads((g.write_path / "proposal_a.json").read_text()) == {"id": "p"}
+    assert not (g.write_path / "proposal_a.md").exists()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Here is my proposal: {}", '["not", "an", "object"]', "```json\n{broken\n```", ""],
+    ids=["prose", "array", "broken-fence", "empty"],
+)
+def test_non_object_reply_is_kept_as_text_for_the_gate_to_reject(tmp_path: Path, text: str) -> None:
+    a = claude(tmp_path, run=claude_run(reply(result=text)))
+    g = json_grant(tmp_path)
+    assert a.invoke(g, a.prepare(g)).status == "ok"
+    assert (g.write_path / "proposal_a.md").read_text() == text
+    assert not (g.write_path / "proposal_a.json").exists()  # never repaired or reshaped
+
+
+def test_operation_without_a_schema_ignores_json_in_the_reply(tmp_path: Path) -> None:
+    a = claude(tmp_path, run=claude_run(reply(result='{"id": "p"}')))
+    g = json_grant(tmp_path, None)
+    a.invoke(g, a.prepare(g))
+    assert (g.write_path / "proposal_a.md").is_file()
+    assert not (g.write_path / "proposal_a.json").exists()

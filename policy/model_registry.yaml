@@ -233,7 +233,9 @@ isolation_profiles:
   sealed_inputs_only: [sandbox_enforcement, sealed_input_verification]
   implementation_sandbox: [sandbox_enforcement, sealed_input_verification, protected_paths_read_only, network_disabled, broker_mediated_inference]
 
-# One entry per graph state whose executor includes `model`. Reads are
+# One entry per graph state whose executor includes `model`. `output_schema` (optional)
+# names a schemas/<name>.schema.json: the operation must reply with one JSON object of
+# that shape, which the adapter writes as <operation_id>.json for the deterministic gates. Reads are
 # default-deny: only `allowed_reads` are supplied. `denied_reads` are explicit
 # assertions the validator checks are disjoint from `allowed_reads`.
 stage_requirements:
@@ -247,6 +249,7 @@ stage_requirements:
         denied_reads: [proposal_b_scratch, proposal_b_sealed]
         write_root: proposal_a
         isolation_profile: independent_proposals
+        output_schema: proposal
       - id: proposal_b
         agent: design.proposal_b
         role: proposal_author
@@ -254,6 +257,7 @@ stage_requirements:
         denied_reads: [proposal_a_scratch, proposal_a_sealed]
         write_root: proposal_b
         isolation_profile: independent_proposals
+        output_schema: proposal
   A2:
     mode: all_of
     operations:
@@ -266,6 +270,7 @@ stage_requirements:
         denied_reads: [proposal_b_scratch, critique_a_by_b_sealed]
         write_root: critique_b_by_a
         isolation_profile: independent_cross_critique
+        output_schema: critique
       - id: critique_a_by_b
         agent: design.proposal_b
         role: cross_reviewer
@@ -274,6 +279,7 @@ stage_requirements:
         denied_reads: [proposal_a_scratch, critique_b_by_a_sealed]
         write_root: critique_a_by_b
         isolation_profile: independent_cross_critique
+        output_schema: critique
   A3:
     mode: ordered_any_of
     backends: [claude_pro, google_ai_pro]
@@ -293,6 +299,7 @@ stage_requirements:
         denied_reads: [proposal_a_scratch, proposal_b_scratch]
         write_root: synthesis
         isolation_profile: sealed_inputs_only
+        output_schema: proposal
   C1:
     mode: ordered_any_of
     backends: [qwen_local]

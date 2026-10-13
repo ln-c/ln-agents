@@ -89,6 +89,7 @@ class DispatchGrant:
     write_root: str
     attempt: str
     write_path: Path
+    output_schema: str | None = None  # reply must be one JSON object of this shape
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +239,7 @@ class Dispatcher:
                 write_root=op["write_root"],
                 attempt=attempt,
                 write_path=self.run_root / ATTEMPTS_DIR / attempt / roots[op["write_root"]],
+                output_schema=op.get("output_schema"),
             )
             results[op["id"]] = self._invoke(grant, reservation)
             grants.append(grant)
