@@ -205,6 +205,13 @@ If validation fails because of a repairable design defect, return to the appropr
 
 ## Output Contract — Design Spec 1.1
 
+> **Machine-readable proposals follow `schemas/proposal.schema.json`.** For A1 proposals and
+> the A3 synthesis, the deterministic gates (A4, B1) read `<operation_id>.json` from the
+> stage's write root and validate it against that schema (`id`, `author_model`,
+> `synthesized`, `topology.components`, `manifest_hash`, and `sources` when synthesized).
+> Where the envelope below differs, the schema wins. The envelope remains the narrative
+> handoff until it is reconciled with the schema.
+
 Output exactly one of the following payload types. Do not mix a conflict payload with a success payload.
 
 ### Success payload

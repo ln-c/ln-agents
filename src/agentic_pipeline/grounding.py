@@ -41,6 +41,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agentic_pipeline.frozen import PolicyChanged, frozen_policy
 from agentic_pipeline.fsutil import atomic_write_json
 from agentic_pipeline.manifest import (
     ManifestError,
@@ -50,7 +51,7 @@ from agentic_pipeline.manifest import (
     publish_stage_manifest,
     resolve_sealed_inputs,
 )
-from agentic_pipeline.run_state import PolicySnapshot, RunStateError, load_policy
+from agentic_pipeline.run_state import PolicySnapshot
 from agentic_pipeline.schemas import ValidationError, validate
 
 if TYPE_CHECKING:
@@ -108,14 +109,10 @@ def load_entry_spec(data: bytes) -> dict[str, Any]:
 
 
 def _policy(ctx: HandlerContext) -> PolicySnapshot:
-    """Policy as read now, which must still be the bytes this run froze."""
     try:
-        snap = load_policy(ctx.root)
-    except RunStateError as exc:
+        return frozen_policy(ctx)
+    except PolicyChanged as exc:
         raise GroundingError(str(exc)) from exc
-    if snap.digests != dict(ctx.policy_digests):
-        raise GroundingError("graph or policy changed since the run started")
-    return snap
 
 
 def _stage_dir(ctx: HandlerContext, stage: str) -> Path:

@@ -1,0 +1,343 @@
+"""Deterministic design-side gates: A4, B1, B2, B3, and DR.
+
+Each handler recomputes its facts from sealed artifacts and frozen policy, picks a guard,
+and writes an audit record under `gates/<NODE>/<input digest>.json`. Naming the record by
+the digest of the inputs makes a handler a pure function of them: a gate that re-runs after
+an A1 or A3 retry sees new inputs and writes a new record, and never returns a stale guard.
+
+Authoritative proposal format: `schemas/proposal.schema.json`. A design stage writes its
+proposal as `<operation_id>.json` in its write root (e.g. `proposal_a.json`).
+
+Rules these gates keep:
+* A missing, tampered, or unreadable sealed artifact raises (BLOCKED); only a proposal's
+  *content* can make it invalid.
+* A4 never returns `design_spent` (the runner substitutes the spent route itself) or
+  `constraint_sources_conflict` (no deterministic definition exists; reported as not
+  evaluated).
+* A veto that cannot be evaluated is never treated as cleared: B1 lists it, and B3's
+  `no_active_veto` fails while any veto is unevaluated.
+* B2 has no source of criterion scores, so it publishes an explicit *unscored* record
+  with `high_uncertainty: true`. B3 can therefore never fast-path today.
+* B3 fails every `require_all` item that has no evaluator.
+* DR refuses to run: it needs a scored winner and none can exist yet.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from agentic_pipeline.frozen import PolicyChanged, frozen_policy
+from agentic_pipeline.fsutil import atomic_write_json
+from agentic_pipeline.manifest import (
+    ManifestError,
+    build_manifest,
+    digest_path,
+    publish_stage_manifest,
+    resolve_sealed_inputs,
+)
+from agentic_pipeline.run_state import PolicySnapshot
+from agentic_pipeline.schemas import ValidationError, validate
+
+if TYPE_CHECKING:
+    from agentic_pipeline.runner import HandlerContext
+
+GATES_DIR = "gates"
+DESIGN_INPUTS = ("proposal_a_sealed", "proposal_b_sealed", "synthesis_sealed")
+CONTEXT_INPUT = "pinned_context_manifest"
+UNEVALUATED = "not_evaluated"
+
+
+class GateError(Exception):
+    pass
+
+
+# ── inputs ───────────────────────────────────────────────────────────────────
+
+
+def _policy(ctx: HandlerContext) -> PolicySnapshot:
+    try:
+        return frozen_policy(ctx)
+    except PolicyChanged as exc:
+        raise GateError(str(exc)) from exc
+
+
+def _sealed(ctx: HandlerContext, ids: list[str]) -> dict[str, Path]:
+    inputs, errors = resolve_sealed_inputs(ctx.run_root, ctx.run_id, ctx.registry, ids)
+    if errors:
+        raise GateError("; ".join(errors))
+    return {name: item.path for name, item in inputs.items()}
+
+
+def _canonical(document: Any) -> bytes:
+    return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _digest(document: Any) -> str:
+    return hashlib.sha256(_canonical(document)).hexdigest()
+
+
+def _record(ctx: HandlerContext, node: str, key: str, document: Mapping[str, Any]) -> Path:
+    path = ctx.run_root / GATES_DIR / node / f"{key}.json"
+    atomic_write_json(path, document)
+    return path
+
+
+class Design:
+    """The sealed design artifacts as parsed JSON, plus what could not be parsed."""
+
+    def __init__(self, ctx: HandlerContext) -> None:
+        paths = _sealed(ctx, [CONTEXT_INPUT, *DESIGN_INPUTS])
+        context = json.loads((paths[CONTEXT_INPUT] / "context_manifest.json").read_text("utf-8"))
+        self.context_hash: str = context["hash"]
+        self.input_digest = _digest({name: digest_path(path) for name, path in paths.items()})
+        self.docs: dict[str, Any] = {}
+        self.parse_errors: dict[str, str] = {}
+        operations = {
+            "proposal_a_sealed": "proposal_a",
+            "proposal_b_sealed": "proposal_b",
+            "synthesis_sealed": "synthesis",
+        }
+        for artifact, operation in operations.items():
+            file = paths[artifact] / f"{operation}.json"
+            try:
+                self.docs[artifact] = json.loads(file.read_text("utf-8"))
+            except (OSError, ValueError) as exc:
+                self.parse_errors[artifact] = f"{operation}.json: {exc}"
+
+
+def _schema_errors(doc: Any) -> list[str]:
+    try:
+        validate("proposal", doc)
+    except ValidationError as exc:
+        return [f"schema: {exc.message}"]
+    return []
+
+
+def design_problems(design: Design) -> dict[str, list[str]]:
+    """Per sealed artifact, why it is invalid (empty list = valid)."""
+    problems: dict[str, list[str]] = {}
+    for artifact in DESIGN_INPUTS:
+        if artifact in design.parse_errors:
+            problems[artifact] = [design.parse_errors[artifact]]
+            continue
+        doc = design.docs[artifact]
+        errors = _schema_errors(doc)
+        if not errors:
+            expect_synth = artifact == "synthesis_sealed"
+            if doc["synthesized"] is not expect_synth:
+                errors.append(f"synthesized must be {str(expect_synth).lower()}")
+            if doc["manifest_hash"] != design.context_hash:
+                errors.append("manifest_hash does not match the pinned context manifest")
+        problems[artifact] = errors
+    ids = {a: design.docs[a].get("id") for a in DESIGN_INPUTS if not problems[a]}
+    if len(set(ids.values())) != len(ids):
+        for artifact in ids:
+            problems[artifact].append("proposal ids must be distinct")
+    if not problems["synthesis_sealed"] and not (
+        problems["proposal_a_sealed"] or problems["proposal_b_sealed"]
+    ):
+        allowed = {ids["proposal_a_sealed"], ids["proposal_b_sealed"]}
+        sources = set(design.docs["synthesis_sealed"].get("sources", {}).values())
+        if not sources <= allowed:
+            problems["synthesis_sealed"].append(f"sources must name only {sorted(allowed)}")
+    return problems
+
+
+# ── A4 ───────────────────────────────────────────────────────────────────────
+
+
+def validate_design(ctx: HandlerContext) -> str:
+    """A4: schema, `manifest_hash`, and traceability checks on proposals A, B and S."""
+    _policy(ctx)
+    design = Design(ctx)
+    problems = design_problems(design)
+    if problems["proposal_a_sealed"] or problems["proposal_b_sealed"]:
+        guard = "proposal_invalid"
+    elif problems["synthesis_sealed"]:
+        guard = "synthesis_invalid"
+    else:
+        guard = "all_required_valid"
+    _record(
+        ctx,
+        "A4",
+        design.input_digest,
+        {"guard": guard, "problems": problems, "constraint_sources_conflict": UNEVALUATED},
+    )
+    return guard
+
+
+# ── B1 ───────────────────────────────────────────────────────────────────────
+
+# veto id -> does this candidate violate it? Only checks that can be decided from a proposal
+# document belong here; every other veto in policy/vetoes.yaml is reported as unevaluated.
+VETO_EVALUATORS: dict[str, Callable[[Any], bool]] = {
+    "schema_invalid": lambda doc: bool(_schema_errors(doc)),
+}
+
+
+class VetoReport:
+    def __init__(self, ctx: HandlerContext) -> None:
+        policy = _policy(ctx)
+        design = Design(ctx)
+        known = {v["id"] for v in policy.vetoes["vetoes"]}
+        stray = sorted(set(VETO_EVALUATORS) - known)
+        if stray:
+            raise GateError(f"evaluators for vetoes not in policy/vetoes.yaml: {stray}")
+        self.input_digest = design.input_digest
+        self.evaluated = sorted(set(VETO_EVALUATORS))
+        self.unevaluated = sorted(known - set(VETO_EVALUATORS))
+        self.fired: dict[str, list[str]] = {}
+        self.survivors: list[str] = []
+        for artifact in DESIGN_INPUTS:
+            doc = design.docs.get(artifact)
+            fired = (
+                [veto for veto, check in VETO_EVALUATORS.items() if check(doc)]
+                if doc is not None
+                else ["schema_invalid"]
+            )
+            self.fired[artifact] = fired
+            if not fired:
+                self.survivors.append(artifact)
+
+    @property
+    def clear(self) -> bool:
+        """True only if no veto fired and none was left unevaluated."""
+        return not any(self.fired.values()) and not self.unevaluated
+
+    def document(self, guard: str) -> dict[str, Any]:
+        return {
+            "guard": guard,
+            "evaluated": self.evaluated,
+            "unevaluated": self.unevaluated,
+            "fired": self.fired,
+            "survivors": self.survivors,
+        }
+
+
+def apply_vetoes(ctx: HandlerContext) -> str:
+    """B1: hard vetoes. A candidate that cannot be shown clean is not called clean."""
+    report = VetoReport(ctx)
+    # No veto carries a "correctable" flag in policy, so a fired veto is never correctable.
+    guard = "at_least_one_survivor" if report.survivors else "all_vetoed_otherwise"
+    _record(ctx, "B1", report.input_digest, report.document(guard))
+    return guard
+
+
+# ── B2 ───────────────────────────────────────────────────────────────────────
+
+
+def unscored_record(policy: PolicySnapshot) -> dict[str, Any]:
+    return {
+        "weights_version": str(policy.weights["version"]),
+        "values": [],
+        "flags": {"near_tie": False, "high_uncertainty": True},
+        "scored": False,
+        "reason": "no stage produces criterion scores; nothing was scored",
+    }
+
+
+def score_candidates(ctx: HandlerContext) -> str:
+    """B2: publish an explicit unscored record rather than inventing scores."""
+    policy = _policy(ctx)
+    report = VetoReport(ctx)
+    record = unscored_record(policy)
+    try:
+        validate("scores", record)
+    except ValidationError as exc:
+        raise GateError(f"scores record invalid: {exc.message}") from exc
+    out = ctx.run_root / GATES_DIR / "B2" / report.input_digest / "scores"
+    out.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(out / "scores.json", record)
+    try:
+        manifest = build_manifest(
+            ctx.run_root,
+            run_id=ctx.run_id,
+            stage="B2",
+            attempt=report.input_digest[:32],
+            artifacts={"scores": (out, True)},
+            operations={},
+            provenance_tip=ctx.provenance_tip(),
+            data_classes={"scores": _most_restrictive(ctx, policy)},
+        )
+        publish_stage_manifest(ctx.run_root, manifest)
+    except ManifestError as exc:
+        raise GateError(f"B2: manifest not published: {exc}") from exc
+    return "always"
+
+
+def _most_restrictive(ctx: HandlerContext, policy: PolicySnapshot) -> str:
+    classes = [
+        item.data_class
+        for item in resolve_sealed_inputs(
+            ctx.run_root, ctx.run_id, ctx.registry, list(DESIGN_INPUTS)
+        )[0].values()
+    ]
+    order = policy.data_classes["order"]
+    return max(classes or ["unknown"], key=lambda c: order.index(c) if c in order else len(order))
+
+
+# ── B3 ───────────────────────────────────────────────────────────────────────
+
+# require_all item -> True (holds), False (does not hold), or None (cannot be evaluated).
+# An item with no evaluator, or an evaluator that returns None, fails closed.
+type Evaluator = Callable[["B3Facts"], bool | None]
+
+
+class B3Facts:
+    def __init__(self, ctx: HandlerContext) -> None:
+        self.policy = _policy(ctx)
+        self.vetoes = VetoReport(ctx)
+        self.scores = unscored_record(self.policy)
+        paths = _sealed(ctx, ["requirements"])
+        spec = json.loads((paths["requirements"] / "entry_spec.json").read_text("utf-8"))
+        self.task_class = spec["classification"]["primary_class"]
+        inputs, errors = resolve_sealed_inputs(
+            ctx.run_root, ctx.run_id, ctx.registry, ["applicable_contracts", "protected_tests"]
+        )
+        self.grounding_intact = not errors and len(inputs) == 2
+
+
+EVALUATORS: dict[str, Evaluator] = {
+    "task_class_on_allowlist": lambda f: (
+        f.task_class in (f.policy.fast_path.get("task_class_allowlist") or [])
+    ),
+    "no_active_veto": lambda f: f.vetoes.clear,
+    "contracts_and_protected_tests_intact": lambda f: f.grounding_intact,
+    "no_near_tie": lambda f: (
+        None if not f.scores.get("scored", True) else not f.scores["flags"]["near_tie"]
+    ),
+    "no_high_uncertainty": lambda f: not f.scores["flags"]["high_uncertainty"],
+}
+
+
+def authorize(ctx: HandlerContext) -> str:
+    """B3: fast path only if every `require_all` item is evaluated and holds."""
+    facts = B3Facts(ctx)
+    results: dict[str, str] = {}
+    for item in facts.policy.fast_path["require_all"]:
+        evaluator = EVALUATORS.get(item)
+        outcome = evaluator(facts) if evaluator else None
+        results[item] = UNEVALUATED if outcome is None else ("passed" if outcome else "failed")
+    guard = "fast_path_eligible" if all(r == "passed" for r in results.values()) else "otherwise"
+    _record(ctx, "B3", facts.vetoes.input_digest, {"guard": guard, "require_all": results})
+    return guard
+
+
+# ── DR ───────────────────────────────────────────────────────────────────────
+
+
+def record_decision(ctx: HandlerContext) -> str:
+    raise GateError("DR needs a scored winner; none exists, and none is ever invented")
+
+
+GATE_HANDLERS: dict[str, Callable[[Any], str]] = {
+    "A4": validate_design,
+    "B1": apply_vetoes,
+    "B2": score_candidates,
+    "B3": authorize,
+    "DR": record_decision,
+}

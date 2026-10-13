@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
+from agentic_pipeline.gates import GATE_HANDLERS
 from agentic_pipeline.graph import NO_EDGE_KINDS, REPO_ROOT, Edge, Graph, spent_route
 from agentic_pipeline.grounding import (
     ENTRY_SPEC_FILE,
@@ -76,8 +77,9 @@ class HandlerContext:
 
 type StateHandler = Callable[[HandlerContext], str]
 
-# Deterministic per-node handlers: grounding (PR-8); decision gates land in PR-9.
-DEFAULT_HANDLERS: dict[str, StateHandler] = dict(GROUNDING_HANDLERS)
+# Deterministic per-node handlers: grounding (PR-8), design-side gates (PR-9a). Build and
+# release gates (E2, X, F1, ...) have none yet, so a run blocks at them.
+DEFAULT_HANDLERS: dict[str, StateHandler] = {**GROUNDING_HANDLERS, **GATE_HANDLERS}
 
 
 class Outcome(StrEnum):
