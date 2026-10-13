@@ -1,4 +1,4 @@
-"""Deterministic design-side gates: A4, B1, B2, B3, and DR.
+"""Deterministic design-side gates: A2, A4, B1, B2, B3, and DR.
 
 Each handler recomputes its facts from sealed artifacts and frozen policy, picks a guard,
 and writes an audit record under `gates/<NODE>/<input digest>.json`. Naming the record by
@@ -7,6 +7,9 @@ an A1 or A3 retry sees new inputs and writes a new record, and never returns a s
 
 Authoritative proposal format: `schemas/proposal.schema.json`. A design stage writes its
 proposal as `<operation_id>.json` in its write root (e.g. `proposal_a.json`).
+
+Critique format: `schemas/critique.schema.json`; a critic writes `<operation_id>.json`
+(e.g. `critique_b_by_a.json`) in its write root.
 
 Rules these gates keep:
 * A missing, tampered, or unreadable sealed artifact raises (BLOCKED); only a proposal's
@@ -36,6 +39,7 @@ from agentic_pipeline.manifest import (
     ManifestError,
     build_manifest,
     digest_path,
+    load_manifest,
     publish_stage_manifest,
     resolve_sealed_inputs,
 )
@@ -167,6 +171,115 @@ def validate_design(ctx: HandlerContext) -> str:
         design.input_digest,
         {"guard": guard, "problems": problems, "constraint_sources_conflict": UNEVALUATED},
     )
+    return guard
+
+
+# ── A2 ───────────────────────────────────────────────────────────────────────
+
+# critique operation -> (the proposal it reviews, that proposal's producing operation)
+CRITIQUES = {
+    "critique_b_by_a": ("proposal_b_sealed", "proposal_b"),
+    "critique_a_by_b": ("proposal_a_sealed", "proposal_a"),
+}
+
+
+def _load_json(directory: Path, name: str) -> Any:
+    try:
+        return json.loads((directory / f"{name}.json").read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GateError(f"{name}.json: {exc}") from exc
+
+
+def _backend(ctx: HandlerContext, stage: str, operation: str) -> str:
+    try:
+        doc = load_manifest(ctx.run_root, stage, ctx.run_id)
+    except ManifestError as exc:
+        raise GateError(f"{stage}: {exc}") from exc
+    if doc is None or operation not in doc["operations"]:
+        raise GateError(f"{stage}.{operation}: no recorded backend")
+    return str(doc["operations"][operation]["backend"])
+
+
+def critique_problems(ctx: HandlerContext) -> tuple[str, dict[str, Any], dict[str, list[str]]]:
+    """(input digest, parsed critiques, problems per critique).
+
+    A critique with any problem is not evidence of a review, so the caller blocks rather
+    than reading it as "no flaws". Finding counts are recomputed from the findings.
+    """
+    names = [
+        CONTEXT_INPUT,
+        *(t for t, _ in CRITIQUES.values()),
+        *(f"{c}_sealed" for c in CRITIQUES),
+    ]
+    paths = _sealed(ctx, names)
+    context = _load_json(paths[CONTEXT_INPUT], "context_manifest")
+    digest = _digest({name: digest_path(path) for name, path in paths.items()})
+    docs: dict[str, Any] = {}
+    problems: dict[str, list[str]] = {}
+    for operation, (target, target_op) in CRITIQUES.items():
+        doc = _load_json(paths[f"{operation}_sealed"], operation)
+        docs[operation] = doc
+        found = _critique_errors(doc)
+        if not found:
+            target_doc = _load_json(paths[target], target_op)
+            found = _critique_binding_errors(ctx, operation, target_op, doc, target_doc, context)
+        problems[operation] = found
+    return digest, docs, problems
+
+
+def _critique_errors(doc: Any) -> list[str]:
+    try:
+        validate("critique", doc)
+    except ValidationError as exc:
+        return [f"schema: {exc.message}"]
+    errors = []
+    derived = {"blocking": 0, "non_blocking": 0, "informational": 0}
+    for finding in doc["findings"]:
+        derived[finding["severity"]] += 1
+    if derived != doc["counts"]:
+        errors.append(f"counts {doc['counts']} do not match the findings {derived}")
+    if not doc["review_complete"]:
+        errors.append("review_complete is false")
+    return errors
+
+
+def _critique_binding_errors(
+    ctx: HandlerContext,
+    operation: str,
+    target_op: str,
+    doc: Mapping[str, Any],
+    target: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> list[str]:
+    errors = []
+    if doc["manifest_hash"] != context["hash"]:
+        errors.append("manifest_hash does not match the pinned context manifest")
+    if doc["target_proposal_id"] != target.get("id"):
+        errors.append(f"target_proposal_id is not the {target_op} id {target.get('id')!r}")
+    for finding in doc["findings"]:
+        if finding.get("proposal_id", doc["target_proposal_id"]) != doc["target_proposal_id"]:
+            errors.append(f"finding {finding['id']} is about a different proposal")
+    # Independence comes from the recorded backends, not from a model's own claim.
+    if _backend(ctx, "A2", operation) == _backend(ctx, "A1", target_op):
+        errors.append("critic ran on the same backend as the proposal it reviews")
+    return errors
+
+
+def assess_critiques(ctx: HandlerContext) -> str:
+    """A2: any blocking finding means `blocking_flaw`; otherwise `no_blocking_flaw`.
+
+    An invalid, incomplete, or unbound critique blocks the step: it is not a finding, and
+    it must not read as a clean review. `design_spent` is never chosen here; the runner
+    substitutes the spent route when the budgeted `blocking_flaw` edge is exhausted.
+    """
+    _policy(ctx)
+    digest, docs, problems = critique_problems(ctx)
+    bad = {op: errs for op, errs in problems.items() if errs}
+    if bad:
+        raise GateError(f"critique not usable: {bad}")
+    blocking = {op: doc["counts"]["blocking"] for op, doc in docs.items()}
+    guard = "blocking_flaw" if any(blocking.values()) else "no_blocking_flaw"
+    _record(ctx, "A2", digest, {"guard": guard, "blocking_findings": blocking})
     return guard
 
 
@@ -335,6 +448,7 @@ def record_decision(ctx: HandlerContext) -> str:
 
 
 GATE_HANDLERS: dict[str, Callable[[Any], str]] = {
+    "A2": assess_critiques,
     "A4": validate_design,
     "B1": apply_vetoes,
     "B2": score_candidates,
