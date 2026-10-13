@@ -157,7 +157,7 @@ def test_model_stage_with_several_edges_needs_a_handler(rig: Rig) -> None:
 
 
 def test_blocked_step_changes_nothing(rig: Rig) -> None:
-    runner = rig.at("B1")  # no handler until PR-9
+    runner = rig.at("B1", {})  # explicit empty handler table: nothing may decide
     before = (rig.run_dir / "state.json").read_text()
     events_before = rig.log.path.read_text()
     result = runner.step()
