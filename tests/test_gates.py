@@ -958,3 +958,13 @@ def test_findings_that_do_not_bind_do_not_fire_the_adr_veto(design: Design) -> N
     )
     design.guard("B1")
     assert design.records("B1", keep_adr=True)[0]["fired"]["proposal_a_sealed"] == []
+
+
+def test_a_review_on_the_authors_backend_cannot_fire_the_adr_veto(
+    design: Design, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(BACKENDS, "critique_a_by_b", "claude_pro")  # same as proposal_a
+    seal_clean_design(design)
+    seal_reviews(design, [finding("f1", "ADR 0001")])
+    design.guard("B1")
+    assert design.records("B1", keep_adr=True)[0]["fired"]["proposal_a_sealed"] == []
