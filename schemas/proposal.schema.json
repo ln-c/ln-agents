@@ -21,6 +21,21 @@
         "edges": {"type": "array"}
       }
     },
+    "dependencies": {
+      "type": "array",
+      "description": "Third-party dependencies this design adds. Present and empty means none; absent means the proposal did not say, and the dependency veto is then not evaluated.",
+      "items": {
+        "type": "object",
+        "required": ["name", "ecosystem"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "ecosystem": {"type": "string", "minLength": 1},
+          "version": {"type": "string", "minLength": 1, "description": "The exact version intended; without it the veto cannot be evaluated."},
+          "purpose": {"type": "string"}
+        }
+      }
+    },
     "constraints_addressed": {"type": "array", "items": {"type": "string"}},
     "manifest_hash": {"type": "string"}
   },

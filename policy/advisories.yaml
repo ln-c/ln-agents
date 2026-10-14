@@ -1,0 +1,20 @@
+# Pinned vulnerability snapshot for the B1 `known_vulnerable_dependency` veto.
+# Human-owned. It is frozen with the other policy for every run, so B1 sees the same data
+# a reviewer sees here, and its digest is recorded with the run.
+#
+# `ecosystems` lists what this snapshot covers. A declared dependency in any other ecosystem
+# is NOT evaluated (never treated as clean). Leave it empty until a snapshot has really been
+# imported; an empty list with covered ecosystems would clear everything.
+#
+# Each advisory follows the OSV `affected` shape (https://ossf.github.io/osv-schema/):
+#   - id: GHSA-xxxx-xxxx-xxxx
+#     severity: critical            # critical | high | moderate | low; only critical vetoes
+#     affected:
+#       - package: {ecosystem: PyPI, name: example}
+#         ranges: [{type: ECOSYSTEM, events: [{introduced: "0"}, {fixed: "1.2.3"}]}]
+#         versions: []              # optional explicit affected versions
+version: 1
+source: none
+generated_at: null
+ecosystems: []
+advisories: []

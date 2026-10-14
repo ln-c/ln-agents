@@ -11,11 +11,21 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from agentic_pipeline import advisories
+
 MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
 # Code artifacts must stay off cloud backends; weakening one is a policy-review event.
 CODE_ARTIFACTS = ("pinned_source_tree", "protected_tests")
 GROUNDING_PRODUCERS = ("START", "G1", "G4")
-POLICY_FILES = ("weights", "vetoes", "data_classes", "escalation", "fast_path", "task_classes")
+POLICY_FILES = (
+    "weights",
+    "vetoes",
+    "data_classes",
+    "escalation",
+    "fast_path",
+    "task_classes",
+    "advisories",
+)
 
 
 def check_weights(doc: Mapping[str, Any]) -> list[str]:
@@ -52,6 +62,29 @@ def check_vetoes(doc: Mapping[str, Any]) -> list[str]:
         seen.add(veto_id)
         if not veto.get("description"):
             errors.append(f"vetoes[{i}]: missing description")
+    return errors
+
+
+def check_advisories(doc: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    ecosystems = doc.get("ecosystems")
+    if not isinstance(ecosystems, list):
+        return ["advisories: ecosystems must be a list"]
+    for eco in ecosystems:
+        if str(eco).lower() not in advisories.SUPPORTED:
+            errors.append(f"advisories: ecosystem {eco!r} is not supported by the matcher")
+    if ecosystems and not doc.get("generated_at"):
+        errors.append("advisories: a snapshot that covers ecosystems needs generated_at")
+    seen: set[str] = set()
+    for i, adv in enumerate(doc.get("advisories") or []):
+        adv_id = adv.get("id")
+        if not adv_id or adv_id in seen:
+            errors.append(f"advisories[{i}]: missing or duplicate id {adv_id!r}")
+        seen.add(str(adv_id))
+        if adv.get("severity") not in advisories.SEVERITIES:
+            errors.append(f"advisories[{i}]: severity must be one of {advisories.SEVERITIES}")
+        if not adv.get("affected"):
+            errors.append(f"advisories[{i}]: affected is empty")
     return errors
 
 
@@ -153,4 +186,5 @@ def validate_policies(docs: Mapping[str, Mapping[str, Any]]) -> list[str]:
         *check_escalation(docs["escalation"], docs["data_classes"]),
         *check_fast_path(docs["fast_path"]),
         *check_task_classes(docs["task_classes"], docs["fast_path"]),
+        *check_advisories(docs["advisories"]),
     ]

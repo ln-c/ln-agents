@@ -18,7 +18,9 @@ Rules these gates keep:
   `constraint_sources_conflict` (no deterministic definition exists; reported as not
   evaluated).
 * A veto that cannot be evaluated is never treated as cleared: B1 lists it, and B3's
-  `no_active_veto` fails while any veto is unevaluated.
+  `no_active_veto` fails while any veto is unevaluated, or undetermined for a candidate (for
+  example a proposal that does not declare its dependencies, or a dependency the pinned
+  advisory snapshot does not cover).
 * B2 scores each surviving candidate from an independent review: A from `critique_a_by_b`,
   B from `critique_b_by_a`, S from A3R's `synthesis_review`. A reviewer's 0-4 scores are used
   as given (the scores schema's scale); a missing score, an invalid or unbound review, or a
@@ -37,6 +39,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agentic_pipeline.advisories import candidate_verdict
 from agentic_pipeline.frozen import PolicyChanged, frozen_policy
 from agentic_pipeline.fsutil import atomic_write_json
 from agentic_pipeline.manifest import (
@@ -289,10 +292,16 @@ def assess_critiques(ctx: HandlerContext) -> str:
 
 # ── B1 ───────────────────────────────────────────────────────────────────────
 
-# veto id -> does this candidate violate it? Only checks that can be decided from a proposal
-# document belong here; every other veto in policy/vetoes.yaml is reported as unevaluated.
-VETO_EVALUATORS: dict[str, Callable[[Any], bool]] = {
-    "schema_invalid": lambda doc: bool(_schema_errors(doc)),
+# veto id -> does this candidate violate it? True fires the veto, False clears it, None means
+# the proposal or the policy snapshot cannot say (reported as undetermined, never as clear).
+# Only checks decidable from a proposal document belong here; every other veto in
+# policy/vetoes.yaml is reported as unevaluated.
+type VetoEvaluator = Callable[[Any, PolicySnapshot], bool | None]
+VETO_EVALUATORS: dict[str, VetoEvaluator] = {
+    "schema_invalid": lambda doc, policy: bool(_schema_errors(doc)),
+    "known_vulnerable_dependency": lambda doc, policy: (
+        candidate_verdict(doc, policy.advisories) if not _schema_errors(doc) else None
+    ),
 }
 
 
@@ -308,28 +317,41 @@ class VetoReport:
         self.evaluated = sorted(set(VETO_EVALUATORS))
         self.unevaluated = sorted(known - set(VETO_EVALUATORS))
         self.fired: dict[str, list[str]] = {}
+        self.undetermined: dict[str, list[str]] = {}
         self.survivors: list[str] = []
         for artifact in DESIGN_INPUTS:
             doc = design.docs.get(artifact)
-            fired = (
-                [veto for veto, check in VETO_EVALUATORS.items() if check(doc)]
-                if doc is not None
-                else ["schema_invalid"]
-            )
+            fired: list[str] = []
+            undetermined: list[str] = []
+            if doc is None:
+                fired = ["schema_invalid"]
+            else:
+                for veto, check in VETO_EVALUATORS.items():
+                    verdict = check(doc, policy)
+                    if verdict is None:
+                        undetermined.append(veto)
+                    elif verdict:
+                        fired.append(veto)
             self.fired[artifact] = fired
+            self.undetermined[artifact] = undetermined
             if not fired:
                 self.survivors.append(artifact)
 
     @property
     def clear(self) -> bool:
-        """True only if no veto fired and none was left unevaluated."""
-        return not any(self.fired.values()) and not self.unevaluated
+        """True only if no veto fired and none was left unevaluated or undetermined."""
+        return (
+            not any(self.fired.values())
+            and not any(self.undetermined.values())
+            and not self.unevaluated
+        )
 
     def document(self, guard: str) -> dict[str, Any]:
         return {
             "guard": guard,
             "evaluated": self.evaluated,
             "unevaluated": self.unevaluated,
+            "undetermined": self.undetermined,
             "fired": self.fired,
             "survivors": self.survivors,
         }
