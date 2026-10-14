@@ -19,8 +19,12 @@ Rules these gates keep:
   evaluated).
 * A veto that cannot be evaluated is never treated as cleared: B1 lists it, and B3's
   `no_active_veto` fails while any veto is unevaluated.
-* B2 has no source of criterion scores, so it publishes an explicit *unscored* record
-  with `high_uncertainty: true`. B3 can therefore never fast-path today.
+* B2 scores each surviving candidate from an independent review: A from `critique_a_by_b`,
+  B from `critique_b_by_a`, S from A3R's `synthesis_review`. A reviewer's 1-5 score maps to
+  the scores schema's 0-4; a missing score, an invalid or unbound review, or a reviewer on
+  the author's backend leaves the criterion unscored, and unscored criteria raise
+  uncertainty. One scorer per candidate means no disagreement signal; a blocking finding
+  against S (which no gate routes) marks it contested and sets `high_uncertainty`.
 * B3 fails every `require_all` item that has no evaluator.
 * DR refuses to run: it needs a scored winner and none can exist yet.
 """
@@ -342,27 +346,150 @@ def apply_vetoes(ctx: HandlerContext) -> str:
 
 # ── B2 ───────────────────────────────────────────────────────────────────────
 
+# candidate artifact -> (the critique that scores it, its sealed artifact, the stage and
+# operation that wrote the scored proposal, the stage and operation that wrote the critique)
+SCORERS = {
+    "proposal_a_sealed": ("critique_a_by_b", "critique_a_by_b_sealed", ("A1", "proposal_a")),
+    "proposal_b_sealed": ("critique_b_by_a", "critique_b_by_a_sealed", ("A1", "proposal_b")),
+    "synthesis_sealed": ("synthesis_review", "synthesis_review_sealed", ("A3", "synthesis")),
+}
+CRITIC_STAGES = {"critique_a_by_b": "A2", "critique_b_by_a": "A2", "synthesis_review": "A3R"}
+SCORE_OFFSET = 1  # a critic scores 1 (worst) to 5 (best); the scores schema holds 0 to 4
 
-def unscored_record(policy: PolicySnapshot) -> dict[str, Any]:
+
+def _scorer_inputs(
+    ctx: HandlerContext, survivors: list[str]
+) -> tuple[dict[str, Path], dict[str, str]]:
+    """Sealed reviews of the survivors; one never published is a reason, not an error."""
+    paths: dict[str, Path] = {}
+    missing: dict[str, str] = {}
+    for candidate in survivors:
+        _, artifact, _ = SCORERS[candidate]
+        found, errors = resolve_sealed_inputs(ctx.run_root, ctx.run_id, ctx.registry, [artifact])
+        if errors and all("no published manifest" in e for e in errors):
+            missing[candidate] = "no review was published for this candidate"
+        elif errors:
+            raise GateError("; ".join(errors))
+        else:
+            paths[candidate] = found[artifact].path
+    return paths, missing
+
+
+def _score_one(
+    ctx: HandlerContext, candidate: str, path: Path, proposal: Any, context_hash: str
+) -> tuple[dict[str, int], list[str], bool]:
+    """(criterion -> 0..4, why not every criterion scored, contested) for one candidate."""
+    operation, _, (target_stage, target_op) = SCORERS[candidate]
+    critique = _load_json(path, operation)
+    problems = _critique_errors(critique)
+    if not problems:
+        if critique["manifest_hash"] != context_hash:
+            problems.append("manifest_hash does not match the pinned context manifest")
+        if critique["target_proposal_id"] != (proposal or {}).get("id"):
+            problems.append("target_proposal_id is not the candidate's id")
+        if _backend(ctx, CRITIC_STAGES[operation], operation) == _backend(
+            ctx, target_stage, target_op
+        ):
+            problems.append("the reviewer ran on the same backend as the author")
+    if problems:
+        return {}, problems, False
+    given = critique.get("scores", {})
+    values = {c: v["score"] - SCORE_OFFSET for c, v in given.items()}
+    return values, [], critique["counts"]["blocking"] > 0
+
+
+def build_scores(ctx: HandlerContext, policy: PolicySnapshot, report: VetoReport) -> dict[str, Any]:
+    """The B2 scores record: a pure function of the sealed design, reviews, and frozen policy."""
+    weights: Mapping[str, float] = policy.weights["weights"]
+    thresholds = policy.weights["thresholds"]
+    design = Design(ctx)
+    paths, missing = _scorer_inputs(ctx, report.survivors)
+    values: list[dict[str, Any]] = []
+    candidates: dict[str, Any] = {}
+    for candidate in report.survivors:
+        scored: dict[str, int] = {}
+        reasons: list[str] = []
+        contested = False
+        if candidate in missing:
+            reasons.append(missing[candidate])
+        else:
+            scored, reasons, contested = _score_one(
+                ctx, candidate, paths[candidate], design.docs.get(candidate), design.context_hash
+            )
+        unscored = sorted(set(weights) - set(scored))
+        uncertainty = len(unscored) / len(weights)
+        weighted = None if unscored else sum(w * scored[c] / 4 for c, w in weights.items())
+        for criterion in sorted(scored.keys() & set(weights)):
+            values.append(
+                {
+                    "candidate": candidate,
+                    "criterion": criterion,
+                    "type": "criterion_score",
+                    "value": scored[criterion],
+                }
+            )
+        values.append(
+            {
+                "candidate": candidate,
+                "criterion": "all",
+                "type": "uncertainty",
+                "value": uncertainty,
+            }
+        )
+        candidates[candidate] = {
+            "weighted": weighted,
+            "unscored_criteria": unscored,
+            "contested": contested,
+            "reasons": reasons,
+        }
+    ranked = sorted(
+        (c for c, d in candidates.items() if d["weighted"] is not None),
+        key=lambda c: -candidates[c]["weighted"],
+    )
+    gap_small = len(ranked) >= 2 and (
+        candidates[ranked[0]]["weighted"] - candidates[ranked[1]]["weighted"]
+        < thresholds["near_tie_delta"]
+    )
+    # Fewer than two comparable candidates cannot show a clear winner among several survivors.
+    uncomparable = len(report.survivors) >= 2 and len(ranked) < 2
+    uncertainties = [v["value"] for v in values if v["type"] == "uncertainty"]
+    mean = sum(uncertainties) / len(uncertainties) if uncertainties else 1.0
     return {
         "weights_version": str(policy.weights["version"]),
-        "values": [],
-        "flags": {"near_tie": False, "high_uncertainty": True},
-        "scored": False,
-        "reason": "no stage produces criterion scores; nothing was scored",
+        "values": values,
+        "flags": {
+            "near_tie": gap_small or uncomparable,
+            "high_uncertainty": mean > thresholds["high_uncertainty"]
+            or any(d["contested"] for d in candidates.values())
+            or not candidates,
+        },
+        "scored": bool(ranked),
+        "ranking": ranked,
+        "candidates": candidates,
     }
 
 
+def _scores_key(ctx: HandlerContext, report: VetoReport) -> str:
+    keys = {"design": report.input_digest}
+    for candidate in report.survivors:
+        _, artifact, _ = SCORERS[candidate]
+        found, _ = resolve_sealed_inputs(ctx.run_root, ctx.run_id, ctx.registry, [artifact])
+        if artifact in found:
+            keys[artifact] = digest_path(found[artifact].path)
+    return _digest(keys)
+
+
 def score_candidates(ctx: HandlerContext) -> str:
-    """B2: publish an explicit unscored record rather than inventing scores."""
+    """B2: criterion scores from the independent reviews; unscored where there is no evidence."""
     policy = _policy(ctx)
     report = VetoReport(ctx)
-    record = unscored_record(policy)
+    record = build_scores(ctx, policy, report)
     try:
         validate("scores", record)
     except ValidationError as exc:
         raise GateError(f"scores record invalid: {exc.message}") from exc
-    out = ctx.run_root / GATES_DIR / "B2" / report.input_digest / "scores"
+    key = _scores_key(ctx, report)
+    out = ctx.run_root / GATES_DIR / "B2" / key / "scores"
     out.mkdir(parents=True, exist_ok=True)
     atomic_write_json(out / "scores.json", record)
     try:
@@ -370,7 +497,7 @@ def score_candidates(ctx: HandlerContext) -> str:
             ctx.run_root,
             run_id=ctx.run_id,
             stage="B2",
-            attempt=report.input_digest[:32],
+            attempt=key[:32],
             artifacts={"scores": (out, True)},
             operations={},
             provenance_tip=ctx.provenance_tip(),
@@ -404,7 +531,7 @@ class B3Facts:
     def __init__(self, ctx: HandlerContext) -> None:
         self.policy = _policy(ctx)
         self.vetoes = VetoReport(ctx)
-        self.scores = unscored_record(self.policy)
+        self.scores = build_scores(ctx, self.policy, self.vetoes)
         paths = _sealed(ctx, ["requirements"])
         spec = json.loads((paths["requirements"] / "entry_spec.json").read_text("utf-8"))
         self.task_class = spec["classification"]["primary_class"]
@@ -420,9 +547,7 @@ EVALUATORS: dict[str, Evaluator] = {
     ),
     "no_active_veto": lambda f: f.vetoes.clear,
     "contracts_and_protected_tests_intact": lambda f: f.grounding_intact,
-    "no_near_tie": lambda f: (
-        None if not f.scores.get("scored", True) else not f.scores["flags"]["near_tie"]
-    ),
+    "no_near_tie": lambda f: None if not f.scores["scored"] else not f.scores["flags"]["near_tie"],
     "no_high_uncertainty": lambda f: not f.scores["flags"]["high_uncertainty"],
 }
 

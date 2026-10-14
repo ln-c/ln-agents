@@ -29,6 +29,7 @@ BACKENDS = {
     "synthesis": "claude_pro",
     "critique_b_by_a": "claude_pro",
     "critique_a_by_b": "google_ai_pro",
+    "synthesis_review": "google_ai_pro",  # the synthesis ran on claude_pro
 }
 
 
@@ -57,6 +58,15 @@ def blocking(fid: str, pid: str) -> dict:
         "evidence": ["api component writes config.secret to disk unencrypted"],
         "remediation": "encrypt at rest",
     }
+
+
+CRITERIA = ("security", "reliability", "scalability", "maintainability", "cost")
+
+
+def scores(value: int = 4, **override: int | None) -> dict:
+    """A critique `scores` block: every criterion at `value`, or dropped when overridden to None."""
+    given = {c: override.get(c, value) for c in CRITERIA}
+    return {c: {"score": v, "evidence": f"{c} evidence"} for c, v in given.items() if v is not None}
 
 
 def critique(
@@ -151,6 +161,25 @@ class Design:
             },
         )
 
+    def seal_reviews(
+        self, a: dict | None = None, b: dict | None = None, s: dict | None = None
+    ) -> None:
+        """Seal A2's critiques and A3R's synthesis review, each carrying `scores` blocks."""
+        h = self.context_hash
+        self.seal_critiques(
+            critique("c1", "prop-b", h, scores=b if b is not None else scores(2)),
+            critique("c2", "prop-a", h, scores=a if a is not None else scores(4)),
+        )
+        self.seal(
+            "A3R",
+            {
+                "synthesis_review_sealed": (
+                    "synthesis_review",
+                    critique("c3", "prop-s", h, scores=s if s is not None else scores(5)),
+                )
+            },
+        )
+
     def guard(self, node: str) -> str:
         return GATE_HANDLERS[node](self.rig.ctx(self.runner, node))
 
@@ -166,14 +195,19 @@ def design(repo: Path, tmp_path: Path) -> Design:  # noqa: F811
 
 def test_valid_design_walks_a4_to_human_review(design: Design) -> None:
     design.seal_valid()
+    design.seal_reviews()
     design.runner.state.current = "A4"
     design.runner._save()
+    result = design.runner.step()  # A4 hands the validated design to the A3R review stage
+    assert result.outcome is Outcome.BLOCKED and "dispatch_stage" in result.detail
+    design.runner.state.current = "B1"  # the review is sealed by hand: no model runs here
+    design.runner._save()
     seen = []
-    for _ in range(4):  # A4, B1, B2, B3 each decide; B3 sends the run to H1
+    for _ in range(3):  # B1, B2, B3 each decide; B3 sends the run to H1
         result = design.runner.step()
         assert result.outcome is Outcome.ADVANCED, result
         seen.append(design.runner.state.current)
-    assert seen == ["B1", "B2", "B3", "H1"]
+    assert seen == ["B2", "B3", "H1"]
     assert design.records("A4")[0]["guard"] == "all_required_valid"
 
 
@@ -344,23 +378,121 @@ def test_a_veto_evaluator_must_name_a_policy_veto(
         design.guard("B1")
 
 
-def test_b2_publishes_an_explicit_unscored_record(design: Design) -> None:
-    design.seal_valid()
+def published_scores(design: Design) -> dict:
     assert design.guard("B2") == "always"
-    inputs, errors = resolve_sealed_inputs(
-        design.rig.run_dir, "demo", design.runner.registry, ["pinned_context_manifest"]
-    )
-    assert not errors
     from agentic_pipeline.manifest import load_manifest
 
     manifest = load_manifest(design.rig.run_dir, "B2", "demo")
     assert manifest is not None
     entry = manifest["artifacts"]["scores"]
     assert entry["data_class"] == "internal" and entry["sealed"] is True
-    scores = json.loads((design.rig.run_dir / entry["path"] / "scores.json").read_text())
-    validate("scores", scores)
-    assert scores["scored"] is False and scores["values"] == []
-    assert scores["flags"]["high_uncertainty"] is True
+    doc = json.loads((design.rig.run_dir / entry["path"] / "scores.json").read_text())
+    validate("scores", doc)
+    return doc
+
+
+def test_b2_with_no_reviews_is_unscored_and_uncertain(design: Design) -> None:
+    design.seal_valid()
+    doc = published_scores(design)
+    assert doc["scored"] is False and doc["ranking"] == []
+    assert doc["flags"] == {"near_tie": True, "high_uncertainty": True}
+    assert all(c["reasons"] for c in doc["candidates"].values())
+
+
+def test_b2_maps_scores_one_to_five_onto_zero_to_four(design: Design) -> None:
+    design.seal_valid()
+    design.seal_reviews(a=scores(5), b=scores(1), s=scores(3))
+    doc = published_scores(design)
+    by = {(v["candidate"], v["criterion"]): v["value"] for v in doc["values"]}
+    assert by[("proposal_a_sealed", "security")] == 4
+    assert by[("proposal_b_sealed", "security")] == 0
+    assert by[("synthesis_sealed", "security")] == 2
+    assert by[("proposal_a_sealed", "all")] == 0  # fully scored: no uncertainty
+    weighted = {c: d["weighted"] for c, d in doc["candidates"].items()}
+    assert weighted["proposal_a_sealed"] == pytest.approx(1.0)
+    assert weighted["proposal_b_sealed"] == pytest.approx(0.0)
+    assert weighted["synthesis_sealed"] == pytest.approx(0.5)
+    assert doc["ranking"] == ["proposal_a_sealed", "synthesis_sealed", "proposal_b_sealed"]
+    assert doc["flags"] == {"near_tie": False, "high_uncertainty": False}
+
+
+def test_b2_flags_a_near_tie(design: Design) -> None:
+    design.seal_valid()
+    design.seal_reviews(a=scores(4), b=scores(4), s=scores(2))
+    assert published_scores(design)["flags"]["near_tie"] is True
+
+
+def test_a_missing_score_is_unscored_and_raises_uncertainty(design: Design) -> None:
+    design.seal_valid()
+    design.seal_reviews(a=scores(4, cost=None), b=scores(3), s=scores(5))
+    doc = published_scores(design)
+    a = doc["candidates"]["proposal_a_sealed"]
+    assert a["unscored_criteria"] == ["cost"] and a["weighted"] is None
+    assert "proposal_a_sealed" not in doc["ranking"]
+    assert doc["flags"]["near_tie"] is False  # the other two are still comparable
+
+
+def test_an_evidence_free_score_is_refused_by_the_schema() -> None:
+    bad = {"security": {"score": 4, "evidence": ""}}
+    with pytest.raises(Exception, match="evidence|non-empty|short"):
+        validate("critique", critique("c", "p", "sha256:" + "0" * 64, scores=bad))
+    with pytest.raises(Exception, match="smaller than or equal to 5"):
+        validate("critique", critique("c", "p", "sha256:" + "0" * 64, scores=scores(6)))
+
+
+def test_a_review_on_the_synthesizers_backend_is_not_counted(
+    design: Design, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    design.seal_valid()
+    monkeypatch.setitem(BACKENDS, "synthesis_review", "claude_pro")  # same as the synthesis
+    design.seal_reviews()
+    doc = published_scores(design)
+    s = doc["candidates"]["synthesis_sealed"]
+    assert s["weighted"] is None and "same backend" in s["reasons"][0]
+    assert doc["flags"]["high_uncertainty"] is True  # one of three candidates fully unscored
+
+
+def test_a_review_of_another_proposal_is_not_counted(design: Design) -> None:
+    design.seal_valid()
+    design.seal_reviews()
+    h = design.context_hash
+    design.seal(
+        "A3R",
+        {
+            "synthesis_review_sealed": (
+                "synthesis_review",
+                critique("c3", "prop-a", h, scores=scores(5)),
+            )
+        },
+    )
+    s = published_scores(design)["candidates"]["synthesis_sealed"]
+    assert s["weighted"] is None and "target_proposal_id" in s["reasons"][0]
+
+
+def test_a_blocking_finding_against_the_synthesis_marks_it_contested(design: Design) -> None:
+    design.seal_valid()
+    design.seal_reviews()
+    h = design.context_hash
+    design.seal(
+        "A3R",
+        {
+            "synthesis_review_sealed": (
+                "synthesis_review",
+                critique("c3", "prop-s", h, [blocking("f1", "prop-s")], scores=scores(5)),
+            )
+        },
+    )
+    doc = published_scores(design)
+    assert doc["candidates"]["synthesis_sealed"]["contested"] is True
+    assert doc["flags"]["high_uncertainty"] is True
+
+
+def test_a_tampered_review_blocks_b2(design: Design) -> None:
+    design.seal_valid()
+    design.seal_reviews()
+    (design.rig.run_dir / "design" / "synthesis_review" / "synthesis_review.json").write_text("{}")
+    with pytest.raises(GateError, match="content changed"):
+        design.guard("B2")
 
 
 def test_b3_never_fast_paths_with_nothing_evaluable(design: Design) -> None:
@@ -370,7 +502,7 @@ def test_b3_never_fast_paths_with_nothing_evaluable(design: Design) -> None:
     assert results["task_class_on_allowlist"] == "failed"  # allowlist is empty
     assert results["no_active_veto"] == "failed"  # four vetoes unevaluated: never cleared
     assert results["no_high_uncertainty"] == "failed"
-    assert results["no_near_tie"] == UNEVALUATED
+    assert results["no_near_tie"] == UNEVALUATED  # nothing scored
     assert results["no_security_tag"] == UNEVALUATED  # no evaluator: fails closed
     assert results["contracts_and_protected_tests_intact"] == "passed"
 
