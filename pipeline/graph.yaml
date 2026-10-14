@@ -81,7 +81,14 @@ states:
       - {to: A3, guard: synthesis_invalid, budget: design}
       - {to: H1, guard: design_spent}
       - {to: H1, guard: constraint_sources_conflict}
-      - {to: B1, guard: all_required_valid}
+      - {to: A3R, guard: all_required_valid}
+  A3R:
+    kind: model
+    executor: model
+    doc: Independent review and criterion scores for the validated synthesis S (a backend other than the synthesizer).
+    produces: synthesis_review
+    edges:
+      - {to: B1, guard: always}
 
   # ── SCORING AND AUTHORIZATION ────────────────────────────────────────────
   B1:

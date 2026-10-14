@@ -125,6 +125,14 @@ Each critic must assess:
 > `review_complete`, `counts`, and `findings`. The A2 gate recomputes the counts from the
 > findings. Any `blocking` finding sends the run back to A1 (budgeted); an invalid or
 > incomplete critique blocks the step and is never read as "no flaws".
+>
+> A critique may also carry `scores`: for each of security, reliability, scalability,
+> maintainability and cost, an integer `score` from 0 (fails the criterion) to 4 (no weakness
+> found), the scale of the scores schema, and the `evidence` for it. A missing score
+> leaves the criterion unscored and raises uncertainty. The synthesis `S` is reviewed and scored
+> by stage A3R, on a backend other than the one that wrote it; a review on the same backend is
+> not counted. Each candidate has one scorer, so there is no disagreement signal. A blocking
+> finding against `S` in A3R is not routed; it marks `S` contested and sets `high_uncertainty`.
 
 ### Finding severity
 

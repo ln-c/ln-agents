@@ -5,6 +5,17 @@
   "type": "object",
   "required": ["id", "author_model", "target_proposal_id", "manifest_hash", "review_complete", "counts", "findings"],
   "additionalProperties": false,
+  "definitions": {
+    "score": {
+      "type": "object",
+      "required": ["score", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "score": {"type": "integer", "minimum": 0, "maximum": 4},
+        "evidence": {"type": "string", "minLength": 1}
+      }
+    }
+  },
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "author_model": {"type": "string", "minLength": 1},
@@ -19,6 +30,18 @@
         "blocking": {"type": "integer", "minimum": 0},
         "non_blocking": {"type": "integer", "minimum": 0},
         "informational": {"type": "integer", "minimum": 0}
+      }
+    },
+    "scores": {
+      "type": "object",
+      "description": "Optional criterion scores for the reviewed proposal (0 worst, 4 best), the scale of the scores schema. A missing or evidence-free score leaves that criterion unscored.",
+      "additionalProperties": false,
+      "properties": {
+        "security": {"$ref": "#/definitions/score"},
+        "reliability": {"$ref": "#/definitions/score"},
+        "scalability": {"$ref": "#/definitions/score"},
+        "maintainability": {"$ref": "#/definitions/score"},
+        "cost": {"$ref": "#/definitions/score"}
       }
     },
     "findings": {

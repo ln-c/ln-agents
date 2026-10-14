@@ -105,6 +105,11 @@ agents:
       model_assistance: [claude_pro, google_ai_pro]
       requires_both_proposals_sealed: true
       unresolved_conflict_route: human_authority
+    # Reviews and scores the validated synthesis. Google is tried first because A3 prefers
+    # Claude; B2 only counts the scores if the recorded backends differ.
+    synthesis_review:
+      primary: deterministic_orchestrator
+      model_assistance: [google_ai_pro, claude_pro]
 
   scoring_authorization:
     primary: deterministic_rules
@@ -213,6 +218,7 @@ artifacts:
   critique_b_by_a_sealed: {sealed: true, producer: [A2.critique_b_by_a]}
   critique_a_by_b_sealed: {sealed: true, producer: [A2.critique_a_by_b]}
   synthesis_sealed: {sealed: true, producer: [A3.synthesis]}
+  synthesis_review_sealed: {sealed: true, producer: [A3R.synthesis_review]}
   design_decision_sealed: {sealed: true, producer: [DR, ADR]}
   contracts_sealed: {sealed: true, producer: [C1.module_decomposition]}
   generated_tests_sealed: {sealed: true, producer: [D1.test_generation]}
@@ -226,6 +232,7 @@ workspace_roots:
   critique_b_by_a: design/critique_b_by_a
   critique_a_by_b: design/critique_a_by_b
   synthesis: design/synthesis
+  synthesis_review: design/synthesis_review
   contracts: build/contracts
   generated_tests: build/generated_tests
   implementation_patch: build/implementation_patch
@@ -304,6 +311,19 @@ stage_requirements:
         write_root: synthesis
         isolation_profile: sealed_inputs_only
         output_schema: proposal
+  A3R:
+    mode: ordered_any_of
+    backends: [google_ai_pro, claude_pro]
+    operations:
+      - id: synthesis_review
+        agent: design.synthesis_review
+        role: synthesis_reviewer
+        target_artifact: synthesis_sealed
+        allowed_reads: [pinned_context_manifest, synthesis_sealed]
+        denied_reads: [proposal_a_scratch, proposal_b_scratch]
+        write_root: synthesis_review
+        isolation_profile: sealed_inputs_only
+        output_schema: critique
   C1:
     mode: ordered_any_of
     backends: [qwen_local]

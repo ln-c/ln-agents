@@ -73,3 +73,18 @@ def test_critique_task_carries_the_review_dimensions_and_severity_rules() -> Non
 def test_every_task_has_field_rules_exactly_once() -> None:
     for schema in GUIDANCE:
         assert json_task("r", "S", "op", schema).count("Field rules:") == 1
+
+
+def test_critique_task_asks_for_evidenced_zero_to_four_scores() -> None:
+    text = json_task("synthesis_reviewer", "A3R", "synthesis_review", "critique")
+    for criterion in ("security", "reliability", "scalability", "maintainability", "cost"):
+        assert criterion in text
+    assert "from 0 to 4" in text and "evidence" in text
+
+
+def test_a3r_reviews_with_the_critique_contract() -> None:
+    from agentic_pipeline.run_state import load_policy
+
+    spec = load_policy(Path(__file__).resolve().parents[1]).registry["stage_requirements"]["A3R"]
+    (op,) = spec["operations"]
+    assert op["output_schema"] == "critique" and op["target_artifact"] == "synthesis_sealed"
