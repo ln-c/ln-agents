@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,8 +24,12 @@ from agentic_pipeline.policies import check_approvers
 from agentic_pipeline.provenance import verify_provenance_chain
 from agentic_pipeline.run_state import Status
 from agentic_pipeline.runner import Outcome
+from agentic_pipeline.sandbox import HOME
 
-pytestmark = pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="needs ssh-keygen")
+IN_CI_SANDBOX = os.environ.get("HOME") == HOME  # ssh-keygen needs a passwd entry there
+pytestmark = pytest.mark.skipif(
+    shutil.which("ssh-keygen") is None or IN_CI_SANDBOX, reason="needs ssh-keygen and a real user"
+)
 
 KEYGEN = shutil.which("ssh-keygen") or "ssh-keygen"
 NAMESPACE = "agentic-pipeline-approval"

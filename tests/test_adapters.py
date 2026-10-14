@@ -29,6 +29,7 @@ from agentic_pipeline.broker import BrokerStats, InferenceBroker
 from agentic_pipeline.dispatch import DispatchGrant
 from agentic_pipeline.graph import load_yaml
 from agentic_pipeline.sandbox import (
+    HOME,
     SandboxResult,
     SandboxSpec,
     SandboxUnavailable,
@@ -348,6 +349,9 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
 """
 
 
+@pytest.mark.skipif(
+    os.environ.get("HOME") == HOME, reason="inside the CI sandbox the host home is the sandbox's"
+)
 @pytest.mark.skipif(not _sandbox_usable(), reason="bwrap or prlimit unavailable")
 def test_fake_claude_inside_real_sandbox(tmp_path: Path) -> None:
     binary = tmp_path / "claude"

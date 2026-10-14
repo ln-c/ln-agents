@@ -11,7 +11,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from agentic_pipeline import advisories, approvals
+from agentic_pipeline import advisories, approvals, ci
 
 MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
 # Code artifacts must stay off cloud backends; weakening one is a policy-review event.
@@ -26,6 +26,8 @@ POLICY_FILES = (
     "task_classes",
     "advisories",
     "approvers",
+    "ci",
+    "routing",
 )
 
 
@@ -190,6 +192,55 @@ def check_approvers(doc: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+def check_ci(doc: Mapping[str, Any], routing: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    toolchain = doc.get("toolchain")
+    if not isinstance(toolchain, dict) or toolchain.get("kind") not in ("uv_sync", "none"):
+        errors.append("ci: toolchain.kind must be 'uv_sync' or 'none'")
+    elif not isinstance(toolchain.get("offline", True), bool):
+        errors.append("ci: toolchain.offline must be a boolean")
+    checks = doc.get("checks")
+    if not isinstance(checks, dict) or set(checks) != set(ci.CHECK_NAMES):
+        return [*errors, f"ci: checks must be exactly {list(ci.CHECK_NAMES)}"]
+    causes = set(routing.get("routes") or {})
+    for name, spec in checks.items():
+        if not isinstance(spec, dict):
+            errors.append(f"ci: {name} must be a mapping")
+            continue
+        if spec.get("stage") not in ci.STAGES:
+            errors.append(f"ci: {name}.stage must be one of {list(ci.STAGES)}")
+        if not isinstance(spec.get("required"), bool):
+            errors.append(f"ci: {name}.required must be a boolean")
+        if spec.get("cause") not in causes:
+            errors.append(f"ci: {name}.cause {spec.get('cause')!r} is not a route in routing.yaml")
+        commands = spec.get("commands")
+        if not isinstance(commands, list) or not all(
+            isinstance(c, list) and c and all(isinstance(a, str) and a for a in c) for c in commands
+        ):
+            errors.append(f"ci: {name}.commands must be a list of non-empty argv lists")
+        score = spec.get("score")
+        if score is not None:
+            errors += _check_score(name, score)
+    return errors
+
+
+def _check_score(name: str, score: Any) -> list[str]:
+    if not isinstance(score, dict) or not set(score) <= {"pattern", "minimum"}:
+        return [f"ci: {name}.score may only have pattern and minimum"]
+    errors = []
+    if "pattern" in score:
+        try:
+            if re.compile(score["pattern"]).groups != 1:
+                errors.append(f"ci: {name}.score.pattern needs exactly one capture group")
+        except (re.error, TypeError):
+            errors.append(f"ci: {name}.score.pattern is not a valid regex")
+    if "minimum" in score and (
+        isinstance(score["minimum"], bool) or not isinstance(score["minimum"], int | float)
+    ):
+        errors.append(f"ci: {name}.score.minimum must be a number")
+    return errors
+
+
 def check_fast_path(doc: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     if not isinstance(doc.get("task_class_allowlist"), list):
@@ -233,4 +284,5 @@ def validate_policies(docs: Mapping[str, Mapping[str, Any]]) -> list[str]:
         *check_task_classes(docs["task_classes"], docs["fast_path"]),
         *check_advisories(docs["advisories"]),
         *check_approvers(docs["approvers"]),
+        *check_ci(docs["ci"], docs["routing"]),
     ]

@@ -11,7 +11,6 @@ import pytest
 from test_grounding import Rig, repo  # noqa: F401  (repo is a fixture)
 
 from agentic_pipeline.build_gates import (
-    BEHAVIORAL,
     BUILD_GATE_HANDLERS,
     CAUSES,
     UNKNOWN_CAUSE,
@@ -27,11 +26,37 @@ from agentic_pipeline.provenance import GENESIS_HASH
 from agentic_pipeline.run_state import load_policy
 from agentic_pipeline.runner import HandlerContext, Outcome, Runner
 
+TEST_CI = """version: 1
+toolchain: {kind: none, offline: true, env: {}, timeout_seconds: 60}
+checks:
+  contract_tests:
+    {stage: E2, required: false, cause: implementation_violates_contract, commands: []}
+  acceptance_tests:
+    stage: E2
+    required: true
+    cause: implementation_violates_contract
+    commands: [[python3, -c, "import sys; sys.exit(0)"]]
+  performance: {stage: E2, required: false, cause: implementation_violates_contract, commands: []}
+  integration:
+    stage: F1
+    required: true
+    cause: implementation_violates_contract
+    commands: [[python3, -c, "import sys; sys.exit(0)"]]
+  adr_fitness: {stage: F1, required: false, cause: unknown_or_spent, commands: []}
+  mutation: {stage: F1, required: true, cause: requirement_missing, commands: [], score: {}}
+  mcdc: {stage: F1, required: true, cause: requirement_missing, commands: [], score: {}}
+"""
+
 
 class Build:
-    """Grounding walked to G4, then an E1 patch published by hand."""
+    """Grounding walked to G4, then an E1 patch published by hand.
 
-    def __init__(self, repo: Path, tmp_path: Path) -> None:  # noqa: F811
+    The run's CI policy is a small one that needs no uv environment: acceptance_tests and
+    integration pass, and mutation and mcdc are unset and required, as in the shipped policy.
+    """
+
+    def __init__(self, repo: Path, tmp_path: Path, ci: str = TEST_CI) -> None:  # noqa: F811
+        (repo / "policy" / "ci.yaml").write_text(ci)
         self.rig = Rig(repo, tmp_path)
         self.runner: Runner = self.rig.runner()
         for _ in range(4):
@@ -82,17 +107,30 @@ def statuses(build: Build) -> dict[str, str]:
     return {n: c["status"] for n, c in run_checks(build.ctx("E2"))[1].items()}
 
 
-def test_clean_patch_passes_every_runnable_check_and_fails_closed_on_the_rest(build: Build) -> None:
+def test_clean_patch_passes_static_and_configured_checks_and_skips_optional_unset(
+    build: Build,
+) -> None:
     build.publish(CLEAN)
-    result = statuses(build)
-    assert {n for n, s in result.items() if s == "passed"} == {
-        "write_scope",
-        "protected_tests_intact",
-        "contracts_intact",
-        "no_secrets",
-        "no_dependency_change",
+    assert statuses(build) == {
+        "write_scope": "passed",
+        "protected_tests_intact": "passed",
+        "contracts_intact": "passed",
+        "no_secrets": "passed",
+        "no_dependency_change": "passed",
+        "contract_tests": "skipped",
+        "acceptance_tests": "passed",
+        "performance": "skipped",
     }
-    assert {n for n, s in result.items() if s == UNEVALUATED} == set(BEHAVIORAL)
+    assert BUILD_GATE_HANDLERS["E2"](build.ctx("E2")) == "all_pass"
+
+
+def test_no_behavioral_check_runs_for_a_patch_that_fails_a_static_check(build: Build) -> None:
+    build.publish({"tests/test_x.py": "x\n"})
+    result = run_checks(build.ctx("E2"))[1]
+    assert result["write_scope"]["status"] == "failed"
+    for name in ("contract_tests", "acceptance_tests", "performance"):
+        assert result[name]["status"] == UNEVALUATED
+        assert result[name]["problems"] == ["not run: a static check failed"]
     assert BUILD_GATE_HANDLERS["E2"](build.ctx("E2")) == "any_fail_or_exception"
 
 
@@ -101,7 +139,7 @@ def test_e2_records_an_audit_bound_to_the_patch(build: Build) -> None:
     BUILD_GATE_HANDLERS["E2"](build.ctx("E2"))
     (record,) = (build.rig.run_dir / "gates" / "E2").glob("*.json")
     doc = json.loads(record.read_text())
-    assert doc["patch"].startswith("E1:sha256:") and doc["guard"] == "any_fail_or_exception"
+    assert doc["patch"].startswith("E1:sha256:") and doc["guard"] == "all_pass"
     build.publish({**CLEAN, "src/other.py": "x = 1\n"})
     BUILD_GATE_HANDLERS["E2"](build.ctx("E2"))
     assert len(list((build.rig.run_dir / "gates" / "E2").glob("*.json"))) == 2
@@ -158,8 +196,8 @@ def test_the_newest_patch_wins(build: Build) -> None:
     assert statuses(build)["write_scope"] == "passed"
 
 
-def test_x_routes_a_check_that_could_not_run_to_a_human_not_a_retry(build: Build) -> None:
-    build.publish(CLEAN)
+def test_x_sends_a_failure_it_cannot_reproduce_to_a_human_not_a_retry(build: Build) -> None:
+    build.publish(CLEAN)  # every check passes on reproduction
     assert BUILD_GATE_HANDLERS["X"](build.ctx("X")) == "unknown_or_spent"
 
 
@@ -174,12 +212,23 @@ def test_x_routes_security_failures_to_a_human(build: Build, files: dict[str, st
     assert json.loads(record.read_text())["from"] == "E2"
 
 
-def test_x_classifies_a_failed_behavioral_check_as_a_contract_violation() -> None:
-    checks = {"write_scope": {"status": "passed"}, "contract_tests": {"status": "failed"}}
-    assert classify(checks) == "implementation_violates_contract"
-    # Security wins over a behavioral failure; unknown is the default.
+def test_x_classifies_failures_by_security_then_policy_cause_then_infra() -> None:
+    cause = "implementation_violates_contract"
+    checks = {
+        "write_scope": {"status": "passed"},
+        "contract_tests": {"status": "failed", "cause": cause},
+    }
+    assert classify(checks) == cause
+    # Security wins over a behavioral failure; a failed check wins over infra.
     assert classify({**checks, "no_secrets": {"status": "failed"}}) == "security_or_scope"
-    assert classify({"contract_tests": {"status": UNEVALUATED}}) == "unknown_or_spent"
+    infra = {"status": "infra_error", "cause": cause}
+    assert classify({**checks, "performance": infra}) == cause
+    assert classify({"performance": infra}) == "infra_rerun_e2"
+    assert classify({"integration": infra}, "F1") == "infra_rerun_f1"
+    # A check that never ran is unknown, never a retry.
+    assert classify({"contract_tests": {"status": UNEVALUATED, "cause": cause}}) == (
+        "unknown_or_spent"
+    )
 
 
 def test_x_only_emits_causes_that_policy_defines(build: Build) -> None:
@@ -187,10 +236,10 @@ def test_x_only_emits_causes_that_policy_defines(build: Build) -> None:
     assert {cause for cause, _ in CAUSES} | {UNKNOWN_CAUSE} <= defined
 
 
-def test_x_refuses_to_route_from_anywhere_but_e2(build: Build) -> None:
+def test_x_refuses_to_route_from_anywhere_but_e2_or_f1(build: Build) -> None:
     build.publish(CLEAN)
-    for origin in ("F1", None):
-        with pytest.raises(BuildGateError, match="only E2 failures"):
+    for origin in ("H1", None):
+        with pytest.raises(BuildGateError, match="only E2 and F1 failures"):
             BUILD_GATE_HANDLERS["X"](build.ctx("X", origin))
 
 
@@ -200,8 +249,8 @@ def test_x_spent_routes_are_unambiguous(build: Build) -> None:
     assert spent_route(graph, "X", "H1").guard == "unknown_or_spent"
 
 
-def test_the_runner_takes_e2_to_x_to_a_human(build: Build) -> None:
-    build.publish(CLEAN)
+def test_the_runner_takes_a_failed_e2_to_x_to_a_human(build: Build) -> None:
+    build.publish({"policy/budgets.yaml": "x: 1\n"})
     runner = build.runner
     runner.state.current = "E2"
     runner._save()
@@ -219,7 +268,7 @@ def test_x_reached_without_an_e2_entry_blocks(build: Build) -> None:
     runner.state.current = "X"
     runner._save()
     result = runner.step()
-    assert result.outcome is Outcome.BLOCKED and "only E2 failures" in result.detail
+    assert result.outcome is Outcome.BLOCKED and "only E2 and F1 failures" in result.detail
 
 
 def seal_build_inputs(build: Build) -> None:
@@ -262,3 +311,98 @@ def test_e3_treats_unresolvable_inputs_as_unknown_data(build: Build) -> None:
     doc = record(build)
     assert doc["data_class"] == "unknown" and doc["eligible_agents"] == []
     assert doc["unresolved_inputs"]  # contracts_sealed / generated_tests_sealed do not exist yet
+
+
+FAILING = [["python3", "-c", "import sys; sys.exit(3)"]]
+
+
+def failing_ci(stage_check: str, commands: list[list[str]] = FAILING) -> str:
+    import yaml
+
+    doc = yaml.safe_load(TEST_CI)
+    doc["checks"][stage_check]["commands"] = commands
+    return yaml.safe_dump(doc)
+
+
+def test_a_failing_e2_check_goes_to_x_and_x_picks_the_policy_cause(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    b = Build(repo, tmp_path, failing_ci("acceptance_tests"))
+    b.publish(CLEAN)
+    assert BUILD_GATE_HANDLERS["E2"](b.ctx("E2")) == "any_fail_or_exception"
+    (record,) = (b.rig.run_dir / "gates" / "E2").glob("*.json")
+    check = json.loads(record.read_text())["checks"]["acceptance_tests"]
+    assert check["status"] == "failed" and check["runs"][0]["exit_code"] == 3
+    assert BUILD_GATE_HANDLERS["X"](b.ctx("X")) == "implementation_violates_contract"
+
+
+def test_f1_needs_every_required_check_and_the_unset_ones_never_pass(build: Build) -> None:
+    build.publish(CLEAN)
+    assert BUILD_GATE_HANDLERS["F1"](build.ctx("F1")) == "required_check_failed"
+    (record,) = (build.rig.run_dir / "gates" / "F1").glob("*.json")
+    checks = json.loads(record.read_text())["checks"]
+    assert checks["integration"]["status"] == "passed"
+    assert checks["adr_fitness"]["status"] == "skipped"
+    for unset in ("mutation", "mcdc"):
+        assert checks[unset]["status"] == UNEVALUATED
+        assert "required but unset" in checks[unset]["problems"][0]
+    # X reproduces it and sends a check that never ran to a human, not to a retry.
+    assert BUILD_GATE_HANDLERS["X"](build.ctx("X", "F1")) == "unknown_or_spent"
+
+
+def test_f1_passes_when_every_required_check_is_configured_and_passes(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    doc = yaml.safe_load(TEST_CI)
+    ok = [["python3", "-c", "print('coverage 91.5%')"]]
+    for name in ("mutation", "mcdc"):
+        doc["checks"][name].update(
+            commands=ok, score={"pattern": r"coverage ([0-9.]+)%", "minimum": 90}
+        )
+    b = Build(repo, tmp_path, yaml.safe_dump(doc))
+    b.publish(CLEAN)
+    assert BUILD_GATE_HANDLERS["F1"](b.ctx("F1")) == "all_required_pass"
+
+
+def test_a_score_below_its_minimum_fails_and_routes_to_requirement_missing(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    doc = yaml.safe_load(TEST_CI)
+    low = [["python3", "-c", "print('mutation score: 40')"]]
+    doc["checks"]["mutation"].update(
+        commands=low, score={"pattern": r"score: ([0-9.]+)", "minimum": 80}
+    )
+    doc["checks"]["mcdc"].update(commands=[["python3", "-c", "print('mc/dc 100')"]])
+    doc["checks"]["mcdc"]["score"] = {"pattern": r"mc/dc ([0-9.]+)", "minimum": 100}
+    b = Build(repo, tmp_path, yaml.safe_dump(doc))
+    b.publish(CLEAN)
+    assert BUILD_GATE_HANDLERS["F1"](b.ctx("F1")) == "required_check_failed"
+    assert BUILD_GATE_HANDLERS["X"](b.ctx("X", "F1")) == "requirement_missing"
+
+
+def test_f1_refuses_to_run_from_anywhere_but_e2_or_x(build: Build) -> None:
+    build.publish(CLEAN)
+    with pytest.raises(BuildGateError, match="only E2 or X"):
+        BUILD_GATE_HANDLERS["F1"](build.ctx("F1", "H1"))
+
+
+def test_a_sandbox_that_is_unavailable_is_infra_not_a_verdict(
+    build: Build, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentic_pipeline import ci
+    from agentic_pipeline.sandbox import SandboxUnavailable
+
+    def broken(spec: Any, broker: Any) -> Any:
+        raise SandboxUnavailable("no bwrap")
+
+    monkeypatch.setattr(ci, "run_sandboxed", broken)
+    build.publish(CLEAN)
+    assert BUILD_GATE_HANDLERS["E2"](build.ctx("E2")) == "any_fail_or_exception"
+    assert BUILD_GATE_HANDLERS["X"](build.ctx("X")) == "infra_rerun_e2"

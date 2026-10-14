@@ -22,6 +22,7 @@ RESTRICTED_OS_CALLS = frozenset(
 APPROVED = {
     "readiness.py": frozenset({"subprocess", "http"}),  # version probes, Ollama health check
     "sandbox.py": frozenset({"subprocess"}),  # launches bwrap
+    "ci.py": frozenset({"subprocess"}),  # `uv sync` for the CI toolchain, outside the sandbox
     "grounding.py": frozenset({"subprocess"}),  # G1 runs read-only `git rev-parse` / `git archive`
     "approvals.py": frozenset({"subprocess"}),  # `ssh-keygen -Y verify` on a signed approval
     "broker.py": frozenset({"http"}),  # the only route from a worker to a model
