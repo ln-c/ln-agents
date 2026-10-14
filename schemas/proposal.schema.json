@@ -51,6 +51,20 @@
         }
       }
     },
+    "contracts_touched": {
+      "type": "array",
+      "description": "Every frozen contract this design changes. Present and empty means it touches none; absent means the proposal did not say, and the contract veto is then not evaluated.",
+      "items": {
+        "type": "object",
+        "required": ["path", "change"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "description": "A contract file listed in the context manifest's contract_versions."},
+          "change": {"enum": ["none", "compatible", "breaking"]},
+          "purpose": {"type": "string"}
+        }
+      }
+    },
     "constraints_addressed": {"type": "array", "items": {"type": "string"}},
     "manifest_hash": {"type": "string"}
   },

@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agentic_pipeline.advisories import candidate_verdict as dependency_verdict
+from agentic_pipeline.contracts import candidate_verdict as contract_verdict
 from agentic_pipeline.dataflow import candidate_verdict as flow_verdict
 from agentic_pipeline.frozen import PolicyChanged, frozen_policy
 from agentic_pipeline.fsutil import atomic_write_json
@@ -106,6 +107,7 @@ class Design:
         paths = _sealed(ctx, [CONTEXT_INPUT, *DESIGN_INPUTS])
         context = json.loads((paths[CONTEXT_INPUT] / "context_manifest.json").read_text("utf-8"))
         self.context_hash: str = context["hash"]
+        self.contract_versions: dict[str, str] = context["contract_versions"]
         self.input_digest = _digest({name: digest_path(path) for name, path in paths.items()})
         self.docs: dict[str, Any] = {}
         self.parse_errors: dict[str, str] = {}
@@ -305,6 +307,7 @@ class VetoFacts:
 
     policy: PolicySnapshot
     entry_data: Mapping[str, Any]
+    contracts: Mapping[str, str]
 
 
 type VetoEvaluator = Callable[[Any, VetoFacts], bool | None]
@@ -312,6 +315,9 @@ VETO_EVALUATORS: dict[str, VetoEvaluator] = {
     "schema_invalid": lambda doc, facts: bool(_schema_errors(doc)),
     "known_vulnerable_dependency": lambda doc, facts: (
         dependency_verdict(doc, facts.policy.advisories) if not _schema_errors(doc) else None
+    ),
+    "contract_break": lambda doc, facts: (
+        contract_verdict(doc, facts.contracts) if not _schema_errors(doc) else None
     ),
     "data_class_violation": lambda doc, facts: (
         flow_verdict(doc, facts.policy.data_classes, facts.entry_data)
@@ -332,7 +338,7 @@ class VetoReport:
         entry = json.loads(
             (_sealed(ctx, ["requirements"])["requirements"] / "entry_spec.json").read_text("utf-8")
         )
-        facts = VetoFacts(policy, entry["data"])
+        facts = VetoFacts(policy, entry["data"], design.contract_versions)
         self.input_digest = design.input_digest
         self.evaluated = sorted(set(VETO_EVALUATORS))
         self.unevaluated = sorted(known - set(VETO_EVALUATORS))

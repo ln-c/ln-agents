@@ -328,15 +328,16 @@ def test_b1_lists_unevaluated_vetoes_and_does_not_clear_them(design: Design) -> 
     assert design.guard("B1") == "at_least_one_survivor"
     record = design.records("B1")[0]
     assert record["evaluated"] == [
+        "contract_break",
         "data_class_violation",
         "known_vulnerable_dependency",
         "schema_invalid",
     ]
-    assert set(record["unevaluated"]) == {"violates_accepted_adr", "contract_break"}
+    assert record["unevaluated"] == ["violates_accepted_adr"]
     assert record["fired"] == {a: [] for a in record["fired"]}
-    # None of the test proposals declares dependencies or data flows: both are undetermined.
-    both = ["data_class_violation", "known_vulnerable_dependency"]
-    assert all(sorted(v) == both for v in record["undetermined"].values())
+    # None of the test proposals declares dependencies, data flows or contracts touched.
+    every = ["contract_break", "data_class_violation", "known_vulnerable_dependency"]
+    assert all(sorted(v) == every for v in record["undetermined"].values())
 
 
 SNAPSHOT = """version: 1
@@ -363,7 +364,7 @@ def seal_with_dependencies(d: Design, a: list | None, b: list | None, s: list | 
 
     def prop(pid: str, deps: list | None, **extra: Any) -> dict:
         given = {"dependencies": deps} if deps is not None else {}
-        return proposal(pid, h, data_flows=[], **given, **extra)
+        return proposal(pid, h, data_flows=[], contracts_touched=[], **given, **extra)
 
     d.seal(
         "A1",
@@ -760,7 +761,7 @@ def seal_with_flows(d: Design, a: list | None, b: list | None, s: list | None) -
 
     def prop(pid: str, flows: list | None, **extra: Any) -> dict:
         given = {"data_flows": flows} if flows is not None else {}
-        return proposal(pid, h, dependencies=[], **given, **extra)
+        return proposal(pid, h, dependencies=[], contracts_touched=[], **given, **extra)
 
     d.seal(
         "A1",
@@ -812,3 +813,64 @@ def test_unresolved_classification_makes_a_cloud_flow_undetermined(
     seal_with_flows(d, [flow("f1", "internal", "cloud_service")], [], [])
     d.guard("B1")
     assert d.records("B1")[0]["undetermined"]["proposal_a_sealed"] == ["data_class_violation"]
+
+
+def seal_with_contracts(d: Design, a: list | None, b: list | None, s: list | None) -> None:
+    h = d.context_hash
+
+    def prop(pid: str, touched: list | None, **extra: Any) -> dict:
+        given = {"contracts_touched": touched} if touched is not None else {}
+        return proposal(pid, h, dependencies=[], data_flows=[], **given, **extra)
+
+    d.seal(
+        "A1",
+        {
+            "proposal_a_sealed": ("proposal_a", prop("prop-a", a)),
+            "proposal_b_sealed": ("proposal_b", prop("prop-b", b)),
+        },
+    )
+    d.seal("A3", {"synthesis_sealed": ("synthesis", prop("prop-s", s, synthesized=True))})
+
+
+def with_contract(repo: Path, tmp_path: Path) -> Design:  # noqa: F811
+    (repo / "contracts").mkdir()
+    (repo / "contracts" / "api.yaml").write_text("version: 1\n")
+    git(repo, "add", "contracts")
+    git(repo, "commit", "-qm", "contract")
+    return Design(repo, tmp_path)
+
+
+def touch(path: str, change: str) -> dict:
+    return {"path": path, "change": change}
+
+
+def test_b1_vetoes_a_breaking_change_to_a_pinned_contract(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    d = with_contract(repo, tmp_path)
+    seal_with_contracts(
+        d,
+        [touch("contracts/api.yaml", "breaking")],
+        [touch("contracts/api.yaml", "compatible")],
+        [],
+    )
+    d.guard("B1")
+    record = d.records("B1")[0]
+    assert record["fired"]["proposal_a_sealed"] == ["contract_break"]
+    assert record["survivors"] == ["proposal_b_sealed", "synthesis_sealed"]
+    assert record["undetermined"] == {a: [] for a in record["undetermined"]}
+
+
+def test_b1_does_not_clear_unpinned_or_unstated_contract_changes(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    d = with_contract(repo, tmp_path)
+    seal_with_contracts(d, None, [touch("contracts/ghost.yaml", "breaking")], [])
+    d.guard("B1")
+    record = d.records("B1")[0]
+    assert record["undetermined"]["proposal_a_sealed"] == ["contract_break"]
+    assert record["undetermined"]["proposal_b_sealed"] == ["contract_break"]
+    assert record["fired"]["proposal_b_sealed"] == []
+    assert record["undetermined"]["synthesis_sealed"] == []
