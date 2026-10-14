@@ -127,8 +127,8 @@ Each critic must assess:
 > incomplete critique blocks the step and is never read as "no flaws".
 >
 > A critique may also carry `scores`: for each of security, reliability, scalability,
-> maintainability and cost, an integer `score` from 1 (fails the criterion) to 5 (no weakness
-> found) and the `evidence` for it. B2 maps a score to the scores schema's 0–4. A missing score
+> maintainability and cost, an integer `score` from 0 (fails the criterion) to 4 (no weakness
+> found), the scale of the scores schema, and the `evidence` for it. A missing score
 > leaves the criterion unscored and raises uncertainty. The synthesis `S` is reviewed and scored
 > by stage A3R, on a backend other than the one that wrote it; a review on the same backend is
 > not counted. Each candidate has one scorer, so there is no disagreement signal. A blocking

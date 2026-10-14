@@ -63,7 +63,7 @@ def blocking(fid: str, pid: str) -> dict:
 CRITERIA = ("security", "reliability", "scalability", "maintainability", "cost")
 
 
-def scores(value: int = 4, **override: int | None) -> dict:
+def scores(value: int = 3, **override: int | None) -> dict:
     """A critique `scores` block: every criterion at `value`, or dropped when overridden to None."""
     given = {c: override.get(c, value) for c in CRITERIA}
     return {c: {"score": v, "evidence": f"{c} evidence"} for c, v in given.items() if v is not None}
@@ -167,15 +167,15 @@ class Design:
         """Seal A2's critiques and A3R's synthesis review, each carrying `scores` blocks."""
         h = self.context_hash
         self.seal_critiques(
-            critique("c1", "prop-b", h, scores=b if b is not None else scores(2)),
-            critique("c2", "prop-a", h, scores=a if a is not None else scores(4)),
+            critique("c1", "prop-b", h, scores=b if b is not None else scores(1)),
+            critique("c2", "prop-a", h, scores=a if a is not None else scores(3)),
         )
         self.seal(
             "A3R",
             {
                 "synthesis_review_sealed": (
                     "synthesis_review",
-                    critique("c3", "prop-s", h, scores=s if s is not None else scores(5)),
+                    critique("c3", "prop-s", h, scores=s if s is not None else scores(4)),
                 )
             },
         )
@@ -399,9 +399,9 @@ def test_b2_with_no_reviews_is_unscored_and_uncertain(design: Design) -> None:
     assert all(c["reasons"] for c in doc["candidates"].values())
 
 
-def test_b2_maps_scores_one_to_five_onto_zero_to_four(design: Design) -> None:
+def test_b2_uses_the_critics_zero_to_four_scores_as_given(design: Design) -> None:
     design.seal_valid()
-    design.seal_reviews(a=scores(5), b=scores(1), s=scores(3))
+    design.seal_reviews(a=scores(4), b=scores(0), s=scores(2))
     doc = published_scores(design)
     by = {(v["candidate"], v["criterion"]): v["value"] for v in doc["values"]}
     assert by[("proposal_a_sealed", "security")] == 4
@@ -418,13 +418,13 @@ def test_b2_maps_scores_one_to_five_onto_zero_to_four(design: Design) -> None:
 
 def test_b2_flags_a_near_tie(design: Design) -> None:
     design.seal_valid()
-    design.seal_reviews(a=scores(4), b=scores(4), s=scores(2))
+    design.seal_reviews(a=scores(3), b=scores(3), s=scores(1))
     assert published_scores(design)["flags"]["near_tie"] is True
 
 
 def test_a_missing_score_is_unscored_and_raises_uncertainty(design: Design) -> None:
     design.seal_valid()
-    design.seal_reviews(a=scores(4, cost=None), b=scores(3), s=scores(5))
+    design.seal_reviews(a=scores(3, cost=None), b=scores(2), s=scores(4))
     doc = published_scores(design)
     a = doc["candidates"]["proposal_a_sealed"]
     assert a["unscored_criteria"] == ["cost"] and a["weighted"] is None
@@ -436,8 +436,8 @@ def test_an_evidence_free_score_is_refused_by_the_schema() -> None:
     bad = {"security": {"score": 4, "evidence": ""}}
     with pytest.raises(Exception, match="evidence|non-empty|short"):
         validate("critique", critique("c", "p", "sha256:" + "0" * 64, scores=bad))
-    with pytest.raises(Exception, match="smaller than or equal to 5"):
-        validate("critique", critique("c", "p", "sha256:" + "0" * 64, scores=scores(6)))
+    with pytest.raises(Exception, match="smaller than or equal to 4"):
+        validate("critique", critique("c", "p", "sha256:" + "0" * 64, scores=scores(5)))
 
 
 def test_a_review_on_the_synthesizers_backend_is_not_counted(
@@ -461,7 +461,7 @@ def test_a_review_of_another_proposal_is_not_counted(design: Design) -> None:
         {
             "synthesis_review_sealed": (
                 "synthesis_review",
-                critique("c3", "prop-a", h, scores=scores(5)),
+                critique("c3", "prop-a", h, scores=scores(4)),
             )
         },
     )
@@ -478,7 +478,7 @@ def test_a_blocking_finding_against_the_synthesis_marks_it_contested(design: Des
         {
             "synthesis_review_sealed": (
                 "synthesis_review",
-                critique("c3", "prop-s", h, [blocking("f1", "prop-s")], scores=scores(5)),
+                critique("c3", "prop-s", h, [blocking("f1", "prop-s")], scores=scores(4)),
             )
         },
     )

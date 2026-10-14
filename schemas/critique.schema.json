@@ -11,7 +11,7 @@
       "required": ["score", "evidence"],
       "additionalProperties": false,
       "properties": {
-        "score": {"type": "integer", "minimum": 1, "maximum": 5},
+        "score": {"type": "integer", "minimum": 0, "maximum": 4},
         "evidence": {"type": "string", "minLength": 1}
       }
     }
@@ -34,7 +34,7 @@
     },
     "scores": {
       "type": "object",
-      "description": "Optional criterion scores for the reviewed proposal (1 worst, 5 best). B2 maps a score to 0-4. A missing or evidence-free score leaves that criterion unscored.",
+      "description": "Optional criterion scores for the reviewed proposal (0 worst, 4 best), the scale of the scores schema. A missing or evidence-free score leaves that criterion unscored.",
       "additionalProperties": false,
       "properties": {
         "security": {"$ref": "#/definitions/score"},

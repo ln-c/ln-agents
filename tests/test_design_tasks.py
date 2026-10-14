@@ -75,11 +75,11 @@ def test_every_task_has_field_rules_exactly_once() -> None:
         assert json_task("r", "S", "op", schema).count("Field rules:") == 1
 
 
-def test_critique_task_asks_for_evidenced_one_to_five_scores() -> None:
+def test_critique_task_asks_for_evidenced_zero_to_four_scores() -> None:
     text = json_task("synthesis_reviewer", "A3R", "synthesis_review", "critique")
     for criterion in ("security", "reliability", "scalability", "maintainability", "cost"):
         assert criterion in text
-    assert "from 1 to 5" in text and "evidence" in text
+    assert "from 0 to 4" in text and "evidence" in text
 
 
 def test_a3r_reviews_with_the_critique_contract() -> None:

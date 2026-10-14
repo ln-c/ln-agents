@@ -20,9 +20,9 @@ Rules these gates keep:
 * A veto that cannot be evaluated is never treated as cleared: B1 lists it, and B3's
   `no_active_veto` fails while any veto is unevaluated.
 * B2 scores each surviving candidate from an independent review: A from `critique_a_by_b`,
-  B from `critique_b_by_a`, S from A3R's `synthesis_review`. A reviewer's 1-5 score maps to
-  the scores schema's 0-4; a missing score, an invalid or unbound review, or a reviewer on
-  the author's backend leaves the criterion unscored, and unscored criteria raise
+  B from `critique_b_by_a`, S from A3R's `synthesis_review`. A reviewer's 0-4 scores are used
+  as given (the scores schema's scale); a missing score, an invalid or unbound review, or a
+  reviewer on the author's backend leaves the criterion unscored, and unscored criteria raise
   uncertainty. One scorer per candidate means no disagreement signal; a blocking finding
   against S (which no gate routes) marks it contested and sets `high_uncertainty`.
 * B3 fails every `require_all` item that has no evaluator.
@@ -354,7 +354,6 @@ SCORERS = {
     "synthesis_sealed": ("synthesis_review", "synthesis_review_sealed", ("A3", "synthesis")),
 }
 CRITIC_STAGES = {"critique_a_by_b": "A2", "critique_b_by_a": "A2", "synthesis_review": "A3R"}
-SCORE_OFFSET = 1  # a critic scores 1 (worst) to 5 (best); the scores schema holds 0 to 4
 
 
 def _scorer_inputs(
@@ -394,7 +393,7 @@ def _score_one(
     if problems:
         return {}, problems, False
     given = critique.get("scores", {})
-    values = {c: v["score"] - SCORE_OFFSET for c, v in given.items()}
+    values = {c: v["score"] for c, v in given.items()}
     return values, [], critique["counts"]["blocking"] > 0
 
 

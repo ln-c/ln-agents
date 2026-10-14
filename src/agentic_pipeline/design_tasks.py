@@ -57,9 +57,9 @@ GUIDANCE: Mapping[str, str] = {
         "- `counts`: must equal the number of findings of each severity.\n"
         "- `review_complete`: true only if you reviewed every required dimension.\n"
         "- `scores`: for each of security, reliability, scalability, maintainability and cost, "
-        "give an integer `score` from 1 to 5 and the `evidence` for it (a concrete fact from "
-        "the proposal). 1 means the proposal fails the criterion, 3 means it meets it with "
-        "notable weaknesses, 5 means it meets it with no weakness you can find. Score each "
+        "give an integer `score` from 0 to 4 and the `evidence` for it (a concrete fact from "
+        "the proposal). 0 means the proposal fails the criterion, 2 means it meets it with "
+        "notable weaknesses, 4 means it meets it with no weakness you can find. Score each "
         "criterion on this proposal alone, never relative to another. Omit a criterion you "
         "cannot support with evidence; an unsupported score is worse than none."
     ),
