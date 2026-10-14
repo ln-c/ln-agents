@@ -327,14 +327,88 @@ def test_b1_lists_unevaluated_vetoes_and_does_not_clear_them(design: Design) -> 
     design.seal_valid()
     assert design.guard("B1") == "at_least_one_survivor"
     record = design.records("B1")[0]
-    assert record["evaluated"] == ["schema_invalid"]
+    assert record["evaluated"] == ["known_vulnerable_dependency", "schema_invalid"]
     assert set(record["unevaluated"]) == {
         "violates_accepted_adr",
         "data_class_violation",
-        "known_vulnerable_dependency",
         "contract_break",
     }
     assert record["fired"] == {a: [] for a in record["fired"]}
+    # None of the test proposals declares its dependencies, so the veto is undetermined.
+    assert all(v == ["known_vulnerable_dependency"] for v in record["undetermined"].values())
+
+
+SNAPSHOT = """version: 1
+source: osv
+generated_at: 2026-10-14
+ecosystems: [pypi]
+advisories:
+  - id: GHSA-test-0001
+    severity: critical
+    affected:
+      - package: {ecosystem: PyPI, name: badlib}
+        ranges: [{type: ECOSYSTEM, events: [{introduced: "0"}, {fixed: "2.0"}]}]
+"""
+
+
+def with_snapshot(repo: Path, tmp_path: Path) -> Design:  # noqa: F811
+    (repo / "policy" / "advisories.yaml").write_text(SNAPSHOT)
+    git(repo, "commit", "-qam", "snapshot")
+    return Design(repo, tmp_path)
+
+
+def seal_with_dependencies(d: Design, a: list | None, b: list | None, s: list | None) -> None:
+    h = d.context_hash
+
+    def prop(pid: str, deps: list | None, **extra: Any) -> dict:
+        return proposal(pid, h, **({"dependencies": deps} if deps is not None else {}), **extra)
+
+    d.seal(
+        "A1",
+        {
+            "proposal_a_sealed": ("proposal_a", prop("prop-a", a)),
+            "proposal_b_sealed": ("proposal_b", prop("prop-b", b)),
+        },
+    )
+    d.seal("A3", {"synthesis_sealed": ("synthesis", prop("prop-s", s, synthesized=True))})
+
+
+def test_b1_vetoes_a_declared_vulnerable_dependency(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    d = with_snapshot(repo, tmp_path)
+    bad = [{"name": "BadLib", "ecosystem": "pypi", "version": "1.5"}]
+    good = [{"name": "badlib", "ecosystem": "pypi", "version": "2.1"}]
+    seal_with_dependencies(d, bad, [], good)
+    assert d.guard("B1") == "at_least_one_survivor"
+    record = d.records("B1")[0]
+    assert record["fired"]["proposal_a_sealed"] == ["known_vulnerable_dependency"]
+    assert record["survivors"] == ["proposal_b_sealed", "synthesis_sealed"]
+    assert record["undetermined"] == {a: [] for a in record["undetermined"]}
+
+
+def test_b1_never_clears_a_dependency_it_cannot_check(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    d = with_snapshot(repo, tmp_path)
+    npm = [{"name": "left-pad", "ecosystem": "npm", "version": "1.0.0"}]
+    unversioned = [{"name": "badlib", "ecosystem": "pypi"}]
+    seal_with_dependencies(d, npm, unversioned, None)
+    d.guard("B1")
+    record = d.records("B1")[0]
+    assert record["fired"] == {a: [] for a in record["fired"]}
+    assert all(v == ["known_vulnerable_dependency"] for v in record["undetermined"].values())
+
+
+def test_an_empty_snapshot_never_clears_a_declared_dependency(design: Design) -> None:
+    deps = [{"name": "requests", "ecosystem": "pypi", "version": "2.32.0"}]
+    seal_with_dependencies(design, deps, [], [])
+    design.guard("B1")
+    undetermined = design.records("B1")[0]["undetermined"]
+    assert undetermined["proposal_a_sealed"] == ["known_vulnerable_dependency"]
+    assert undetermined["proposal_b_sealed"] == []  # declared none: clear
 
 
 def test_b1_schema_veto_fires_per_candidate(design: Design) -> None:
