@@ -32,9 +32,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from agentic_pipeline.approvals import NODE_DECISION, ApprovalError, Verified, verify_approval
 from agentic_pipeline.build_gates import BUILD_GATE_HANDLERS
 from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
-from agentic_pipeline.gates import GATE_HANDLERS
+from agentic_pipeline.gates import GATE_HANDLERS, approval_evidence
 from agentic_pipeline.graph import NO_EDGE_KINDS, REPO_ROOT, Edge, Graph, spent_route
 from agentic_pipeline.grounding import (
     ENTRY_SPEC_FILE,
@@ -198,7 +199,12 @@ class Runner:
         return self._take(node, guard, edge)
 
     def _take(
-        self, node: str, guard: str, edge: Edge, spent_budget: str | None = None
+        self,
+        node: str,
+        guard: str,
+        edge: Edge,
+        spent_budget: str | None = None,
+        decision: Verified | None = None,
     ) -> StepResult:
         """Take one edge: crash marker, gated transition, commit record, save.
 
@@ -229,9 +235,12 @@ class Runner:
         ledger_before = self.ledger.snapshot()
         try:
             if edge.to in self.registry["stage_requirements"]:
-                self.dispatcher.dispatch_stage(node, guard, edge.to, context)
+                extra = {"human_decision": decision} if decision is not None else {}
+                self.dispatcher.dispatch_stage(node, guard, edge.to, context, **extra)
             else:
-                taken = check_transition(self.graph, node, guard, edge.to, self.guards, context)
+                taken = check_transition(
+                    self.graph, node, guard, edge.to, self.guards, context, decision
+                )
                 reservation = self.ledger.reserve(taken)
                 if reservation is not None:
                     reservation.commit()
@@ -243,7 +252,9 @@ class Runner:
                 route = spent_route(self.graph, node, target) if target else None
                 if route is not None and spent_budget is None:
                     self.guards.guard = None
-                    return self._take(node, route.guard, route, spent_budget=exhausted.budget)
+                    return self._take(
+                        node, route.guard, route, spent_budget=exhausted.budget, decision=decision
+                    )
                 return self._pause(
                     f"budget_exhausted: {exhausted.budget} (on_exhausted: {target}); "
                     f"no spent route from {node}",
@@ -288,23 +299,81 @@ class Runner:
                 break
         return result
 
+    # ── human decisions ──────────────────────────────────────────────────────
+
+    def approval_evidence(self) -> dict[str, Any]:
+        """The evidence a human signs at the current human state, recomputed from sealed state."""
+        st = self.state
+        if st.status is not Status.AWAITING_HUMAN:
+            raise ApprovalError(f"run is {st.status.value}; a decision needs awaiting_human")
+        if st.current not in NODE_DECISION:
+            raise ApprovalError(f"signed approvals are not wired for {st.current} yet")
+        policy = load_policy(self.root)
+        check_policy(st, policy)
+        try:
+            evidence = approval_evidence(self._context(st.current), policy)
+        except Exception as exc:  # unverifiable evidence is never approvable
+            raise ApprovalError(
+                f"cannot recompute the evidence: {type(exc).__name__}: {exc}"
+            ) from exc
+        return {**evidence, "provenance_tip": self.log.tip(), "policy": dict(st.policy)}
+
+    def decide(self, document: bytes, signature: str) -> StepResult:
+        """Take the human edge named by a verified signed approval; otherwise change nothing."""
+        st = self.state
+        node = st.current
+        evidence = self.approval_evidence()
+        policy = load_policy(self.root)
+        verified: Verified = verify_approval(
+            document,
+            signature,
+            approvers=policy.approvers,
+            run_id=st.run_id,
+            node=node,
+            guards=[e.guard for e in self.graph.edges if e.src == node],
+            evidence=evidence,
+        )
+        edge = self._edge(node, verified.guard)
+        st.status = Status.RUNNING
+        try:
+            self.log.append(
+                {
+                    "state": node,
+                    "event": "approval",
+                    "approver_id": verified.approver,
+                    "approved_sha": verified.commit_sha,
+                    "approval_digest": verified.digest,
+                    "reason_code": verified.guard,
+                }
+            )
+        except Exception as exc:
+            st.status = Status.AWAITING_HUMAN
+            return StepResult(Outcome.BLOCKED, node, f"cannot record the approval: {exc}")
+        result = self._take(node, verified.guard, edge, decision=verified)
+        if result.outcome is Outcome.BLOCKED:
+            st.status = Status.AWAITING_HUMAN  # the approval is spent; a new one is needed
+            self._try_save()
+        return result
+
     # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _context(self, node: str) -> HandlerContext:
+        return HandlerContext(
+            self.state.run_id,
+            self.store.run_root,
+            node,
+            self.graph,
+            self.registry,
+            root=self.root,
+            policy_digests=self.state.policy,
+            provenance_tip=self.log.tip,
+            entered_from=self._entered_from,
+        )
 
     def _decide(self, node: str) -> str:
         handler = self.handlers.get(node)
         if handler is not None:
-            ctx = HandlerContext(
-                self.state.run_id,
-                self.store.run_root,
-                node,
-                self.graph,
-                self.registry,
-                root=self.root,
-                policy_digests=self.state.policy,
-                provenance_tip=self.log.tip,
-                entered_from=self._entered_from,
-            )
-            return handler(ctx)
+            return handler(self._context(node))
         outgoing = [e for e in self.graph.edges if e.src == node]
         if (
             node in self.registry["stage_requirements"]

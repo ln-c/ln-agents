@@ -45,11 +45,17 @@ def check_transition(
     to: str,
     evaluator: GuardEvaluator,
     run_context: Mapping[str, Any],
+    human_decision: object | None = None,
 ) -> Edge:
+    """Return the edge if it is legal; leaving a human state also needs a verified decision.
+
+    `human_decision` is whatever the caller verified (the runner passes the result of
+    `approvals.verify_approval`); this function only insists that one exists.
+    """
     edge = next((e for e in graph.edges if (e.src, e.guard, e.to) == (src, guard, to)), None)
     if edge is None:
         raise TransitionDenied(f"no edge {src} --{guard}--> {to} in pipeline/graph.yaml")
-    if src in graph.human_states:
+    if src in graph.human_states and human_decision is None:
         raise TransitionDenied(f"leaving human state {src} requires a recorded human decision")
     if not evaluator(edge, run_context):
         raise TransitionDenied(f"guard {guard!r} on {src} -> {to} not satisfied")

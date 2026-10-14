@@ -1,0 +1,16 @@
+# Who may sign a human decision, and for which kind. Human-owned (CODEOWNERS).
+#
+# A decision is an approval document signed with `ssh-keygen -Y sign` in the namespace
+# below; the runner verifies it offline with `ssh-keygen -Y verify` against the keys listed
+# here. Nothing else counts as a human decision. Frozen with the other policy for each run.
+#
+# `decisions` names what the approver may decide: design (H1), merge (R1), deploy (R2),
+# calibration (HR), adr (ADR). Only the design decision is wired up so far.
+# Revoke a key by removing the entry; a run that started earlier then refuses to reopen
+# (policy drift) until it is re-run under the new policy.
+version: 1
+namespace: agentic-pipeline-approval
+approvers:
+  - id: ln-c
+    public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIADAUmWc+eZHH6bFKMM9rWh7O8MRMDOWAChmRS9TRewO"
+    decisions: [design, merge, deploy, calibration, adr]

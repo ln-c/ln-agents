@@ -21,6 +21,7 @@
     "invocation_id": {"type": "string", "minLength": 1},
     "approver_id": {"type": "string"},
     "approved_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "approval_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the signed approval document this event records."},
     "reason_code": {"type": "string"}
   },
   "allOf": [

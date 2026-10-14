@@ -98,6 +98,7 @@ POLICY_PARSED = (
     "policy/escalation.yaml",
     "policy/routing.yaml",
     "policy/advisories.yaml",
+    "policy/approvers.yaml",
 )
 
 
@@ -117,6 +118,7 @@ class PolicySnapshot:
     escalation: Mapping[str, Any]
     routing: Mapping[str, Any]
     advisories: Mapping[str, Any]
+    approvers: Mapping[str, Any]
 
 
 def load_policy(root: Path) -> PolicySnapshot:
@@ -138,6 +140,7 @@ def load_policy(root: Path) -> PolicySnapshot:
             escalation=parsed["policy/escalation.yaml"],
             routing=parsed["policy/routing.yaml"],
             advisories=parsed["policy/advisories.yaml"],
+            approvers=parsed["policy/approvers.yaml"],
         )
     except (OSError, KeyError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         raise RunStateError(f"cannot read graph or policy: {type(exc).__name__}: {exc}") from exc

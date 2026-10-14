@@ -11,7 +11,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from agentic_pipeline import advisories
+from agentic_pipeline import advisories, approvals
 
 MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
 # Code artifacts must stay off cloud backends; weakening one is a policy-review event.
@@ -25,6 +25,7 @@ POLICY_FILES = (
     "fast_path",
     "task_classes",
     "advisories",
+    "approvers",
 )
 
 
@@ -152,6 +153,43 @@ def check_escalation(doc: Mapping[str, Any], data_classes: Mapping[str, Any]) ->
     return errors
 
 
+def check_approvers(doc: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    namespace = doc.get("namespace")
+    if not isinstance(namespace, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", namespace):
+        errors.append("approvers: namespace must be a non-empty token without spaces")
+    approvers = doc.get("approvers")
+    if not isinstance(approvers, list) or not approvers:
+        return [*errors, "approvers: at least one approver is required"]
+    seen: set[str] = set()
+    for i, who in enumerate(approvers):
+        ident = who.get("id") if isinstance(who, dict) else None
+        if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", ident):
+            errors.append(f"approvers[{i}]: id must be a non-empty token without spaces")
+        elif ident in seen:
+            errors.append(f"approvers[{i}]: duplicate id {ident!r}")
+        else:
+            seen.add(ident)
+        key = who.get("public_key") if isinstance(who, dict) else None
+        parts = key.split(" ") if isinstance(key, str) else []
+        if len(parts) != 2 or parts[0] not in approvals.KEY_TYPES:
+            errors.append(
+                f"approvers[{i}]: public_key must be '<type> <base64>' with a type in "
+                f"{sorted(approvals.KEY_TYPES)} (no options, no comment)"
+            )
+        decisions = who.get("decisions") if isinstance(who, dict) else None
+        if (
+            not isinstance(decisions, list)
+            or not decisions
+            or not set(decisions) <= set(approvals.DECISION_TYPES)
+        ):
+            errors.append(
+                f"approvers[{i}]: decisions must be a non-empty subset of "
+                f"{sorted(approvals.DECISION_TYPES)}"
+            )
+    return errors
+
+
 def check_fast_path(doc: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     if not isinstance(doc.get("task_class_allowlist"), list):
@@ -194,4 +232,5 @@ def validate_policies(docs: Mapping[str, Mapping[str, Any]]) -> list[str]:
         *check_fast_path(docs["fast_path"]),
         *check_task_classes(docs["task_classes"], docs["fast_path"]),
         *check_advisories(docs["advisories"]),
+        *check_approvers(docs["approvers"]),
     ]

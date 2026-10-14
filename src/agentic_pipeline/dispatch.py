@@ -170,7 +170,12 @@ class Dispatcher:
     _tip: str = field(default="", init=False)
 
     def dispatch_stage(
-        self, src: str, guard: str, stage: str, run_context: Mapping[str, Any]
+        self,
+        src: str,
+        guard: str,
+        stage: str,
+        run_context: Mapping[str, Any],
+        human_decision: object | None = None,
     ) -> StageOutcome:
         verdict = evaluate_stage(stage, self.preflight())
         if not verdict.eligible:
@@ -200,7 +205,9 @@ class Dispatcher:
         if input_errors := [e for errors in checks for e in errors]:
             raise DispatchBlocked(f"{stage}: sealed inputs: " + "; ".join(input_errors))
         try:
-            edge = check_transition(self.graph, src, guard, stage, self.guards, run_context)
+            edge = check_transition(
+                self.graph, src, guard, stage, self.guards, run_context, human_decision
+            )
             reservation = self.ledger.reserve(edge)
         except TransitionDenied as exc:
             raise DispatchBlocked(str(exc)) from exc
