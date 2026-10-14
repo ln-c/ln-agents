@@ -35,11 +35,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agentic_pipeline.adrs import binding_hits
 from agentic_pipeline.advisories import candidate_verdict as dependency_verdict
 from agentic_pipeline.contracts import candidate_verdict as contract_verdict
 from agentic_pipeline.dataflow import candidate_verdict as flow_verdict
@@ -108,6 +109,7 @@ class Design:
         context = json.loads((paths[CONTEXT_INPUT] / "context_manifest.json").read_text("utf-8"))
         self.context_hash: str = context["hash"]
         self.contract_versions: dict[str, str] = context["contract_versions"]
+        self.adrs: list[dict[str, str]] = context["adrs"]
         self.input_digest = _digest({name: digest_path(path) for name, path in paths.items()})
         self.docs: dict[str, Any] = {}
         self.parse_errors: dict[str, str] = {}
@@ -308,6 +310,7 @@ class VetoFacts:
     policy: PolicySnapshot
     entry_data: Mapping[str, Any]
     contracts: Mapping[str, str]
+    adr_hits: Mapping[str, Sequence[str]]  # proposal id -> binding-ADR findings against it
 
 
 type VetoEvaluator = Callable[[Any, VetoFacts], bool | None]
@@ -319,12 +322,29 @@ VETO_EVALUATORS: dict[str, VetoEvaluator] = {
     "contract_break": lambda doc, facts: (
         contract_verdict(doc, facts.contracts) if not _schema_errors(doc) else None
     ),
+    "violates_accepted_adr": lambda doc, facts: (
+        True if not _schema_errors(doc) and facts.adr_hits.get(doc.get("id")) else None
+    ),
     "data_class_violation": lambda doc, facts: (
         flow_verdict(doc, facts.policy.data_classes, facts.entry_data)
         if not _schema_errors(doc)
         else None
     ),
 }
+
+
+def _adr_hits(ctx: HandlerContext, design: Design) -> dict[str, list[str]]:
+    """Binding-ADR findings per proposal id, from reviews that pass the same checks as B2's."""
+    paths, _ = _scorer_inputs(ctx, list(DESIGN_INPUTS))
+    hits: dict[str, list[str]] = {}
+    for candidate, path in paths.items():
+        proposal = design.docs.get(candidate)
+        critique, problems = _checked_review(ctx, candidate, path, proposal, design.context_hash)
+        if critique is not None and not problems and isinstance(proposal, dict):
+            found = binding_hits(critique, design.adrs)
+            if found:
+                hits[str(proposal.get("id"))] = found
+    return hits
 
 
 class VetoReport:
@@ -338,7 +358,12 @@ class VetoReport:
         entry = json.loads(
             (_sealed(ctx, ["requirements"])["requirements"] / "entry_spec.json").read_text("utf-8")
         )
-        facts = VetoFacts(policy, entry["data"], design.contract_versions)
+        facts = VetoFacts(
+            policy,
+            entry["data"],
+            design.contract_versions,
+            _adr_hits(ctx, design),
+        )
         self.input_digest = design.input_digest
         self.evaluated = sorted(set(VETO_EVALUATORS))
         self.unevaluated = sorted(known - set(VETO_EVALUATORS))
@@ -422,10 +447,10 @@ def _scorer_inputs(
     return paths, missing
 
 
-def _score_one(
+def _checked_review(
     ctx: HandlerContext, candidate: str, path: Path, proposal: Any, context_hash: str
-) -> tuple[dict[str, int], list[str], bool]:
-    """(criterion -> 0..4, why not every criterion scored, contested) for one candidate."""
+) -> tuple[Any, list[str]]:
+    """(the critique, why it cannot be relied on); a usable review has no problems."""
     operation, _, (target_stage, target_op) = SCORERS[candidate]
     critique = _load_json(path, operation)
     problems = _critique_errors(critique)
@@ -438,6 +463,14 @@ def _score_one(
             ctx, target_stage, target_op
         ):
             problems.append("the reviewer ran on the same backend as the author")
+    return critique, problems
+
+
+def _score_one(
+    ctx: HandlerContext, candidate: str, path: Path, proposal: Any, context_hash: str
+) -> tuple[dict[str, int], list[str], bool]:
+    """(criterion -> 0..4, why not every criterion scored, contested) for one candidate."""
+    critique, problems = _checked_review(ctx, candidate, path, proposal, context_hash)
     if problems:
         return {}, problems, False
     given = critique.get("scores", {})

@@ -183,9 +183,18 @@ class Design:
     def guard(self, node: str) -> str:
         return GATE_HANDLERS[node](self.rig.ctx(self.runner, node))
 
-    def records(self, node: str) -> list[dict]:
+    def records(self, node: str, keep_adr: bool = False) -> list[dict]:
+        """Gate records. The ADR veto is undetermined without evidence, so B1 tests about the
+        other vetoes read it filtered out; `keep_adr=True` returns the record as written."""
         folder = self.rig.run_dir / "gates" / node
-        return [json.loads(p.read_text()) for p in sorted(folder.glob("*.json"))]
+        docs = [json.loads(p.read_text()) for p in sorted(folder.glob("*.json"))]
+        if node == "B1" and not keep_adr:
+            for doc in docs:
+                doc["undetermined"] = {
+                    a: [v for v in vs if v != "violates_accepted_adr"]
+                    for a, vs in doc["undetermined"].items()
+                }
+        return docs
 
 
 @pytest.fixture
@@ -332,8 +341,9 @@ def test_b1_lists_unevaluated_vetoes_and_does_not_clear_them(design: Design) -> 
         "data_class_violation",
         "known_vulnerable_dependency",
         "schema_invalid",
+        "violates_accepted_adr",
     ]
-    assert record["unevaluated"] == ["violates_accepted_adr"]
+    assert record["unevaluated"] == []
     assert record["fired"] == {a: [] for a in record["fired"]}
     # None of the test proposals declares dependencies, data flows or contracts touched.
     every = ["contract_break", "data_class_violation", "known_vulnerable_dependency"]
@@ -874,3 +884,77 @@ def test_b1_does_not_clear_unpinned_or_unstated_contract_changes(
     assert record["undetermined"]["proposal_b_sealed"] == ["contract_break"]
     assert record["fired"]["proposal_b_sealed"] == []
     assert record["undetermined"]["synthesis_sealed"] == []
+
+
+def finding(fid: str, violated: str, severity: str = "blocking") -> dict:
+    return {
+        "id": fid,
+        "severity": severity,
+        "description": "contradicts a decision",
+        "proposal_id": "prop-a",
+        "subject": "topology",
+        "impact": "breaks the decision",
+        "violated": violated,
+        "evidence": ["the design replaces it"],
+        "remediation": "keep the decision",
+    }
+
+
+def seal_reviews(d: Design, a_findings: list, s_findings: list | None = None) -> None:
+    h = d.context_hash
+    d.seal(
+        "A2",
+        {
+            "critique_a_by_b_sealed": (
+                "critique_a_by_b",
+                critique("c-a", "prop-a", h, a_findings),
+            ),
+            "critique_b_by_a_sealed": ("critique_b_by_a", critique("c-b", "prop-b", h)),
+        },
+    )
+    d.seal(
+        "A3R",
+        {
+            "synthesis_review_sealed": (
+                "synthesis_review",
+                critique("c-s", "prop-s", h, s_findings),
+            )
+        },
+    )
+
+
+def seal_clean_design(d: Design) -> None:
+    """Every proposal declares no dependencies, data flows or contract changes."""
+    seal_with_contracts(d, [], [], [])
+
+
+def test_a_blocking_finding_naming_an_accepted_adr_fires_the_veto(design: Design) -> None:
+    seal_clean_design(design)
+    seal_reviews(design, [finding("f1", "ADR 0001: the pipeline stays deterministic")])
+    design.guard("B1")
+    record = design.records("B1", keep_adr=True)[0]
+    assert record["fired"]["proposal_a_sealed"] == ["violates_accepted_adr"]
+    assert record["survivors"] == ["proposal_b_sealed", "synthesis_sealed"]
+
+
+def test_the_adr_veto_is_never_cleared_by_a_silent_review(design: Design) -> None:
+    seal_clean_design(design)
+    seal_reviews(design, [])
+    design.guard("B1")
+    record = design.records("B1", keep_adr=True)[0]
+    assert all(v == ["violates_accepted_adr"] for v in record["undetermined"].values())
+    assert record["fired"] == {a: [] for a in record["fired"]}
+
+
+def test_findings_that_do_not_bind_do_not_fire_the_adr_veto(design: Design) -> None:
+    seal_clean_design(design)
+    seal_reviews(
+        design,
+        [
+            finding("f1", "ADR 0001", severity="non_blocking"),
+            finding("f2", "ADR 0099"),
+            finding("f3", "a manifest constraint"),
+        ],
+    )
+    design.guard("B1")
+    assert design.records("B1", keep_adr=True)[0]["fired"]["proposal_a_sealed"] == []
