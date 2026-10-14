@@ -327,15 +327,16 @@ def test_b1_lists_unevaluated_vetoes_and_does_not_clear_them(design: Design) -> 
     design.seal_valid()
     assert design.guard("B1") == "at_least_one_survivor"
     record = design.records("B1")[0]
-    assert record["evaluated"] == ["known_vulnerable_dependency", "schema_invalid"]
-    assert set(record["unevaluated"]) == {
-        "violates_accepted_adr",
+    assert record["evaluated"] == [
         "data_class_violation",
-        "contract_break",
-    }
+        "known_vulnerable_dependency",
+        "schema_invalid",
+    ]
+    assert set(record["unevaluated"]) == {"violates_accepted_adr", "contract_break"}
     assert record["fired"] == {a: [] for a in record["fired"]}
-    # None of the test proposals declares its dependencies, so the veto is undetermined.
-    assert all(v == ["known_vulnerable_dependency"] for v in record["undetermined"].values())
+    # None of the test proposals declares dependencies or data flows: both are undetermined.
+    both = ["data_class_violation", "known_vulnerable_dependency"]
+    assert all(sorted(v) == both for v in record["undetermined"].values())
 
 
 SNAPSHOT = """version: 1
@@ -361,7 +362,8 @@ def seal_with_dependencies(d: Design, a: list | None, b: list | None, s: list | 
     h = d.context_hash
 
     def prop(pid: str, deps: list | None, **extra: Any) -> dict:
-        return proposal(pid, h, **({"dependencies": deps} if deps is not None else {}), **extra)
+        given = {"dependencies": deps} if deps is not None else {}
+        return proposal(pid, h, data_flows=[], **given, **extra)
 
     d.seal(
         "A1",
@@ -747,3 +749,66 @@ def test_critique_schema_requires_evidence_only_for_blocking() -> None:
 
     with pytest.raises(ValidationError):
         validate("critique", critique("c", "p", h, [thin]))
+
+
+def flow(fid: str, data_class: str, destination: str) -> dict:
+    return {"id": fid, "data_class": data_class, "destination": destination}
+
+
+def seal_with_flows(d: Design, a: list | None, b: list | None, s: list | None) -> None:
+    h = d.context_hash
+
+    def prop(pid: str, flows: list | None, **extra: Any) -> dict:
+        given = {"data_flows": flows} if flows is not None else {}
+        return proposal(pid, h, dependencies=[], **given, **extra)
+
+    d.seal(
+        "A1",
+        {
+            "proposal_a_sealed": ("proposal_a", prop("prop-a", a)),
+            "proposal_b_sealed": ("proposal_b", prop("prop-b", b)),
+        },
+    )
+    d.seal("A3", {"synthesis_sealed": ("synthesis", prop("prop-s", s, synthesized=True))})
+
+
+def test_b1_vetoes_confidential_data_sent_to_the_cloud(design: Design) -> None:
+    seal_with_flows(
+        design,
+        [flow("f1", "confidential", "cloud_service")],
+        [flow("f1", "confidential", "internal_service"), flow("f2", "public", "third_party")],
+        [],
+    )
+    design.guard("B1")
+    record = design.records("B1")[0]
+    assert record["fired"]["proposal_a_sealed"] == ["data_class_violation"]
+    assert record["survivors"] == ["proposal_b_sealed", "synthesis_sealed"]
+    assert record["undetermined"] == {a: [] for a in record["undetermined"]}
+
+
+def test_b1_does_not_clear_a_design_that_omits_its_data_flows(design: Design) -> None:
+    seal_with_flows(design, None, [], [])
+    design.guard("B1")
+    record = design.records("B1")[0]
+    assert record["undetermined"]["proposal_a_sealed"] == ["data_class_violation"]
+    assert record["undetermined"]["proposal_b_sealed"] == []
+
+
+def test_a_proposal_cannot_label_data_below_the_entry_specs_classification(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    d = Design(repo, tmp_path, data__declared_classification="confidential")
+    seal_with_flows(d, [flow("f1", "public", "cloud_service")], [], [])
+    d.guard("B1")
+    assert d.records("B1")[0]["fired"]["proposal_a_sealed"] == ["data_class_violation"]
+
+
+def test_unresolved_classification_makes_a_cloud_flow_undetermined(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    d = Design(repo, tmp_path, data__unresolved_classification=["customer export"])
+    seal_with_flows(d, [flow("f1", "internal", "cloud_service")], [], [])
+    d.guard("B1")
+    assert d.records("B1")[0]["undetermined"]["proposal_a_sealed"] == ["data_class_violation"]

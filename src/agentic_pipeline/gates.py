@@ -36,10 +36,12 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agentic_pipeline.advisories import candidate_verdict
+from agentic_pipeline.advisories import candidate_verdict as dependency_verdict
+from agentic_pipeline.dataflow import candidate_verdict as flow_verdict
 from agentic_pipeline.frozen import PolicyChanged, frozen_policy
 from agentic_pipeline.fsutil import atomic_write_json
 from agentic_pipeline.manifest import (
@@ -292,15 +294,29 @@ def assess_critiques(ctx: HandlerContext) -> str:
 
 # ── B1 ───────────────────────────────────────────────────────────────────────
 
+
 # veto id -> does this candidate violate it? True fires the veto, False clears it, None means
 # the proposal or the policy snapshot cannot say (reported as undetermined, never as clear).
 # Only checks decidable from a proposal document belong here; every other veto in
 # policy/vetoes.yaml is reported as unevaluated.
-type VetoEvaluator = Callable[[Any, PolicySnapshot], bool | None]
+@dataclass(frozen=True, slots=True)
+class VetoFacts:
+    """What an evaluator may consult besides the proposal: frozen policy and the entry spec."""
+
+    policy: PolicySnapshot
+    entry_data: Mapping[str, Any]
+
+
+type VetoEvaluator = Callable[[Any, VetoFacts], bool | None]
 VETO_EVALUATORS: dict[str, VetoEvaluator] = {
-    "schema_invalid": lambda doc, policy: bool(_schema_errors(doc)),
-    "known_vulnerable_dependency": lambda doc, policy: (
-        candidate_verdict(doc, policy.advisories) if not _schema_errors(doc) else None
+    "schema_invalid": lambda doc, facts: bool(_schema_errors(doc)),
+    "known_vulnerable_dependency": lambda doc, facts: (
+        dependency_verdict(doc, facts.policy.advisories) if not _schema_errors(doc) else None
+    ),
+    "data_class_violation": lambda doc, facts: (
+        flow_verdict(doc, facts.policy.data_classes, facts.entry_data)
+        if not _schema_errors(doc)
+        else None
     ),
 }
 
@@ -313,6 +329,10 @@ class VetoReport:
         stray = sorted(set(VETO_EVALUATORS) - known)
         if stray:
             raise GateError(f"evaluators for vetoes not in policy/vetoes.yaml: {stray}")
+        entry = json.loads(
+            (_sealed(ctx, ["requirements"])["requirements"] / "entry_spec.json").read_text("utf-8")
+        )
+        facts = VetoFacts(policy, entry["data"])
         self.input_digest = design.input_digest
         self.evaluated = sorted(set(VETO_EVALUATORS))
         self.unevaluated = sorted(known - set(VETO_EVALUATORS))
@@ -327,7 +347,7 @@ class VetoReport:
                 fired = ["schema_invalid"]
             else:
                 for veto, check in VETO_EVALUATORS.items():
-                    verdict = check(doc, policy)
+                    verdict = check(doc, facts)
                     if verdict is None:
                         undetermined.append(veto)
                     elif verdict:

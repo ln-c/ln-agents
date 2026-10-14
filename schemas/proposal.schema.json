@@ -36,6 +36,21 @@
         }
       }
     },
+    "data_flows": {
+      "type": "array",
+      "description": "Every flow of data from this design to a destination. Present and empty means the design sends no data anywhere; absent means the proposal did not say, and the data-class veto is then not evaluated.",
+      "items": {
+        "type": "object",
+        "required": ["id", "data_class", "destination"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "data_class": {"type": "string", "minLength": 1, "description": "A class from policy/data_classes.yaml."},
+          "destination": {"enum": ["local", "internal_service", "cloud_service", "third_party"]},
+          "purpose": {"type": "string"}
+        }
+      }
+    },
     "constraints_addressed": {"type": "array", "items": {"type": "string"}},
     "manifest_hash": {"type": "string"}
   },

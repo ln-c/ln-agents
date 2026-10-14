@@ -97,6 +97,13 @@ def check_data_classes(doc: Mapping[str, Any]) -> list[str]:
     for name in MUST_BLOCK_CLOUD:
         if (classes.get(name) or {}).get("cloud_allowed") is not False:
             errors.append(f"data_classes: {name} must have cloud_allowed: false")
+    destinations = doc.get("destinations")
+    if not isinstance(destinations, Mapping) or not destinations:
+        errors.append("data_classes: destinations must define at least one destination kind")
+    else:
+        for kind, spec in destinations.items():
+            if not isinstance((spec or {}).get("cloud"), bool):
+                errors.append(f"data_classes: destinations.{kind}.cloud must be true or false")
     return errors
 
 
