@@ -25,3 +25,13 @@ artifact_defaults:
   requirements:             internal
   adr_snapshot:             internal
   pinned_context_manifest:  internal
+
+# Where a proposal's declared data flows may go. `cloud: true` means the destination is
+# outside the host and the organization's own services; B1's data_class_violation veto then
+# requires the flow's data class to be cloud_allowed. A destination kind not listed here is
+# undetermined, never clear. The kinds must match schemas/proposal.schema.json.
+destinations:
+  local:            {cloud: false}
+  internal_service: {cloud: false}
+  cloud_service:    {cloud: true}
+  third_party:      {cloud: true}
