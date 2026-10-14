@@ -108,6 +108,7 @@ class Design:
         paths = _sealed(ctx, [CONTEXT_INPUT, *DESIGN_INPUTS])
         context = json.loads((paths[CONTEXT_INPUT] / "context_manifest.json").read_text("utf-8"))
         self.context_hash: str = context["hash"]
+        self.commit_sha: str = context["commit_sha"]
         self.contract_versions: dict[str, str] = context["contract_versions"]
         self.adrs: list[dict[str, str]] = context["adrs"]
         self.input_digest = _digest({name: digest_path(path) for name, path in paths.items()})
@@ -660,3 +661,28 @@ GATE_HANDLERS: dict[str, Callable[[Any], str]] = {
     "B3": authorize,
     "DR": record_decision,
 }
+
+
+# ── human approval evidence ──────────────────────────────────────────────────
+
+
+def approval_evidence(ctx: HandlerContext, policy: PolicySnapshot) -> dict[str, Any]:
+    """What an approver at H1 is shown, recomputed from the sealed design and frozen policy.
+
+    A pure function of sealed state: an approval is valid only if the evidence it names equals
+    this at decision time, so any change to the design, reviews, vetoes or scores voids it.
+    """
+    design = Design(ctx)
+    report = VetoReport(ctx)
+    scores = build_scores(ctx, policy, report)
+    return {
+        "commit_sha": design.commit_sha,
+        "context_manifest": design.context_hash,
+        "design_inputs": design.input_digest,
+        "vetoes": _digest(report.document("")),
+        "scores": _digest(scores),
+        "survivors": report.survivors,
+        "fired": report.fired,
+        "undetermined": report.undetermined,
+        "unevaluated": report.unevaluated,
+    }

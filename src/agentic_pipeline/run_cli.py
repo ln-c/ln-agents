@@ -1,9 +1,13 @@
-"""`agentic_pipeline run {init,step,status,resume}`: drive one run directory.
+"""`agentic_pipeline run {init,step,status,resume,approve,decide}`: drive one run directory.
 
 Exit codes for `run step`: 0 when the run advanced or stopped normally (finished,
 awaiting a human), 1 when blocked (nothing changed), 2 when paused (a human must
 resume). Anything that cannot be trusted (invalid state, policy drift, a broken
 provenance chain, a second runner) is an error with exit 1.
+
+A human state (H1) moves only by a signed approval: `run approve` writes the document to
+sign, the human signs it with `ssh-keygen -Y sign`, and `run decide` hands the signature to
+the runner, which verifies it (see approvals.py). `resume` only continues a paused run.
 """
 
 from __future__ import annotations
@@ -12,8 +16,14 @@ import argparse
 import copy
 import sys
 from collections.abc import Callable, Iterator, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
+from agentic_pipeline.approvals import (
+    ApprovalError,
+    build_document,
+    signing_command,
+)
 from agentic_pipeline.dispatch import BackendAdapter, Dispatcher
 from agentic_pipeline.graph import REPO_ROOT
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
@@ -159,6 +169,58 @@ def _step(args: argparse.Namespace, run_dir: Path) -> int:
     return {Outcome.BLOCKED: 1, Outcome.PAUSED: 2}.get(result.outcome, 0)
 
 
+def _approve(args: argparse.Namespace, run_dir: Path) -> int:
+    """Write the approval document for the human to sign; nothing about the run changes."""
+    runner = open_run(args.root, run_dir, _dispatcher_factory(args.root, run_dir))
+    try:
+        node = runner.state.current
+        evidence = runner.approval_evidence()
+        document = build_document(
+            run_id=runner.state.run_id,
+            node=node,
+            guard=args.decision,
+            approver=args.approver,
+            candidate=args.candidate,
+            reason=args.reason,
+            evidence=evidence,
+            issued_at=datetime.now(UTC).isoformat(),
+        )
+        namespace = load_policy(args.root).approvers["namespace"]
+    finally:
+        runner.close()
+    out = args.out or run_dir / "approvals" / f"{node}-{args.decision}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(document)
+    print(f"approval for {args.run_id} at {node}: {args.decision}")
+    print(f"  candidates that survived B1: {evidence['survivors'] or 'none'}")
+    for candidate, vetoes in evidence["fired"].items():
+        pending = evidence["undetermined"][candidate]
+        print(f"  {candidate}: fired {vetoes or '-'}; undetermined {pending or '-'}")
+    if evidence["unevaluated"]:
+        print(f"  vetoes with no evaluator: {evidence['unevaluated']}")
+    print(f"written: {out}")
+    print("Review it, then sign it as the approver (writes the .sig file next to it):")
+    print(f"  {signing_command(out, namespace)}")
+    print(f"then: run decide {args.run_id} --approval {out}")
+    return 0
+
+
+def _decide(args: argparse.Namespace, run_dir: Path) -> int:
+    signature_path = args.signature or args.approval.with_name(args.approval.name + ".sig")
+    try:
+        document = args.approval.read_bytes()
+        signature = signature_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ApprovalError(f"cannot read the approval or its signature: {exc}") from exc
+    runner = open_run(args.root, run_dir, _dispatcher_factory(args.root, run_dir))
+    try:
+        result = runner.decide(document, signature)
+    finally:
+        runner.close()
+    print(f"{result.outcome.value}: at {result.node} {result.detail}".rstrip())
+    return {Outcome.BLOCKED: 1, Outcome.PAUSED: 2}.get(result.outcome, 0)
+
+
 def _confirm_human(run_id: str) -> bool:
     """Interim human check (until signed approvals): a real terminal, run id retyped.
 
@@ -250,6 +312,19 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
     step = commands.add_parser("step", parents=[common], help="advance until blocked or stopped")
     step.add_argument("--max-steps", type=_positive_int, default=100)
     commands.add_parser("status", parents=[common], help="show run state")
+    approve = commands.add_parser(
+        "approve", parents=[common], help="write the approval document a human then signs"
+    )
+    approve.add_argument("--decision", required=True, help="the outgoing guard to take")
+    approve.add_argument("--approver", required=True, help="id listed in policy/approvers.yaml")
+    approve.add_argument("--reason", required=True)
+    approve.add_argument("--candidate", help="the surviving candidate (design approval only)")
+    approve.add_argument("--out", type=Path, help="where to write the document")
+    decide = commands.add_parser(
+        "decide", parents=[common], help="take the edge named by a signed approval"
+    )
+    decide.add_argument("--approval", type=Path, required=True)
+    decide.add_argument("--signature", type=Path, help="default: the approval path plus .sig")
     res = commands.add_parser(
         "resume",
         parents=[common],
@@ -260,10 +335,17 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
 
 
 def run_command(args: argparse.Namespace) -> int:
-    handler = {"init": _init, "step": _step, "status": _status, "resume": _resume}[args.run_command]
+    handler = {
+        "init": _init,
+        "step": _step,
+        "status": _status,
+        "resume": _resume,
+        "approve": _approve,
+        "decide": _decide,
+    }[args.run_command]
     try:
         run_dir = args.runs_dir / validate_run_id(args.run_id)
         return handler(args, run_dir)
-    except (RunStateError, ValueError) as exc:  # ValueError: e.g. an invalid run id
+    except (RunStateError, ApprovalError, ValueError) as exc:  # ValueError: e.g. bad run id
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
