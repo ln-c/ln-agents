@@ -32,6 +32,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from agentic_pipeline.build_gates import BUILD_GATE_HANDLERS
 from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
 from agentic_pipeline.gates import GATE_HANDLERS
 from agentic_pipeline.graph import NO_EDGE_KINDS, REPO_ROOT, Edge, Graph, spent_route
@@ -73,13 +74,18 @@ class HandlerContext:
     root: Path = REPO_ROOT  # repository whose pinned snapshot the run grounds
     policy_digests: Mapping[str, str] = field(default_factory=dict)  # frozen at run start
     provenance_tip: Callable[[], str] = lambda: GENESIS_HASH  # chain tip, for manifests
+    entered_from: Callable[[], str | None] = lambda: None  # state this node was entered from
 
 
 type StateHandler = Callable[[HandlerContext], str]
 
-# Deterministic per-node handlers: grounding (PR-8), design-side gates (PR-9a). Build and
-# release gates (E2, X, F1, ...) have none yet, so a run blocks at them.
-DEFAULT_HANDLERS: dict[str, StateHandler] = {**GROUNDING_HANDLERS, **GATE_HANDLERS}
+# Deterministic per-node handlers: grounding (PR-8), design-side gates (PR-9a), build-side
+# gates E2, X, E3 (PR-9b). F1, RM, RC and the rest have none yet, so a run blocks at them.
+DEFAULT_HANDLERS: dict[str, StateHandler] = {
+    **GROUNDING_HANDLERS,
+    **GATE_HANDLERS,
+    **BUILD_GATE_HANDLERS,
+}
 
 
 class Outcome(StrEnum):
@@ -296,6 +302,7 @@ class Runner:
                 root=self.root,
                 policy_digests=self.state.policy,
                 provenance_tip=self.log.tip,
+                entered_from=self._entered_from,
             )
             return handler(ctx)
         outgoing = [e for e in self.graph.edges if e.src == node]
@@ -306,6 +313,13 @@ class Runner:
         ):
             return "always"
         raise _Blocked(f"no handler registered for {node}")
+
+    def _entered_from(self) -> str | None:
+        """The state before the latest entry into the current node, from committed enters."""
+        entered = [r["state"] for r in self.log.records() if r["event"] == "enter"]
+        if not entered or entered[-1] != self.state.current or len(entered) < 2:
+            return None
+        return entered[-2]
 
     def _edge(self, node: str, guard: str) -> Edge:
         matches = [e for e in self.graph.edges if e.src == node and e.guard == guard]
