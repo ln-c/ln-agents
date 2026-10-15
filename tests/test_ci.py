@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sandbox_env import BWRAP_USABLE
 
 from agentic_pipeline import ci
 from agentic_pipeline.graph import load_yaml
@@ -14,6 +15,7 @@ from agentic_pipeline.policies import check_ci
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTING = load_yaml(ROOT / "policy" / "routing.yaml")
+needs_sandbox = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap unavailable or unusable")
 TOOLCHAIN: dict[str, Any] = {"kind": "none", "env": {}, "timeout_seconds": 30}
 
 
@@ -66,6 +68,7 @@ def test_an_unset_check_never_passes(
     assert result["status"] == status and "runs" not in result  # nothing was executed
 
 
+@needs_sandbox
 def test_commands_run_in_order_in_the_tree_and_stop_at_the_first_failure(tree: Path) -> None:
     commands = [
         *py("import pathlib; pathlib.Path('ran1').write_text('x')"),
@@ -77,6 +80,7 @@ def test_commands_run_in_order_in_the_tree_and_stop_at_the_first_failure(tree: P
     assert (tree / "ran1").exists() and not (tree / "ran3").exists()
 
 
+@needs_sandbox
 def test_a_check_cannot_reach_the_network_or_the_host_home(tree: Path) -> None:
     code = (
         "import socket, sys; s = socket.socket(); s.settimeout(2)\n"
@@ -87,12 +91,14 @@ def test_a_check_cannot_reach_the_network_or_the_host_home(tree: Path) -> None:
     assert result["status"] == ci.FAILED and result["runs"][0]["exit_code"] == 5
 
 
+@needs_sandbox
 def test_a_timeout_is_a_failure(tree: Path) -> None:
     slow = spec(commands=py("import time; time.sleep(30)"), timeout_seconds=1)
     result = ci.run_check("integration", slow, tree, None, TOOLCHAIN)
     assert result["status"] == ci.FAILED and result["runs"][0]["timed_out"] is True
 
 
+@needs_sandbox
 @pytest.mark.parametrize(
     ("printed", "status"),
     [
@@ -127,6 +133,7 @@ def test_a_missing_lockfile_is_an_infra_problem_for_every_configured_check(
     assert results["b"]["status"] == ci.UNEVALUATED  # unset: never executed, never infra
 
 
+@needs_sandbox
 @pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv")
 def test_the_pinned_toolchain_is_built_from_the_trees_lockfile_and_bound_into_the_sandbox(
     tmp_path: Path,

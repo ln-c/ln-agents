@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sandbox_env import run_on_host
 from test_grounding import Rig, repo  # noqa: F401  (repo is a fixture)
 
 from agentic_pipeline.build_gates import (
@@ -99,6 +100,15 @@ class Build:
 
     def ctx(self, node: str, origin: str | None = "E2") -> HandlerContext:
         return dataclasses.replace(self.rig.ctx(self.runner, node), entered_from=lambda: origin)
+
+
+@pytest.fixture(autouse=True)
+def host_processes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover gate logic, so checks run as host processes; tests/test_ci.py runs
+    the real sandbox (and skips where bwrap is unusable, as on the hosted CI runner)."""
+    from agentic_pipeline import ci
+
+    monkeypatch.setattr(ci, "run_sandboxed", run_on_host)
 
 
 @pytest.fixture
