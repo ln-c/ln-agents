@@ -28,7 +28,7 @@ This repository's deterministic implementation remains authoritative. Agent spec
 | Design | [`agents/pipeline-design-agent.md`](agents/pipeline-design-agent.md) | A1–A4; independent proposals, critique, synthesis |
 | Build | [`agents/pipeline-build-agent.md`](agents/pipeline-build-agent.md) | C1–E4; decomposition, contracts, tests, implementation |
 | Exception Router | [`agents/pipeline-exception-router.md`](agents/pipeline-exception-router.md) | X; evidence-based exception classification and routing |
-| Release | [`agents/pipeline-release-agent.md`](agents/pipeline-release-agent.md) | F1–RB; CI, merge, deploy authorization, rollback |
+| Release | [`agents/pipeline-release-agent.md`](agents/pipeline-release-agent.md) | F1–RB; CI, merge, deploy authorization, rollback (`D2`, `RB` not built) |
 | Learning | [`agents/pipeline-learning-agent.md`](agents/pipeline-learning-agent.md) | L1–L3, HR; provenance and gated evaluation |
 | Human Authority | [`agents/pipeline-human-authority-agent.md`](agents/pipeline-human-authority-agent.md) | H1, ADR, BENCH, CHILD; explicit human decisions |
 
@@ -43,11 +43,11 @@ This repository's deterministic implementation remains authoritative. Agent spec
 7. Build agents cannot modify protected tests, frozen contracts, ADRs, policy, budgets, approvals, or release state.
 8. Human approval is explicit, attributable, and bound to the exact artifact digest and target. Merge and deployment approvals are separate.
 9. Models may explain, draft, critique, or provide bounded classifications. They cannot authorize transitions, change policy, approve releases, or override security vetoes.
-10. Learning writes append-only provenance. Index refreshes require successful merge and exact merged SHA; calibration changes require offline evaluation and human review.
+10. Learning writes append-only provenance. `L2` runs only after a verified merge and records the exact merged SHA; an index refresh (not built yet) would require the same, and calibration changes require offline evaluation and human review.
 11. Subscription quota exhaustion causes an explicit pause or registry-approved local fallback. No paid API fallback, credential-based billing substitution, or silent provider switch is allowed.
 
 ## Model registry
 
 Read [`policy/model_registry.yaml`](policy/model_registry.yaml). The registry assigns execution backends but does not grant permissions. `policy/budgets.yaml`, `policy/data_classes.yaml`, `policy/escalation.yaml`, `policy/vetoes.yaml`, and `pipeline/graph.yaml` remain authoritative for their respective controls.
 
-Validate the registry against [`schemas/model_registry.schema.json`](schemas/model_registry.schema.json) and add it to the repository's existing invariant-test suite before enabling automated writes.
+`uv run python -m agentic_pipeline validate` validates the registry against [`schemas/model_registry.schema.json`](schemas/model_registry.schema.json) and cross-checks it with the graph; `tests/test_registry.py` pins those rules. [`README.md`](README.md) lists which states are built.

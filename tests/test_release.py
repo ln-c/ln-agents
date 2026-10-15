@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 import os
 import shutil
@@ -16,7 +18,7 @@ from test_build_gates import CLEAN, TEST_CI, Build
 from test_grounding import git, repo  # noqa: F401  (repo is a fixture)
 
 from agentic_pipeline import build_gates as bg
-from agentic_pipeline import ci
+from agentic_pipeline import ci, release
 from agentic_pipeline.approvals import ApprovalError, build_document
 from agentic_pipeline.build_gates import BUILD_GATE_HANDLERS, latest_rebase
 from agentic_pipeline.graph import load_yaml
@@ -409,6 +411,12 @@ def test_merged_records_the_commit_a_human_merge_produced(rel: Release, how: str
         (rel.runner.store.run_root / "gates" / "L2" / f"{commit}.json").read_text()
     )
     assert learning["merged_sha"] == commit and learning["marked_implemented"] is False
+    (event,) = [e for e in rel.runner.log.records() if e["event"] == "learning"]
+    learning_file = rel.runner.store.run_root / "gates" / "L2" / f"{commit}.json"
+    assert event["state"] == "L2" and event["merged_sha"] == commit
+    assert (
+        event["record_digest"] == "sha256:" + hashlib.sha256(learning_file.read_bytes()).hexdigest()
+    )
     assert rel.runner.step().outcome is Outcome.AWAITING_HUMAN
     assert verify_provenance_chain(rel.runner.log.path).ok
 
@@ -546,3 +554,23 @@ def test_release_policy_must_say_whether_deploy_needs_another_approver() -> None
     assert doc["separate_deploy_approver"] is False
     doc["separate_deploy_approver"] = "no"
     assert any("separate_deploy_approver" in e for e in check_release(doc))
+
+
+def test_l2_appends_one_learning_event_per_merged_sha(rel: Release) -> None:
+    to_merged(rel)
+    land(rel, "ff")
+    assert rel.runner.step().node == "R2"
+    ctx = rel.build.ctx("L2")
+    ctx = dataclasses.replace(ctx, events=rel.runner.log.records, append=rel.runner.log.append)
+    assert release.learn(ctx) == "always"  # a retried step runs L2 again
+    assert [e["event"] for e in rel.runner.log.records()].count("learning") == 1
+    assert verify_provenance_chain(rel.runner.log.path).ok
+
+
+def test_l2_blocks_when_the_event_cannot_be_appended(rel: Release) -> None:
+    to_merged(rel)
+    land(rel, "ff")
+    assert rel.runner.step().node == "R2"
+    ctx = dataclasses.replace(rel.build.ctx("L2"), events=list)  # no log behind the context
+    with pytest.raises(RuntimeError, match="no provenance log"):
+        release.learn(ctx)

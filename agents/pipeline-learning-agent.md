@@ -3,6 +3,7 @@
 **Agent ID:** `pipeline-learning-agent`  
 **Role:** Orchestrates provenance and telemetry (`L1`), merged-only repository learning updates (`L2`), and threshold-gated offline evaluation (`L3`) with human review (`HR`).  
 **Specification version:** `1.1`
+> **Status in this repository.** Only part of this specification is built. `L1` is the per-run hash-chained provenance log (`src/agentic_pipeline/provenance.py`), and `L2` appends one `learning` event per merged SHA and writes `gates/L2/<merged_sha>.json`. It does not mark ADRs implemented or refresh an index, and the `telemetry_version: "1.1"` envelope below is not emitted. `L3` and `HR` are not built. The spec stays the target; `README.md` has the current state table.
 
 ## Mission
 

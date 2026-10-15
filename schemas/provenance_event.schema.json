@@ -8,7 +8,7 @@
     "run_id": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"},
     "seq": {"type": "integer", "minimum": 0},
     "state": {"type": "string"},
-    "event": {"enum": ["enter", "model_call", "model_result", "decision", "approval", "exception", "terminal"]},
+    "event": {"enum": ["enter", "model_call", "model_result", "decision", "approval", "exception", "learning", "terminal"]},
     "timestamp": {"type": "string"},
     "prev_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "event_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
@@ -22,11 +22,14 @@
     "approver_id": {"type": "string"},
     "approved_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "approval_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the signed approval document this event records."},
+    "merged_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The commit on the target branch that a learning event is about."},
+    "record_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the learning record file this event points to."},
     "reason_code": {"type": "string"}
   },
   "allOf": [
     {"if": {"properties": {"event": {"const": "model_call"}}}, "then": {"required": ["model", "model_version", "prompt_hash", "backend", "access_method", "operation_id", "invocation_id"]}},
     {"if": {"properties": {"event": {"const": "model_result"}}}, "then": {"required": ["reason_code", "backend", "access_method", "operation_id", "invocation_id"]}},
-    {"if": {"properties": {"event": {"const": "approval"}}}, "then": {"required": ["approver_id", "approved_sha"]}}
+    {"if": {"properties": {"event": {"const": "approval"}}}, "then": {"required": ["approver_id", "approved_sha"]}},
+    {"if": {"properties": {"event": {"const": "learning"}}}, "then": {"required": ["merged_sha", "record_digest"]}}
   ]
 }

@@ -392,14 +392,15 @@ def learn(ctx: HandlerContext) -> str:
     """L2 (a side effect of MERGED): the merged-only learning record. It edits nothing in the repo.
 
     It lists the ADRs the pinned manifest holds as accepted; marking them implemented is a human
-    change to docs/adr, and the append-only ledger is PR-11.
+    change to docs/adr. The record's digest goes into the run's hash-chained provenance log as
+    a `learning` event, once per merged SHA, so a retried step never appends it twice.
     """
     done = latest_merged(ctx.run_root)
     if done is None:
         raise ReleaseError("L2 runs only after a merge has been recorded")
     manifest = _sealed(ctx, ["pinned_context_manifest"])["pinned_context_manifest"]
     adrs = json.loads((manifest / "context_manifest.json").read_text("utf-8"))["adrs"]
-    _record(
+    path = _record(
         ctx,
         "L2",
         done["merged_sha"],
@@ -411,6 +412,18 @@ def learn(ctx: HandlerContext) -> str:
             "marked_implemented": False,
         },
     )
+    digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    if not any(
+        e["event"] == "learning" and e["merged_sha"] == done["merged_sha"] for e in ctx.events()
+    ):
+        ctx.append(
+            {
+                "state": "L2",
+                "event": "learning",
+                "merged_sha": done["merged_sha"],
+                "record_digest": digest,
+            }
+        )
     return "always"
 
 
