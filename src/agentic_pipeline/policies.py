@@ -28,6 +28,7 @@ POLICY_FILES = (
     "approvers",
     "ci",
     "routing",
+    "release",
 )
 
 
@@ -192,6 +193,34 @@ def check_approvers(doc: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+REF_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def check_release(doc: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    branch = doc.get("target_branch")
+    if not isinstance(branch, str) or not all(REF_PART.fullmatch(p) for p in branch.split("/")):
+        errors.append("release: target_branch must be a plain branch name")
+    prefix = doc.get("merge_branch_prefix")
+    if (
+        not isinstance(prefix, str)
+        or not prefix.endswith("/")
+        or not all(REF_PART.fullmatch(p) for p in prefix.rstrip("/").split("/"))
+    ):
+        errors.append("release: merge_branch_prefix must be a plain name ending in '/'")
+    elif isinstance(branch, str) and (branch.startswith(prefix) or prefix.startswith(branch + "/")):
+        errors.append("release: merge branches must not live under the target branch")
+    paths = doc.get("constraint_paths")
+    if not isinstance(paths, list) or not paths:
+        errors.append("release: constraint_paths must be a non-empty list")
+    else:
+        for path in paths:
+            parts = str(path).split("/")
+            if not isinstance(path, str) or path.startswith("/") or ".." in parts or "" in parts:
+                errors.append(f"release: constraint path {path!r} must be a relative repo path")
+    return errors
+
+
 def check_ci(doc: Mapping[str, Any], routing: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     toolchain = doc.get("toolchain")
@@ -285,4 +314,5 @@ def validate_policies(docs: Mapping[str, Mapping[str, Any]]) -> list[str]:
         *check_advisories(docs["advisories"]),
         *check_approvers(docs["approvers"]),
         *check_ci(docs["ci"], docs["routing"]),
+        *check_release(docs["release"]),
     ]

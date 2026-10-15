@@ -32,7 +32,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from agentic_pipeline.approvals import NODE_DECISION, ApprovalError, Verified, verify_approval
+from agentic_pipeline.approvals import (
+    NODE_DECISION,
+    ApprovalError,
+    Verified,
+    store_approval,
+    verify_approval,
+)
 from agentic_pipeline.build_gates import BUILD_GATE_HANDLERS
 from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
 from agentic_pipeline.gates import GATE_HANDLERS, approval_evidence
@@ -45,6 +51,7 @@ from agentic_pipeline.grounding import (
     load_entry_spec,
 )
 from agentic_pipeline.provenance import GENESIS_HASH, JsonlProvenanceLog
+from agentic_pipeline.release import RELEASE_HANDLERS, release_evidence
 from agentic_pipeline.run_state import (
     PauseCause,
     PolicySnapshot,
@@ -86,6 +93,7 @@ DEFAULT_HANDLERS: dict[str, StateHandler] = {
     **GROUNDING_HANDLERS,
     **GATE_HANDLERS,
     **BUILD_GATE_HANDLERS,
+    **RELEASE_HANDLERS,
 }
 
 
@@ -311,7 +319,8 @@ class Runner:
         policy = load_policy(self.root)
         check_policy(st, policy)
         try:
-            evidence = approval_evidence(self._context(st.current), policy)
+            gather = {"H1": approval_evidence, "R1": release_evidence}[st.current]
+            evidence = gather(self._context(st.current), policy)
         except Exception as exc:  # unverifiable evidence is never approvable
             raise ApprovalError(
                 f"cannot recompute the evidence: {type(exc).__name__}: {exc}"
@@ -336,12 +345,13 @@ class Runner:
         edge = self._edge(node, verified.guard)
         st.status = Status.RUNNING
         try:
+            store_approval(self.store.run_root, document, signature)
             self.log.append(
                 {
                     "state": node,
                     "event": "approval",
                     "approver_id": verified.approver,
-                    "approved_sha": verified.commit_sha,
+                    "approved_sha": verified.approved_sha,
                     "approval_digest": verified.digest,
                     "reason_code": verified.guard,
                 }

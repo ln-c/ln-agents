@@ -31,6 +31,7 @@ Audit records go under `gates/<NODE>/<input digest>.json`.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import tempfile
@@ -55,7 +56,7 @@ from agentic_pipeline.gates import (
     _record,
     _sealed,
 )
-from agentic_pipeline.grounding import G1_SOURCES
+from agentic_pipeline.grounding import G1_SOURCES, GroundingError, _extract
 from agentic_pipeline.manifest import (
     ManifestError,
     digest_path,
@@ -191,6 +192,28 @@ def _sealed_intact(ctx: HandlerContext, artifact: str) -> list[str]:
     return []
 
 
+REBASED = "constraints_unchanged_rebase"
+
+
+def latest_rebase(run_root: Path) -> dict[str, Any] | None:
+    """The newest RC record that rebased the candidate onto a newer target tip, if any."""
+    records = sorted((run_root / "gates" / "RC").glob("*.json"), key=lambda p: p.stat().st_mtime_ns)
+    for path in reversed(records):
+        doc = json.loads(path.read_text("utf-8"))
+        if doc.get("guard") == REBASED:
+            return doc
+    return None
+
+
+def tested_base(ctx: HandlerContext) -> str:
+    """The commit the candidate is tested against: the pinned one, or the tip RC rebased onto."""
+    rebase = latest_rebase(ctx.run_root)
+    if rebase is not None:
+        return str(rebase["new_base"])
+    manifest = _sealed(ctx, ["pinned_context_manifest"])["pinned_context_manifest"]
+    return str(json.loads((manifest / "context_manifest.json").read_text("utf-8"))["commit_sha"])
+
+
 def _run_behavioral(
     ctx: HandlerContext, stage: str, patch: Path, static_ok: bool
 ) -> dict[str, dict[str, Any]]:
@@ -206,11 +229,18 @@ def _run_behavioral(
             }
             for name, spec in specs.items()
         }
-    source = _sealed(ctx, ["pinned_source_tree"])["pinned_source_tree"]
     scratch = ctx.run_root / CI_WORK
     scratch.mkdir(exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f"{stage}-", dir=scratch))
     try:
+        if latest_rebase(ctx.run_root) is None:
+            source = _sealed(ctx, ["pinned_source_tree"])["pinned_source_tree"]
+        else:  # RC moved the base: test the patch on the new tip, read from git objects
+            source = work / "base"
+            try:
+                _extract(ctx.root, tested_base(ctx), None, source)
+            except GroundingError as exc:
+                raise BuildGateError(f"cannot read the rebased tree: {exc}") from exc
         return run_stage(ci, stage, source, patch, work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -245,6 +275,7 @@ def _stage_gate(ctx: HandlerContext, stage: str, passed: str, failed: str) -> st
         _digest({"patch": patch, "checks": {n: c["status"] for n, c in checks.items()}}),
         {
             "patch": patch,
+            "base": tested_base(ctx),
             "guard": guard,
             "checks": checks,
         },

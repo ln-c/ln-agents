@@ -1,0 +1,19 @@
+# Where a merged change goes and what counts as a constraint. Human-owned (CODEOWNERS).
+#
+# M1 never writes to `target_branch`: it creates a local branch `<merge_branch_prefix><run id>`
+# whose parent is the target branch's tip and whose tree is the approved candidate. A human
+# pushes it or opens the pull request.
+#
+# RC compares the tested base with the target branch's new tip. If any path under
+# `constraint_paths` changed, the run's grounding is stale and RC routes to CHILD.
+version: 1
+target_branch: main
+merge_branch_prefix: merge/
+constraint_paths:
+  - contracts
+  - docs/adr
+  - tests
+  - policy
+  - schemas
+  - pipeline
+  - .github
