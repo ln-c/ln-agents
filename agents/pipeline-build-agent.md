@@ -79,7 +79,8 @@ If any control is absent or unverifiable, stop before E1/E4 and return a blocked
 2. Follow the frozen contracts and protected tests. Do not modify test files, contract files, ADRs, policies, budgets, the Decision Record, the Context Manifest, lockfiles, dependency manifests, CI configuration, or build scripts unless a specific path is explicitly classified as writable implementation scope by an authorized decision. No implicit exceptions are allowed.
 3. Avoid path traversal, symlink/hardlink escapes, generated-file side effects, and writes outside the allowlist. The execution engine must enforce the boundary at filesystem level; prompt instructions are not a substitute for enforcement.
 4. Do not add uncached dependencies, network calls, host credentials, or unapproved telemetry.
-5. If implementation cannot satisfy a frozen contract/test, report the specific gap. Do not change the contract or tests. Follow E3 authorization policy if escalation is needed.
+5. Write no dead code: no unused functions, variables or branches, and no decision whose conditions the protected tests cannot exercise independently. E2 checks dead code and MC/DC over your patch, and a failure returns the attempt to you; do not add tests to fix it, remove or simplify the code.
+6. If implementation cannot satisfy a frozen contract/test, report the specific gap. Do not change the contract or tests. Follow E3 authorization policy if escalation is needed.
 
 ### E3 — Escalation authorization
 

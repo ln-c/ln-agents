@@ -6,7 +6,9 @@ then the E2 checks of `policy/ci.yaml` in the offline sandbox (see ci.py). No be
 check runs unless every static check passed. Every check ends `passed`, `failed`,
 `not_evaluated`, `skipped` (optional and unset) or `infra_error`; a stage passes only if every
 check passed or was skipped, so a required check that is unset fails closed. F1 is the same
-gate with the F1 checks (independent CI: integration, ADR fitness, mutation, MC/DC).
+gate with the F1 checks (independent CI: integration, ADR fitness, mutation testing). The E2
+checks include dead code and MC/DC over the patch: code the protected tests cannot exercise is
+the implementation's fault, so it goes back to E1.
 
 X reproduces the origin's result (E2 or F1; the checks are a function of the patch, sealed
 inputs and frozen policy), classifies it, and picks a cause from `policy/routing.yaml`:

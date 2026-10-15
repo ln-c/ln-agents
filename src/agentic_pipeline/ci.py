@@ -27,10 +27,11 @@ CHECK_NAMES = (
     "contract_tests",
     "acceptance_tests",
     "performance",
+    "dead_code",
+    "mcdc",
     "integration",
     "adr_fitness",
     "mutation",
-    "mcdc",
 )
 STAGES = ("E2", "F1")
 VENV = "/venv"

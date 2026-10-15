@@ -159,6 +159,10 @@ def test_the_shipped_ci_policy_is_valid_and_leaves_mutation_and_mcdc_unset() -> 
     assert check_ci(doc, ROUTING) == []
     for name in ("mutation", "mcdc"):
         assert doc["checks"][name]["required"] is True and ci.is_unset(doc["checks"][name])
+    # MC/DC and dead code judge the implementation, so they run at E2; mutation testing at F1.
+    stages = {n: s["stage"] for n, s in doc["checks"].items()}
+    assert (stages["mcdc"], stages["dead_code"], stages["mutation"]) == ("E2", "E2", "F1")
+    assert doc["checks"]["dead_code"]["required"] is False
     assert {s["stage"] for s in doc["checks"].values()} == {"E2", "F1"}
 
 

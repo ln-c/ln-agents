@@ -1,4 +1,5 @@
-# Behavioral checks run by E2 (after every implementation attempt) and F1 (clean-room CI).
+# Behavioral checks run by E2 (after every implementation attempt: tests, dead code, MC/DC)
+# and F1 (clean-room CI: integration, ADR fitness, mutation testing).
 # Human-owned. Frozen with the other policy for every run.
 #
 # Each check runs offline in the bwrap sandbox on a fresh tree: the pinned source tree with
@@ -38,6 +39,17 @@ checks:
     required: false
     cause: implementation_violates_contract
     commands: []
+  dead_code:           # unused code in the patch; needs a tool (for example vulture)
+    stage: E2
+    required: false
+    cause: implementation_violates_contract
+    commands: []
+  mcdc:                # UNSET: needs a tool and a minimum MC/DC percentage over the patch's
+    stage: E2          # files, so code the protected tests cannot exercise is rejected early.
+    required: true     # Required and unset: E2 cannot pass until this is configured.
+    cause: implementation_violates_contract
+    commands: []
+    score: {}
   integration:
     stage: F1
     required: true
@@ -54,12 +66,6 @@ checks:
     cause: unknown_or_spent
     commands: []
   mutation:            # UNSET: needs a tool, a changed-lines mode and a minimum score
-    stage: F1
-    required: true
-    cause: requirement_missing
-    commands: []
-    score: {}
-  mcdc:                # UNSET: needs a tool and a minimum MC/DC percentage
     stage: F1
     required: true
     cause: requirement_missing

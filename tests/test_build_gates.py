@@ -37,6 +37,13 @@ checks:
     cause: implementation_violates_contract
     commands: [[python3, -c, "import sys; sys.exit(0)"]]
   performance: {stage: E2, required: false, cause: implementation_violates_contract, commands: []}
+  dead_code: {stage: E2, required: false, cause: implementation_violates_contract, commands: []}
+  mcdc:
+    stage: E2
+    required: true
+    cause: implementation_violates_contract
+    commands: [[python3, -c, "print('mc/dc 100')"]]
+    score: {pattern: "mc/dc ([0-9.]+)", minimum: 100}
   integration:
     stage: F1
     required: true
@@ -44,7 +51,6 @@ checks:
     commands: [[python3, -c, "import sys; sys.exit(0)"]]
   adr_fitness: {stage: F1, required: false, cause: unknown_or_spent, commands: []}
   mutation: {stage: F1, required: true, cause: requirement_missing, commands: [], score: {}}
-  mcdc: {stage: F1, required: true, cause: requirement_missing, commands: [], score: {}}
 """
 
 
@@ -52,7 +58,7 @@ class Build:
     """Grounding walked to G4, then an E1 patch published by hand.
 
     The run's CI policy is a small one that needs no uv environment: acceptance_tests and
-    integration pass, and mutation and mcdc are unset and required, as in the shipped policy.
+    mcdc and integration pass, and mutation is unset and required, as in the shipped policy.
     """
 
     def __init__(self, repo: Path, tmp_path: Path, ci: str = TEST_CI) -> None:  # noqa: F811
@@ -120,6 +126,8 @@ def test_clean_patch_passes_static_and_configured_checks_and_skips_optional_unse
         "contract_tests": "skipped",
         "acceptance_tests": "passed",
         "performance": "skipped",
+        "dead_code": "skipped",
+        "mcdc": "passed",
     }
     assert BUILD_GATE_HANDLERS["E2"](build.ctx("E2")) == "all_pass"
 
@@ -128,7 +136,7 @@ def test_no_behavioral_check_runs_for_a_patch_that_fails_a_static_check(build: B
     build.publish({"tests/test_x.py": "x\n"})
     result = run_checks(build.ctx("E2"))[1]
     assert result["write_scope"]["status"] == "failed"
-    for name in ("contract_tests", "acceptance_tests", "performance"):
+    for name in ("contract_tests", "acceptance_tests", "performance", "dead_code", "mcdc"):
         assert result[name]["status"] == UNEVALUATED
         assert result[name]["problems"] == ["not run: a static check failed"]
     assert BUILD_GATE_HANDLERS["E2"](build.ctx("E2")) == "any_fail_or_exception"
@@ -344,9 +352,8 @@ def test_f1_needs_every_required_check_and_the_unset_ones_never_pass(build: Buil
     checks = json.loads(record.read_text())["checks"]
     assert checks["integration"]["status"] == "passed"
     assert checks["adr_fitness"]["status"] == "skipped"
-    for unset in ("mutation", "mcdc"):
-        assert checks[unset]["status"] == UNEVALUATED
-        assert "required but unset" in checks[unset]["problems"][0]
+    assert checks["mutation"]["status"] == UNEVALUATED
+    assert "required but unset" in checks["mutation"]["problems"][0]
     # X reproduces it and sends a check that never ran to a human, not to a retry.
     assert BUILD_GATE_HANDLERS["X"](build.ctx("X", "F1")) == "unknown_or_spent"
 
@@ -379,8 +386,6 @@ def test_a_score_below_its_minimum_fails_and_routes_to_requirement_missing(
     doc["checks"]["mutation"].update(
         commands=low, score={"pattern": r"score: ([0-9.]+)", "minimum": 80}
     )
-    doc["checks"]["mcdc"].update(commands=[["python3", "-c", "print('mc/dc 100')"]])
-    doc["checks"]["mcdc"]["score"] = {"pattern": r"mc/dc ([0-9.]+)", "minimum": 100}
     b = Build(repo, tmp_path, yaml.safe_dump(doc))
     b.publish(CLEAN)
     assert BUILD_GATE_HANDLERS["F1"](b.ctx("F1")) == "required_check_failed"
@@ -406,3 +411,33 @@ def test_a_sandbox_that_is_unavailable_is_infra_not_a_verdict(
     build.publish(CLEAN)
     assert BUILD_GATE_HANDLERS["E2"](build.ctx("E2")) == "any_fail_or_exception"
     assert BUILD_GATE_HANDLERS["X"](build.ctx("X")) == "infra_rerun_e2"
+
+
+def test_unset_mcdc_blocks_e2_and_x_sends_it_to_a_human(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    doc = yaml.safe_load(TEST_CI)
+    doc["checks"]["mcdc"].update(commands=[], score={})  # as shipped: required and unset
+    b = Build(repo, tmp_path, yaml.safe_dump(doc))
+    b.publish(CLEAN)
+    assert BUILD_GATE_HANDLERS["E2"](b.ctx("E2")) == "any_fail_or_exception"
+    (record,) = (b.rig.run_dir / "gates" / "E2").glob("*.json")
+    assert json.loads(record.read_text())["checks"]["mcdc"]["status"] == UNEVALUATED
+    assert BUILD_GATE_HANDLERS["X"](b.ctx("X")) == "unknown_or_spent"
+
+
+def test_an_mcdc_score_below_its_minimum_returns_the_attempt_to_the_implementation(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    doc = yaml.safe_load(TEST_CI)
+    doc["checks"]["mcdc"]["commands"] = [["python3", "-c", "print('mc/dc 75')"]]
+    b = Build(repo, tmp_path, yaml.safe_dump(doc))
+    b.publish(CLEAN)
+    assert BUILD_GATE_HANDLERS["E2"](b.ctx("E2")) == "any_fail_or_exception"
+    assert BUILD_GATE_HANDLERS["X"](b.ctx("X")) == "implementation_violates_contract"
