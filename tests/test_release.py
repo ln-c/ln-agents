@@ -22,7 +22,13 @@ from agentic_pipeline.build_gates import BUILD_GATE_HANDLERS, latest_rebase
 from agentic_pipeline.graph import load_yaml
 from agentic_pipeline.policies import check_release
 from agentic_pipeline.provenance import verify_provenance_chain
-from agentic_pipeline.release import ReleaseError, candidate_tree, release_evidence
+from agentic_pipeline.release import (
+    RELEASE_HANDLERS,
+    ReleaseError,
+    _git,
+    candidate_tree,
+    release_evidence,
+)
 from agentic_pipeline.run_state import Status, load_policy
 from agentic_pipeline.runner import Outcome
 
@@ -56,7 +62,7 @@ class Release:
         self.signer = Signer(tmp_path)
         (repo / "policy" / "approvers.yaml").write_text(
             f"version: 1\nnamespace: {NAMESPACE}\napprovers:\n  - id: alice\n"
-            f'    public_key: "{self.signer.public}"\n    decisions: [design, merge]\n'
+            f'    public_key: "{self.signer.public}"\n    decisions: [design, merge, deploy]\n'
         )
         self.repo = repo
         self.build = Build(repo, tmp_path, passing_ci())
@@ -72,16 +78,19 @@ class Release:
         self.runner._save()
         assert self.runner.step().outcome is Outcome.AWAITING_HUMAN
 
-    def sign(self, guard: str = "approve") -> tuple[bytes, str]:
+    def sign(
+        self, guard: str = "approve", node: str = "R1", cause: str | None = None, who: str = "alice"
+    ) -> tuple[bytes, str]:
         doc = build_document(
             run_id=self.runner.state.run_id,
-            node="R1",
+            node=node,
             guard=guard,
-            approver="alice",
+            approver=who,
             candidate=None,
             reason="reviewed the diff",
             evidence=self.runner.approval_evidence(),
             issued_at="2026-10-15T10:00:00+00:00",
+            remediation_cause=cause,
         )
         return doc, self.signer.sign(doc)
 
@@ -99,10 +108,16 @@ def rel(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Release:
     return Release(repo, tmp_path, monkeypatch)
 
 
+def branch_name(rel: Release) -> str:
+    tree = release_evidence(rel.build.ctx("R1"), load_policy(rel.repo))["candidate_tree"]
+    return f"merge/demo-{tree[:12]}"
+
+
 def merged_branch(rel: Release) -> str:
-    if not git(rel.repo, "branch", "--list", "merge/demo"):
+    name = branch_name(rel)
+    if not git(rel.repo, "branch", "--list", name):
         return ""
-    return git(rel.repo, "rev-parse", "refs/heads/merge/demo")
+    return git(rel.repo, "rev-parse", f"refs/heads/{name}")
 
 
 # ── the candidate ────────────────────────────────────────────────────────────
@@ -182,7 +197,7 @@ def test_m1_is_idempotent_and_refuses_a_branch_that_holds_something_else(rel: Re
     rel.runner.state.current = "M1"
     rel.runner._save()
     assert rel.runner.step().node == "MERGED" and merged_branch(rel) == first
-    git(rel.repo, "update-ref", "refs/heads/merge/demo", rel.base)
+    git(rel.repo, "update-ref", f"refs/heads/{branch_name(rel)}", rel.base)
     rel.runner.state.current = "M1"
     rel.runner._save()
     result = rel.runner.step()
@@ -336,6 +351,7 @@ def test_cli_approve_shows_the_merge_evidence(
         approver="alice",
         reason="reviewed",
         candidate=None,
+        remediation_cause=None,
         out=out,
         run_command="approve",
     )
@@ -343,3 +359,190 @@ def test_cli_approve_shows_the_merge_evidence(
     shown = capsys.readouterr().out
     assert "F1 for this patch and base: all_required_pass" in shown and "candidate tree" in shown
     assert json.loads(out.read_text())["evidence"]["target_branch"] == "main"
+
+
+# ── MERGED, L2, R2, RM ───────────────────────────────────────────────────────
+
+
+def land(rel: Release, how: str = "ff") -> str:
+    """Land the approved candidate on main the way a human merge would; return the commit."""
+    ctx = rel.build.ctx("R1")
+    _, patch, _ = bg._latest_patch(ctx)
+    tip = git(rel.repo, "rev-parse", "main")
+    if how == "ff":
+        commit = merged_branch(rel)
+    else:  # a squash merge: a new commit on the current tip whose own change is the patch
+        tree = candidate_tree(rel.repo, tip, patch)
+        commit = git(rel.repo, "commit-tree", tree, "-p", tip, "-m", "squash")
+    git(rel.repo, "update-ref", "refs/heads/main", commit)
+    return commit
+
+
+def to_merged(rel: Release) -> None:
+    approve_and_merge(rel)
+    assert rel.runner.step().node == "MERGED"
+
+
+def test_merged_waits_without_spending_anything_until_the_branch_reaches_main(rel: Release) -> None:
+    to_merged(rel)
+    before = dict(rel.runner.state.ledger["consumed"])
+    result = rel.runner.step()
+    assert result.outcome is Outcome.BLOCKED and "waiting for merge/demo-" in result.detail
+    assert rel.runner.state.current == "MERGED" and rel.runner.state.ledger["consumed"] == before
+
+
+@pytest.mark.parametrize(
+    ("how", "via"), [("ff", "contains_merge_branch"), ("squash", "equivalent_change")]
+)
+def test_merged_records_the_commit_a_human_merge_produced(rel: Release, how: str, via: str) -> None:
+    to_merged(rel)
+    if how == "squash":
+        rel.commit_upstream({"src/other.py": "x = 1\n"})  # main moved first: a squash on top of it
+    commit = land(rel, how)
+    result = rel.runner.step()
+    assert (result.outcome, result.node) == (Outcome.ADVANCED, "R2"), result
+    record = json.loads(
+        next((rel.runner.store.run_root / "gates" / "MERGED").glob("*.json")).read_text()
+    )
+    assert record["merged_sha"] == commit and record["how"] == via
+    learning = json.loads(
+        (rel.runner.store.run_root / "gates" / "L2" / f"{commit}.json").read_text()
+    )
+    assert learning["merged_sha"] == commit and learning["marked_implemented"] is False
+    assert rel.runner.step().outcome is Outcome.AWAITING_HUMAN
+    assert verify_provenance_chain(rel.runner.log.path).ok
+
+
+def test_a_commit_that_also_changes_something_else_does_not_count_as_the_merge(
+    rel: Release,
+) -> None:
+    to_merged(rel)
+    ctx = rel.build.ctx("R1")
+    _, patch, _ = bg._latest_patch(ctx)
+    tip = git(rel.repo, "rev-parse", "main")
+    (rel.repo / "extra.txt").write_text("unrelated\n")
+    blob = git(rel.repo, "hash-object", "-w", "extra.txt")
+    tree = candidate_tree(rel.repo, tip, patch)
+    env = {"GIT_INDEX_FILE": str(rel.repo / ".git" / "tmp-index")}
+    _git(rel.repo, "read-tree", tree, env=env)
+    _git(rel.repo, "update-index", "--add", "--cacheinfo", f"100644,{blob},extra.txt", env=env)
+    wide = _git(rel.repo, "write-tree", env=env).stdout.strip()
+    commit = git(rel.repo, "commit-tree", wide, "-p", tip, "-m", "patch plus more")
+    git(rel.repo, "update-ref", "refs/heads/main", commit)
+    result = rel.runner.step()
+    assert result.outcome is Outcome.BLOCKED and "waiting for" in result.detail
+
+
+def test_deleting_the_merge_branch_unmerged_ends_the_run(rel: Release) -> None:
+    to_merged(rel)
+    git(rel.repo, "branch", "-D", branch_name(rel))
+    result = rel.runner.step()
+    assert (result.outcome, result.node) == (Outcome.ADVANCED, "T-CANCELED"), result
+    assert not (rel.runner.store.run_root / "gates" / "L2").exists()  # learning is merged-only
+
+
+def to_r2(rel: Release) -> str:
+    to_merged(rel)
+    commit = land(rel)
+    assert rel.runner.step().node == "R2"
+    assert rel.runner.step().outcome is Outcome.AWAITING_HUMAN
+    return commit
+
+
+def test_r2_can_decline_but_not_approve_while_no_environment_exists(rel: Release) -> None:
+    commit = to_r2(rel)
+    evidence = rel.runner.approval_evidence()
+    assert evidence["merged_sha"] == commit and evidence["environments"] == []
+    doc, sig = rel.sign("approve", node="R2")
+    with pytest.raises(ApprovalError, match="no deployment environment"):
+        rel.runner.decide(doc, sig)
+    doc, sig = rel.sign("deny_or_not_requested", node="R2")
+    result = rel.runner.decide(doc, sig)
+    assert result.node == "T-MERGED-UNDEPLOYED"
+    approval = [e for e in rel.runner.log.records() if e["event"] == "approval"][-1]
+    assert approval["approved_sha"] == commit  # the deploy decision binds to the merged SHA
+
+
+def test_r2_enforces_a_separate_approver_when_the_policy_asks(rel: Release) -> None:
+    to_r2(rel)
+    path = rel.repo / "policy" / "release.yaml"
+    assert "separate_deploy_approver: false" in path.read_text()
+    # The policy is frozen at run start: flipping it mid-run refuses to reopen the run,
+    # so the rule is checked on the evidence as the runner computes it.
+    evidence = {**rel.runner.approval_evidence(), "separate_deploy_approver": True}
+    doc = build_document(
+        run_id="demo",
+        node="R2",
+        guard="deny_or_not_requested",
+        approver="alice",
+        candidate=None,
+        reason="r",
+        evidence=evidence,
+        issued_at="2026-10-15T10:00:00+00:00",
+    )
+    from agentic_pipeline.approvals import verify_approval
+
+    with pytest.raises(ApprovalError, match="different approver"):
+        verify_approval(
+            doc,
+            rel.signer.sign(doc),
+            approvers=load_policy(rel.repo).approvers,
+            run_id="demo",
+            node="R2",
+            guards=["approve", "deny_or_not_requested"],
+            evidence=evidence,
+        )
+
+
+@pytest.mark.parametrize("cause", ["code_defect", "test_defect", "design_issue"])
+def test_a_signed_denial_routes_through_rm_by_its_cause(rel: Release, cause: str) -> None:
+    assert rel.f1() == "all_required_pass"
+    rel.at_r1()
+    doc, sig = rel.sign("deny", cause=cause)
+    assert rel.runner.decide(doc, sig).node == "RM"
+    assert RELEASE_HANDLERS["RM"](rel.build.ctx("RM")) == cause
+    edges = {e.guard: (e.to, e.budget) for e in rel.runner.graph.edges if e.src == "RM"}
+    assert edges[cause][1] == "remediation"  # the runner charges the budget on this edge
+
+
+def test_a_denial_needs_a_cause_and_other_decisions_must_not_carry_one(rel: Release) -> None:
+    assert rel.f1() == "all_required_pass"
+    rel.at_r1()
+    doc, sig = rel.sign("deny")
+    with pytest.raises(ApprovalError, match="must name a cause"):
+        rel.runner.decide(doc, sig)
+    doc, sig = rel.sign("cancel", cause="code_defect")
+    with pytest.raises(ApprovalError, match="only a merge denial"):
+        rel.runner.decide(doc, sig)
+    assert rel.runner.state.status is Status.AWAITING_HUMAN
+
+
+def test_rm_blocks_without_a_signed_denial(rel: Release) -> None:
+    with pytest.raises(ReleaseError, match="needs a signed R1 denial"):
+        RELEASE_HANDLERS["RM"](rel.build.ctx("RM"))
+
+
+def test_a_remediated_candidate_gets_its_own_merge_branch(rel: Release) -> None:
+    approve_and_merge(rel)
+    rel.runner.step()
+    first = branch_name(rel)
+    rel.build.publish({**CLEAN, "src/agentic_pipeline/second.py": "y = 2\n"})
+    assert branch_name(rel) != first
+    assert branch_name(rel).startswith("merge/demo-") and first.startswith("merge/demo-")
+
+
+def test_a_side_effect_that_cannot_run_blocks_the_step(rel: Release) -> None:
+    to_merged(rel)
+    land(rel)
+    handlers = {k: v for k, v in rel.runner.handlers.items() if k != "L2"}
+    rel.runner.handlers = handlers
+    result = rel.runner.step()
+    assert result.outcome is Outcome.BLOCKED and "side effect L2" in result.detail
+    assert rel.runner.state.current == "MERGED"
+
+
+def test_release_policy_must_say_whether_deploy_needs_another_approver() -> None:
+    doc = load_yaml(ROOT / "policy" / "release.yaml")
+    assert doc["separate_deploy_approver"] is False
+    doc["separate_deploy_approver"] = "no"
+    assert any("separate_deploy_approver" in e for e in check_release(doc))

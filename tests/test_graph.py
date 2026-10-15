@@ -147,3 +147,44 @@ def test_human_states_are_exempt_from_spent_routes() -> None:
     routing = load_yaml(ROOT / "policy" / "routing.yaml")
     errors = validate(Graph.from_mapping(graph_dict), budgets, routing)
     assert not any(err.startswith("H1:") for err in errors)  # H1 -> A1 uses `design`
+
+
+def mutated_errors(mutate) -> list[str]:  # type: ignore[no-untyped-def]
+    raw = copy.deepcopy(load_yaml(ROOT / "pipeline" / "graph.yaml"))
+    mutate(raw["states"])
+    return validate(
+        Graph.from_mapping(raw),
+        load_yaml(ROOT / "policy" / "budgets.yaml"),
+        load_yaml(ROOT / "policy" / "routing.yaml"),
+    )
+
+
+def test_merged_forks_by_a_side_effect_not_by_two_always_edges() -> None:
+    graph = Graph.load(ROOT / "pipeline" / "graph.yaml")
+    assert graph.side_effects == {"MERGED": [("merged", "L2")]}
+    guards = [e.guard for e in graph.edges if e.src == "MERGED"]
+    assert guards == ["merged", "abandoned"]  # distinct guards: the runner can always choose
+    assert "L2" in graph.reachable(["MERGED"])  # a side-effect state still counts as reached
+
+
+def test_a_side_effect_must_name_a_real_guard_and_a_code_state_that_ends_in_a_sink() -> None:
+    def unknown_guard(states: dict) -> None:
+        states["MERGED"]["side_effects"] = [{"when": "nope", "run": "L2"}]
+
+    def missing_state(states: dict) -> None:
+        states["MERGED"]["side_effects"] = [{"when": "merged", "run": "NOPE"}]
+
+    def not_code(states: dict) -> None:
+        states["MERGED"]["side_effects"] = [{"when": "merged", "run": "R2"}]
+
+    def leads_on(states: dict) -> None:
+        states["MERGED"]["side_effects"] = [{"when": "merged", "run": "M1"}]
+
+    def also_entered(states: dict) -> None:
+        states["RC"]["edges"].append({"to": "L2", "guard": "extra"})
+
+    assert any("unknown guard" in e for e in mutated_errors(unknown_guard))
+    assert any("does not exist" in e for e in mutated_errors(missing_state))
+    assert any("must be a code state" in e for e in mutated_errors(not_code))
+    assert any("lead only to sinks" in e for e in mutated_errors(leads_on))
+    assert any("also be entered" in e for e in mutated_errors(also_entered))

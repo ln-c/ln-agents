@@ -14,10 +14,10 @@ namespace from `policy/approvers.yaml`. The runner verifies it offline with
   veto can never be approved. Vetoes that were undetermined are listed in the evidence the
   approver signs, so signing is the human attestation for them.
 
-Only H1 (design) and R1 (merge) are wired so far. A model cannot make a decision: it holds no
-listed key, and the runner rejects anything that does not verify. The private key's
-protection is the user's host configuration; a key readable by a model's process voids that
-guarantee.
+Only H1 (design), R1 (merge) and R2 (deploy) are wired; no deployment environment exists
+yet, so R2 can only deny or decline. A model cannot make a decision: it holds no listed key,
+and the runner rejects anything that does not verify. The private key's protection is the
+user's host configuration; a key readable by a model's process voids that guarantee.
 """
 
 from __future__ import annotations
@@ -34,10 +34,11 @@ from typing import Any
 
 KEY_TYPES = frozenset({"ssh-ed25519", "sk-ssh-ed25519@openssh.com"})
 DECISION_TYPES = ("design", "merge", "deploy", "calibration", "adr")
-NODE_DECISION = {"H1": "design", "R1": "merge"}  # human states wired -> decision type required
+NODE_DECISION = {"H1": "design", "R1": "merge", "R2": "deploy"}  # human states wired
+REMEDIATION_CAUSES = ("code_defect", "test_defect", "design_issue")  # R1 deny -> RM routes
 MERGE_APPROVE_GUARD = "approve"
 APPROVE_GUARD = "approve_design_and_no_security_veto"
-DOCUMENT_SCHEMA = "agentic-pipeline/approval/v1"
+DOCUMENT_SCHEMA = "agentic-pipeline/approval/v2"
 FIELDS = frozenset(
     {
         "schema",
@@ -47,6 +48,7 @@ FIELDS = frozenset(
         "decision_type",
         "approver",
         "candidate",
+        "remediation_cause",
         "reason",
         "evidence",
         "issued_at",
@@ -89,6 +91,7 @@ def build_document(
     reason: str,
     evidence: Mapping[str, Any],
     issued_at: str,
+    remediation_cause: str | None = None,
 ) -> bytes:
     if node not in NODE_DECISION:
         raise ApprovalError(f"signed approvals are not wired for {node} yet")
@@ -101,6 +104,7 @@ def build_document(
             "decision_type": NODE_DECISION[node],
             "approver": approver,
             "candidate": candidate,
+            "remediation_cause": remediation_cause,
             "reason": reason,
             "evidence": evidence,
             "issued_at": issued_at,
@@ -213,6 +217,22 @@ def verify_approval(
             )
     elif candidate is not None:
         raise ApprovalError("only a design approval names a candidate")
+    cause = doc["remediation_cause"]
+    if node == "R1" and doc["decision"] == "deny":
+        if cause not in REMEDIATION_CAUSES:
+            raise ApprovalError(f"a merge denial must name a cause from {list(REMEDIATION_CAUSES)}")
+    elif cause is not None:
+        raise ApprovalError("only a merge denial names a remediation cause")
+    if node == "R2":
+        if evidence.get("separate_deploy_approver") and doc["approver"] == evidence.get(
+            "merge_approver"
+        ):
+            raise ApprovalError("policy requires a different approver for deploy than for merge")
+        if doc["decision"] == "approve" and not evidence.get("environments"):
+            raise ApprovalError(
+                "no deployment environment is configured, so a deploy cannot be approved; "
+                "sign deny_or_not_requested"
+            )
     if node == "R1" and doc["decision"] == MERGE_APPROVE_GUARD:
         if evidence.get("f1_guard") != "all_required_pass":
             raise ApprovalError("a merge cannot be approved without passing F1 for this patch")

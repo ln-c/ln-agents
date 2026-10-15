@@ -261,10 +261,15 @@ states:
   MERGED:
     kind: code
     executor: code
-    doc: Record merged SHA; all approvals for this run are bound to it.
+    doc: >-
+      Wait for the human merge of the approved patch into the target branch, record the
+      merged SHA (all later approvals bind to it) and run L2 once; or end the run if the
+      merge branch was deleted unmerged.
+    side_effects:
+      - {when: merged, run: L2}
     edges:
-      - {to: L2, guard: always}
-      - {to: R2, guard: always}
+      - {to: R2, guard: merged}
+      - {to: T-CANCELED, guard: abandoned}
   R2:
     kind: human
     executor: human

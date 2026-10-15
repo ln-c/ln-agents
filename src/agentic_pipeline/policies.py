@@ -210,6 +210,8 @@ def check_release(doc: Mapping[str, Any]) -> list[str]:
         errors.append("release: merge_branch_prefix must be a plain name ending in '/'")
     elif isinstance(branch, str) and (branch.startswith(prefix) or prefix.startswith(branch + "/")):
         errors.append("release: merge branches must not live under the target branch")
+    if not isinstance(doc.get("separate_deploy_approver"), bool):
+        errors.append("release: separate_deploy_approver must be a boolean")
     paths = doc.get("constraint_paths")
     if not isinstance(paths, list) or not paths:
         errors.append("release: constraint_paths must be a non-empty list")
