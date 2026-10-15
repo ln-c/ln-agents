@@ -72,6 +72,10 @@ from agentic_pipeline.transition import (
 )
 
 
+def _no_log(event: Mapping[str, Any]) -> dict[str, Any]:
+    raise RuntimeError("this context has no provenance log to append to")
+
+
 @dataclass(frozen=True, slots=True)
 class HandlerContext:
     run_id: str
@@ -83,6 +87,8 @@ class HandlerContext:
     policy_digests: Mapping[str, str] = field(default_factory=dict)  # frozen at run start
     provenance_tip: Callable[[], str] = lambda: GENESIS_HASH  # chain tip, for manifests
     entered_from: Callable[[], str | None] = lambda: None  # state this node was entered from
+    events: Callable[[], list[dict[str, Any]]] = list  # the run's provenance records so far
+    append: Callable[[Mapping[str, Any]], dict[str, Any]] = _no_log  # append one provenance event
 
 
 type StateHandler = Callable[[HandlerContext], str]
@@ -381,6 +387,8 @@ class Runner:
             policy_digests=self.state.policy,
             provenance_tip=self.log.tip,
             entered_from=self._entered_from,
+            events=self.log.records,
+            append=self.log.append,
         )
 
     def _decide(self, node: str) -> str:

@@ -1,28 +1,20 @@
-# Integration notes for the existing `agentic-pipeline` repository
+# Integration status
 
-This is an **overlay**, not a replacement repository. It is based on the supplied README and keeps the existing architecture intact.
+The overlay that added `AGENTS.md`, `CLAUDE.md`, `agents/`, the model registry and its schema has been applied. This file records what each follow-up task from that overlay became, so an open item is not mistaken for a done one. [`README.md`](README.md) describes the pipeline as it stands.
 
-## Copy into the repository root
+| # | Follow-up task | Status | Where |
+|---|---|---|---|
+| 1 | Put `policy/model_registry.yaml` under CODEOWNERS | Done | `.github/CODEOWNERS` covers `/policy/` and `/schemas/` |
+| 2 | Validate the registry against its schema, with invariant tests | Done | `src/agentic_pipeline/registry.py`, `tests/test_registry.py` (PR-1) |
+| 3 | `validate` checks the registry | Done | `validate` runs graph, policy and registry checks |
+| 4 | Reconcile stage IDs and policy keys with the real files | Done | The registry's `stage_requirements` must equal the graph's model states (rule R4) |
+| 5 | Confirm how Claude Pro and Google AI Pro are invoked | Partly done | Adapters invoke the `claude` and `agy` CLIs; readiness checks the executable, never login or plan state. A call that fails on auth or quota pauses the run. Which Claude model is used is still the CLI default (open) |
+| 6 | Enforce sandbox and write-root isolation in code | Done for model workers and CI checks | `src/agentic_pipeline/sandbox.py`; the real-isolation tests need bwrap and skip where it is unusable |
 
-```text
-AGENTS.md                              -> ./AGENTS.md
-CLAUDE.md                              -> ./CLAUDE.md
-agents/*.md                            -> ./agents/*.md
-policy/model_registry.yaml             -> ./policy/model_registry.yaml
-schemas/model_registry.schema.json     -> ./schemas/model_registry.schema.json
-```
+## Open
 
-Do not replace `pipeline/graph.yaml`, any existing `policy/*.yaml`, `src/agentic_pipeline/`, tests, or the current `README.md` with this overlay. Those existing repository components remain the source of truth. The new model registry refers to them by their documented paths.
-
-## Follow-up integration tasks
-
-1. Add `policy/model_registry.yaml` to the existing `CODEOWNERS` policy ownership rule; do not replace the current CODEOWNERS file with a snippet.
-2. Add a test that parses the YAML and validates it against `schemas/model_registry.schema.json` (Draft-07), plus invariant checks that paid API billing stays disabled and proposal isolation stays enabled.
-3. Extend `uv run python -m agentic_pipeline validate` to validate the registry if that CLI supports extension; otherwise add a dedicated validation subcommand without weakening existing checks.
-4. Confirm the actual `pipeline/graph.yaml` stage IDs and existing policy key conventions. The README alone does not expose those file contents, so any mismatch must be reconciled against the actual files rather than guessed.
-5. Confirm how Claude Pro and Google AI Pro are invoked in your runtime. The registry assumes provider-supported subscription-backed tools, not direct consumer-subscription API access. If the runtime cannot invoke a subscription workflow in a supported way, use a human-mediated handoff or pause; never fall back to paid API billing.
-6. Verify that sandbox/write-root isolation is enforced by code and OS permissions, not only by the Markdown instructions.
-
-## Stage-count note
-
-The supplied README says “across 7 phases” but lists eight numbered phase groups. It separately describes seven agent roles. This overlay treats the system as **seven agent roles and the eight listed workflow groups**; verify the intended terminology before changing the canonical README.
+- ADR 0003 (model registry stage requirements) is still `Proposed`; accepting it is a human decision.
+- Not built: `E0`, `E4`, `ADR`, `BENCH`, `CHILD`, `D2`, `RB`, `L3`, `HR`. A run blocks at the first of them it reaches. See the status table in the README.
+- `L2` records the merged SHA and the accepted ADRs; it does not mark an ADR implemented or refresh an index.
+- The learning agent's `telemetry_version: "1.1"` envelope is a specification; the code appends `learning` events to the provenance log instead.
+- Number of phases: the graph has eight groups of states and the overlay's seven agent roles map onto them; the README now says eight.
