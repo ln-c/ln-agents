@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTING = load_yaml(ROOT / "policy" / "routing.yaml")
 needs_sandbox = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap unavailable or unusable")
 TOOLCHAIN: dict[str, Any] = {"kind": "none", "env": {}, "timeout_seconds": 30}
+
+
+def test_the_sandbox_is_usable_on_ci() -> None:
+    """On CI the sandbox tests must run, not skip: a runner that cannot sandbox is a failure."""
+    if os.environ.get("CI"):
+        assert BWRAP_USABLE, "bwrap is unusable on this CI runner; fix the workflow step"
 
 
 def spec(**over: Any) -> dict[str, Any]:
