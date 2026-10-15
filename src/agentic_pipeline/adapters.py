@@ -20,6 +20,7 @@ enforce).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping
@@ -68,6 +69,25 @@ PI_ENV = {
 }
 
 type SandboxRunner = Callable[[SandboxSpec, InferenceBroker | None], SandboxResult]
+
+
+def find_sandbox_node(which: Callable[[str], str | None] = shutil.which) -> str:
+    """Absolute path of `node` as the sandbox will see it.
+
+    The sandbox's PATH is only /usr/bin and it binds only /usr, so a `node` elsewhere (an
+    nvm install under the home directory, say) cannot run there. Look it up on the host and
+    require that it, and what it links to, lie under /usr; then the same path works inside.
+    """
+    found = which("node")
+    if found is None:
+        raise SandboxUnavailable("node was not found on PATH")
+    named = Path(os.path.abspath(found))
+    if not (named.is_relative_to("/usr") and named.resolve().is_relative_to("/usr")):
+        raise SandboxUnavailable(
+            f"node is at {named} (resolving to {named.resolve()}), outside /usr, "
+            "so it is not visible inside the sandbox"
+        )
+    return str(named)
 
 
 def find_pi_package(which: Callable[[str], str | None] = shutil.which) -> Path:
@@ -155,7 +175,7 @@ class PiQwenAdapter:
 
     def sandbox_spec(self, grant: DispatchGrant, call: PreparedCall, config: Path) -> SandboxSpec:
         argv = [
-            "node",
+            find_sandbox_node(),
             f"{PI_MOUNT}/dist/bundle/cli.js",
             *PI_FLAGS,
             "--provider", PI_PROVIDER,
