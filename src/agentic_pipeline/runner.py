@@ -51,7 +51,7 @@ from agentic_pipeline.grounding import (
     load_entry_spec,
 )
 from agentic_pipeline.provenance import GENESIS_HASH, JsonlProvenanceLog
-from agentic_pipeline.release import RELEASE_HANDLERS, release_evidence
+from agentic_pipeline.release import RELEASE_HANDLERS, deploy_evidence, release_evidence
 from agentic_pipeline.run_state import (
     PauseCause,
     PolicySnapshot,
@@ -199,6 +199,7 @@ class Runner:
         try:
             guard = self._decide(node)
             edge = self._edge(node, guard)
+            self._run_side_effects(node, guard)
         except _Blocked as exc:
             return StepResult(Outcome.BLOCKED, node, str(exc))
         except Exception as exc:  # nothing spent or changed yet: retryable, not a pause
@@ -319,7 +320,9 @@ class Runner:
         policy = load_policy(self.root)
         check_policy(st, policy)
         try:
-            gather = {"H1": approval_evidence, "R1": release_evidence}[st.current]
+            gather = {"H1": approval_evidence, "R1": release_evidence, "R2": deploy_evidence}[
+                st.current
+            ]
             evidence = gather(self._context(st.current), policy)
         except Exception as exc:  # unverifiable evidence is never approvable
             raise ApprovalError(
@@ -392,6 +395,20 @@ class Runner:
         ):
             return "always"
         raise _Blocked(f"no handler registered for {node}")
+
+    def _run_side_effects(self, node: str, guard: str) -> None:
+        """Run the states a node lists as side effects for this guard, before it transitions.
+
+        They are idempotent handlers that never take control. A missing or failing one blocks
+        the step, so the transition does not happen without them.
+        """
+        for when, run in self.graph.side_effects.get(node, []):
+            if when != guard:
+                continue
+            handler = self.handlers.get(run)
+            if handler is None:
+                raise _Blocked(f"no handler registered for side effect {run}")
+            handler(self._context(run))
 
     def _entered_from(self) -> str | None:
         """The state before the latest entry into the current node, from committed enters."""

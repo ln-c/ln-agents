@@ -50,6 +50,8 @@ class Graph:
     entrypoints: list[str]
     human_states: frozenset[str]
     guarded_paths: list[dict[str, Any]] = field(default_factory=list)
+    # state -> [(guard, side-effect state)]: run once when the state leaves by that guard
+    side_effects: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> Graph:
@@ -65,6 +67,11 @@ class Graph:
             entrypoints=list(raw.get("entrypoints") or []),
             human_states=frozenset(raw.get("human_states") or []),
             guarded_paths=list(raw.get("guarded_paths") or []),
+            side_effects={
+                name: [(str(se.get("when", "")), str(se.get("run", ""))) for se in effects]
+                for name, spec in states.items()
+                if (effects := spec.get("side_effects"))
+            },
         )
 
     @classmethod
@@ -72,7 +79,9 @@ class Graph:
         return cls.from_mapping(load_yaml(path or REPO_ROOT / "pipeline" / "graph.yaml"))
 
     def successors(self, node: str) -> Iterable[str]:
-        return (e.to for e in self.edges if e.src == node)
+        """Edge targets, plus side-effect states (they run, so they must count as reached)."""
+        yield from (e.to for e in self.edges if e.src == node)
+        yield from (run for _, run in self.side_effects.get(node, []))
 
     def reachable(self, starts: Iterable[str], removed: frozenset[str] = frozenset()) -> set[str]:
         seen: set[str] = set()
@@ -226,6 +235,25 @@ def validate(
                 f"(its on_exhausted target): need one unbudgeted edge, or exactly one "
                 f"whose guard ends in '_spent'"
             )
+
+    # 10. Side effects run inside their state's step and never take control: each names a
+    #     guard the state really has and a code state whose edges lead only to sinks.
+    for name, effects in graph.side_effects.items():
+        guards = {e.guard for e in graph.edges if e.src == name}
+        for on, run in effects:
+            if on not in guards:
+                errors.append(f"{name}: side effect on unknown guard {on!r}")
+            target = graph.states.get(run)
+            if target is None:
+                errors.append(f"{name}: side effect state {run!r} does not exist")
+                continue
+            if target.get("kind") != "code" or run in graph.human_states:
+                errors.append(f"{name}: side effect {run} must be a code state")
+            for e in graph.edges:
+                if e.src == run and graph.states.get(e.to, {}).get("kind") != "sink":
+                    errors.append(f"{name}: side effect {run} must lead only to sinks, not {e.to}")
+            if any(e.to == run for e in graph.edges):
+                errors.append(f"{name}: side effect {run} must not also be entered by an edge")
 
     return errors
 

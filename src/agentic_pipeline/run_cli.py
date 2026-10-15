@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agentic_pipeline.approvals import (
+    REMEDIATION_CAUSES,
     ApprovalError,
     build_document,
     signing_command,
@@ -184,6 +185,7 @@ def _approve(args: argparse.Namespace, run_dir: Path) -> int:
             reason=args.reason,
             evidence=evidence,
             issued_at=datetime.now(UTC).isoformat(),
+            remediation_cause=args.remediation_cause,
         )
         namespace = load_policy(args.root).approvers["namespace"]
     finally:
@@ -192,7 +194,10 @@ def _approve(args: argparse.Namespace, run_dir: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(document)
     print(f"approval for {args.run_id} at {node}: {args.decision}")
-    if node == "R1":
+    if node == "R2":
+        print(f"  merged SHA {evidence['merged_sha']} on {evidence['target_branch']}")
+        print(f"  deployment environments: {evidence['environments'] or 'none configured'}")
+    elif node == "R1":
         print(
             f"  tested base {evidence['commit_sha']}; {evidence['target_branch']} tip "
             f"{evidence['target_base_sha']}"
@@ -327,6 +332,11 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
     approve.add_argument("--approver", required=True, help="id listed in policy/approvers.yaml")
     approve.add_argument("--reason", required=True)
     approve.add_argument("--candidate", help="the surviving candidate (design approval only)")
+    approve.add_argument(
+        "--remediation-cause",
+        choices=REMEDIATION_CAUSES,
+        help="why the merge is denied (R1 deny only); RM routes on it",
+    )
     approve.add_argument("--out", type=Path, help="where to write the document")
     decide = commands.add_parser(
         "decide", parents=[common], help="take the edge named by a signed approval"

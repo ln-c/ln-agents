@@ -199,9 +199,9 @@ def test_other_decisions_name_no_candidate_and_need_a_reason(signer: Signer) -> 
     assert verify(doc, signer.sign(doc), signer).guard == "reject"
 
 
-def test_only_h1_and_r1_are_wired() -> None:
+def test_only_h1_r1_and_r2_are_wired() -> None:
     with pytest.raises(ApprovalError, match="not wired"):
-        document(node="R2")
+        document(node="HR")
 
 
 def test_the_repo_approvers_policy_is_valid() -> None:
@@ -361,6 +361,7 @@ def test_cli_approve_then_decide_round_trip(
         approver="alice",
         reason="not now",
         candidate=None,
+        remediation_cause=None,
         out=out,
         run_command="approve",
     )
