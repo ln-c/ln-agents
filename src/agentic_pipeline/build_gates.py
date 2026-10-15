@@ -1,22 +1,25 @@
-"""Deterministic build-side gates: E2 (checks), X (exception router), E3 (escalation).
+"""Deterministic build-side gates: E2 and F1 (checks), X (exception router), E3 (escalation).
 
 E2 reads the newest implementation patch (the `implementation_patch` artifact in the E1 or
-E4 stage manifest, re-hashed against it) and runs the checks that need only files. Every
-check ends `passed`, `failed`, or `not_evaluated`; E2 passes only if all of them passed, so
-a check that cannot run (tests, contracts, perf need the E0 sandbox, which does not exist
-yet) fails closed and the run goes to X.
+E4 stage manifest, re-hashed against it) and runs the static checks that need only files,
+then the E2 checks of `policy/ci.yaml` in the offline sandbox (see ci.py). No behavioral
+check runs unless every static check passed. Every check ends `passed`, `failed`,
+`not_evaluated`, `skipped` (optional and unset) or `infra_error`; a stage passes only if every
+check passed or was skipped, so a required check that is unset fails closed. F1 is the same
+gate with the F1 checks (independent CI: integration, ADR fitness, mutation testing). The E2
+checks include dead code and MC/DC over the patch: code the protected tests cannot exercise is
+the implementation's fault, so it goes back to E1.
 
-X reproduces E2's result (the checks are a pure function of the patch and sealed inputs),
-classifies it, and picks a cause from `policy/routing.yaml`:
+X reproduces the origin's result (E2 or F1; the checks are a function of the patch, sealed
+inputs and frozen policy), classifies it, and picks a cause from `policy/routing.yaml`:
 * a security-relevant failure (write scope, protected tests or contracts changed, a secret,
   a dependency change) routes to `security_or_scope`, i.e. H1;
-* a failed behavioral check routes to `implementation_violates_contract` (E1, `local` budget);
-* anything else, including a check that could not run, routes to `unknown_or_spent` (H1):
-  retrying cannot change a result that was never computed, so it must not spend a budget.
+* a failed behavioral check routes to the `cause` policy/ci.yaml gives it;
+* a sandbox or toolchain problem routes to `infra_rerun_e2` / `infra_rerun_f1`;
+* anything else, including a required check that never ran, routes to `unknown_or_spent`
+  (H1): retrying cannot change a result that was never computed, so it spends no budget.
 X never returns `local_spent` (the runner takes that route when the budget is spent) and
-cannot reach the causes that need judgement (`contract_inadequate`, `requirement_missing`,
-`topology_conflict_*`) or an infrastructure fault (`infra_rerun_*`); those stay unreachable
-until something can establish them. X coming from F1 blocks until F1 has a handler.
+cannot reach the causes that need judgement (`contract_inadequate`, `topology_conflict_*`).
 
 E3 sends a run to E4 only if E4 is enabled in the registry and some agent in
 `policy/escalation.yaml` may see the run's most restrictive data class. E4 is disabled
@@ -29,16 +32,28 @@ Audit records go under `gates/<NODE>/<input digest>.json`.
 from __future__ import annotations
 
 import re
+import shutil
+import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from agentic_pipeline.ci import (
+    FAILED as CI_FAILED,
+)
+from agentic_pipeline.ci import (
+    INFRA,
+    OK_STATUSES,
+    run_stage,
+    stage_checks,
+)
 from agentic_pipeline.gates import (
     UNEVALUATED,
     GateError,
     _digest,
     _policy,
     _record,
+    _sealed,
 )
 from agentic_pipeline.grounding import G1_SOURCES
 from agentic_pipeline.manifest import (
@@ -82,13 +97,9 @@ SECRET_PATTERNS = {
 }
 
 PASSED, FAILED = "passed", "failed"
-# Behavioral checks need a sandbox that runs the code; until E0 exists they cannot run.
-BEHAVIORAL = {
-    "contract_tests": "needs the E0 sandbox to execute",
-    "acceptance_tests": "needs the E0 sandbox to execute",
-    "performance": "needs the E0 sandbox to execute",
-}
-# Failed check -> routing cause; the first matching cause wins.
+CI_WORK = "ci_work"
+# Failed static check -> routing cause. Failed behavioral checks name their own cause in
+# policy/ci.yaml; an infra problem is re-run; anything else goes to a human.
 CAUSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "security_or_scope",
@@ -100,7 +111,6 @@ CAUSES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "no_dependency_change",
         ),
     ),
-    ("implementation_violates_contract", tuple(BEHAVIORAL)),
 )
 UNKNOWN_CAUSE = "unknown_or_spent"
 
@@ -181,10 +191,35 @@ def _sealed_intact(ctx: HandlerContext, artifact: str) -> list[str]:
     return []
 
 
-def run_checks(ctx: HandlerContext) -> tuple[str, dict[str, dict[str, Any]]]:
-    """(patch digest, check name -> {status, problems}); a pure function of the inputs."""
+def _run_behavioral(
+    ctx: HandlerContext, stage: str, patch: Path, static_ok: bool
+) -> dict[str, dict[str, Any]]:
+    """Policy checks for `stage`; none run unless every static check passed."""
+    ci = _policy(ctx).ci
+    specs = stage_checks(ci, stage)
+    if not static_ok:
+        return {
+            name: {
+                "status": UNEVALUATED,
+                "problems": ["not run: a static check failed"],
+                "cause": spec["cause"],
+            }
+            for name, spec in specs.items()
+        }
+    source = _sealed(ctx, ["pinned_source_tree"])["pinned_source_tree"]
+    scratch = ctx.run_root / CI_WORK
+    scratch.mkdir(exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=f"{stage}-", dir=scratch))
+    try:
+        return run_stage(ci, stage, source, patch, work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def run_checks(ctx: HandlerContext, stage: str = "E2") -> tuple[str, dict[str, dict[str, Any]]]:
+    """(patch digest, check name -> {status, problems}) for `stage`'s checks."""
     _policy(ctx)
-    stage, patch, digest = _latest_patch(ctx)
+    origin, patch, digest = _latest_patch(ctx)
     scans: dict[str, list[str]] = {
         "write_scope": _write_scope(patch),
         "protected_tests_intact": _sealed_intact(ctx, "protected_tests"),
@@ -196,23 +231,18 @@ def run_checks(ctx: HandlerContext) -> tuple[str, dict[str, dict[str, Any]]]:
         name: {"status": FAILED if problems else PASSED, "problems": problems}
         for name, problems in scans.items()
     }
-    for name, reason in BEHAVIORAL.items():
-        checks[name] = {"status": UNEVALUATED, "problems": [reason]}
-    return f"{stage}:{digest}", checks
+    static_ok = all(c["status"] == PASSED for c in checks.values())
+    checks.update(_run_behavioral(ctx, stage, patch, static_ok))
+    return f"{origin}:{digest}", checks
 
 
-def check_e2(ctx: HandlerContext) -> str:
-    """E2: every check must have passed; anything else goes to the exception router."""
-    patch, checks = run_checks(ctx)
-    guard = (
-        "all_pass"
-        if all(c["status"] == PASSED for c in checks.values())
-        else "any_fail_or_exception"
-    )
+def _stage_gate(ctx: HandlerContext, stage: str, passed: str, failed: str) -> str:
+    patch, checks = run_checks(ctx, stage)
+    guard = passed if all(c["status"] in OK_STATUSES for c in checks.values()) else failed
     _record(
         ctx,
-        "E2",
-        _digest({"patch": patch, "checks": checks}),
+        stage,
+        _digest({"patch": patch, "checks": {n: c["status"] for n, c in checks.items()}}),
         {
             "patch": patch,
             "guard": guard,
@@ -222,26 +252,45 @@ def check_e2(ctx: HandlerContext) -> str:
     return guard
 
 
+def check_e2(ctx: HandlerContext) -> str:
+    """E2: every check must have passed or been optional and unset; else the router decides."""
+    return _stage_gate(ctx, "E2", "all_pass", "any_fail_or_exception")
+
+
+def check_f1(ctx: HandlerContext) -> str:
+    """F1: independent CI on the same patch; reached from E2, or from X for an infra re-run."""
+    origin = ctx.entered_from()
+    if origin not in ("E2", "X"):
+        raise BuildGateError(f"F1 entered from {origin!r}; only E2 or X lead here")
+    return _stage_gate(ctx, "F1", "all_required_pass", "required_check_failed")
+
+
 # ── X ────────────────────────────────────────────────────────────────────────
 
 
-def classify(checks: Mapping[str, Mapping[str, Any]]) -> str:
-    """Cause for a set of check results; unknown unless a failed check names one."""
+def classify(checks: Mapping[str, Mapping[str, Any]], origin: str = "E2") -> str:
+    """Cause for a set of check results: security first, then a failed check's own cause,
+    then an infra re-run; unknown otherwise (a required check that never ran is unknown)."""
     failed = {name for name, c in checks.items() if c["status"] == FAILED}
     for cause, names in CAUSES:
         if failed & set(names):
             return cause
+    for c in checks.values():
+        if c["status"] == CI_FAILED and "cause" in c:
+            return str(c["cause"])
+    if any(c["status"] == INFRA for c in checks.values()):
+        return f"infra_rerun_{origin.lower()}"
     return UNKNOWN_CAUSE
 
 
 def route_exception(ctx: HandlerContext) -> str:
     """X: reproduce the E2 result, classify it, and return a cause that policy defines."""
     origin = ctx.entered_from()
-    if origin != "E2":
-        raise BuildGateError(f"X entered from {origin!r}; only E2 failures can be routed yet")
+    if origin not in ("E2", "F1"):
+        raise BuildGateError(f"X entered from {origin!r}; only E2 and F1 failures can be routed")
     policy = _policy(ctx)
-    patch, checks = run_checks(ctx)
-    cause = classify(checks)
+    patch, checks = run_checks(ctx, origin)
+    cause = classify(checks, origin)
     if cause not in policy.routing["routes"]:
         raise BuildGateError(f"cause {cause!r} is not defined in policy/routing.yaml")
     _record(
@@ -305,6 +354,7 @@ def decide_escalation(ctx: HandlerContext) -> str:
 
 BUILD_GATE_HANDLERS: dict[str, Callable[[Any], str]] = {
     "E2": check_e2,
+    "F1": check_f1,
     "X": route_exception,
     "E3": decide_escalation,
 }

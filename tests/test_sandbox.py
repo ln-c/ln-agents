@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -106,6 +107,9 @@ def test_worker_reaches_model_only_through_broker(tmp_path: Path) -> None:
     assert result.broker.rounds == 1 and len(result.broker.rejected) == 2
 
 
+@pytest.mark.skipif(
+    os.environ.get("HOME") == HOME, reason="inside the CI sandbox the host home is the sandbox's"
+)
 def test_filesystem_is_default_deny(tmp_path: Path) -> None:
     out, _ = _run(tmp_path)
     assert out["work_write"] == "written" and (tmp_path / "work" / "out.txt").exists()

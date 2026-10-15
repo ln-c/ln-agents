@@ -1,0 +1,73 @@
+# Behavioral checks run by E2 (after every implementation attempt: tests, dead code, MC/DC)
+# and F1 (clean-room CI: integration, ADR fitness, mutation testing).
+# Human-owned. Frozen with the other policy for every run.
+#
+# Each check runs offline in the bwrap sandbox on a fresh tree: the pinned source tree with
+# the implementation patch laid over it. The toolchain is a fresh venv synced from the pinned
+# tree's uv.lock outside the sandbox. No behavioral check runs at all if a static E2 check
+# (write scope, protected files, secrets, dependencies) failed: a rejected patch is never executed.
+#
+# A check is UNSET when it has no `commands`, or declares a `score` without both `pattern`
+# and `minimum`. An unset check is never treated as passed:
+#   required: true   -> not_evaluated, which blocks the stage
+#   required: false  -> skipped, which does not block
+# `score`: the last command's output must match `pattern` (one capture group, a number) and be
+# at least `minimum`. `cause` is the routing cause X uses when the check fails; it must be a
+# route in policy/routing.yaml.
+version: 1
+toolchain:
+  kind: uv_sync        # uv sync --frozen --no-install-project in the pinned tree; `none` = system python only
+  offline: false       # network only for `uv sync --frozen`: hash-locked wheels, built outside the
+                       # sandbox. Checks themselves always run with no network.
+  env: {PYTHONPATH: /work/src}
+  timeout_seconds: 600
+checks:
+  contract_tests:      # no contract tests exist yet (contracts/ is empty)
+    stage: E2
+    required: false
+    cause: implementation_violates_contract
+    commands: []
+  acceptance_tests:
+    stage: E2
+    required: true
+    cause: implementation_violates_contract
+    timeout_seconds: 900
+    commands:
+      - [python, -m, pytest, -q]
+  performance:         # needs a stated time/memory bound and a benchmark; none defined yet
+    stage: E2
+    required: false
+    cause: implementation_violates_contract
+    commands: []
+  dead_code:           # unused code in the patch; needs a tool (for example vulture)
+    stage: E2
+    required: false
+    cause: implementation_violates_contract
+    commands: []
+  mcdc:                # UNSET: needs a tool and a minimum MC/DC percentage over the patch's
+    stage: E2          # files, so code the protected tests cannot exercise is rejected early.
+    required: true     # Required and unset: E2 cannot pass until this is configured.
+    cause: implementation_violates_contract
+    commands: []
+    score: {}
+  integration:
+    stage: F1
+    required: true
+    cause: implementation_violates_contract
+    timeout_seconds: 900
+    commands:
+      - [python, -m, pytest, -q]
+      - [python, -m, ruff, check, .]
+      - [python, -m, ruff, format, --check, .]
+      - [python, -m, agentic_pipeline, validate]
+  adr_fitness:         # no ADR defines an executable fitness function yet
+    stage: F1
+    required: false
+    cause: unknown_or_spent
+    commands: []
+  mutation:            # UNSET: needs a tool, a changed-lines mode and a minimum score
+    stage: F1
+    required: true
+    cause: requirement_missing
+    commands: []
+    score: {}
