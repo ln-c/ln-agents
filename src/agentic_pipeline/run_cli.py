@@ -192,12 +192,20 @@ def _approve(args: argparse.Namespace, run_dir: Path) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(document)
     print(f"approval for {args.run_id} at {node}: {args.decision}")
-    print(f"  candidates that survived B1: {evidence['survivors'] or 'none'}")
-    for candidate, vetoes in evidence["fired"].items():
-        pending = evidence["undetermined"][candidate]
-        print(f"  {candidate}: fired {vetoes or '-'}; undetermined {pending or '-'}")
-    if evidence["unevaluated"]:
-        print(f"  vetoes with no evaluator: {evidence['unevaluated']}")
+    if node == "R1":
+        print(
+            f"  tested base {evidence['commit_sha']}; {evidence['target_branch']} tip "
+            f"{evidence['target_base_sha']}"
+        )
+        print(f"  candidate tree {evidence['candidate_tree']} (patch {evidence['patch']})")
+        print(f"  F1 for this patch and base: {evidence['f1_guard']}")
+    else:
+        print(f"  candidates that survived B1: {evidence['survivors'] or 'none'}")
+        for candidate, vetoes in evidence["fired"].items():
+            pending = evidence["undetermined"][candidate]
+            print(f"  {candidate}: fired {vetoes or '-'}; undetermined {pending or '-'}")
+        if evidence["unevaluated"]:
+            print(f"  vetoes with no evaluator: {evidence['unevaluated']}")
     print(f"written: {out}")
     print("Review it, then sign it as the approver (writes the .sig file next to it):")
     print(f"  {signing_command(out, namespace)}")

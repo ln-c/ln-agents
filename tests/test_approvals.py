@@ -122,7 +122,7 @@ def test_a_correctly_signed_approval_verifies(signer: Signer) -> None:
         APPROVE_GUARD,
         "proposal_b_sealed",
     )
-    assert result.commit_sha == SHA and result.digest.startswith("sha256:")
+    assert result.approved_sha == SHA and result.digest.startswith("sha256:")
 
 
 def test_a_signature_from_another_key_is_refused(signer: Signer, tmp_path: Path) -> None:
@@ -199,9 +199,9 @@ def test_other_decisions_name_no_candidate_and_need_a_reason(signer: Signer) -> 
     assert verify(doc, signer.sign(doc), signer).guard == "reject"
 
 
-def test_only_h1_is_wired() -> None:
+def test_only_h1_and_r1_are_wired() -> None:
     with pytest.raises(ApprovalError, match="not wired"):
-        document(node="R1")
+        document(node="R2")
 
 
 def test_the_repo_approvers_policy_is_valid() -> None:

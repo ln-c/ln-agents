@@ -14,9 +14,10 @@ namespace from `policy/approvers.yaml`. The runner verifies it offline with
   veto can never be approved. Vetoes that were undetermined are listed in the evidence the
   approver signs, so signing is the human attestation for them.
 
-Only H1 is wired so far. A model cannot make a decision: it holds no listed key, and the
-runner rejects anything that does not verify. The private key's protection is the user's
-host configuration; a key readable by a model's process voids that guarantee.
+Only H1 (design) and R1 (merge) are wired so far. A model cannot make a decision: it holds no
+listed key, and the runner rejects anything that does not verify. The private key's
+protection is the user's host configuration; a key readable by a model's process voids that
+guarantee.
 """
 
 from __future__ import annotations
@@ -33,7 +34,8 @@ from typing import Any
 
 KEY_TYPES = frozenset({"ssh-ed25519", "sk-ssh-ed25519@openssh.com"})
 DECISION_TYPES = ("design", "merge", "deploy", "calibration", "adr")
-NODE_DECISION = {"H1": "design"}  # human states wired so far -> decision type required
+NODE_DECISION = {"H1": "design", "R1": "merge"}  # human states wired -> decision type required
+MERGE_APPROVE_GUARD = "approve"
 APPROVE_GUARD = "approve_design_and_no_security_veto"
 DOCUMENT_SCHEMA = "agentic-pipeline/approval/v1"
 FIELDS = frozenset(
@@ -64,7 +66,7 @@ class Verified:
     candidate: str | None
     reason: str
     digest: str  # sha256 of the signed document bytes
-    commit_sha: str
+    approved_sha: str  # what the decision binds to: the pinned commit (H1) or candidate tree (R1)
 
 
 def canonical(document: Mapping[str, Any]) -> bytes:
@@ -147,17 +149,10 @@ def _verify_signature(
         raise ApprovalError("signature does not verify against the listed key")
 
 
-def verify_approval(
-    document_bytes: bytes,
-    signature: str,
-    *,
-    approvers: Mapping[str, Any],
-    run_id: str,
-    node: str,
-    guards: Collection[str],
-    evidence: Mapping[str, Any],
-) -> Verified:
-    """Accept a signed approval for this run/node against freshly recomputed `evidence`."""
+def parse_signed(
+    document_bytes: bytes, signature: str, *, approvers: Mapping[str, Any], node: str
+) -> dict[str, Any]:
+    """The document if it is canonical, signed by a listed approver who may decide at `node`."""
     if node not in NODE_DECISION:
         raise ApprovalError(f"signed approvals are not wired for {node} yet")
     try:
@@ -176,6 +171,31 @@ def verify_approval(
     if needed not in who["decisions"] or doc["decision_type"] != needed:
         raise ApprovalError(f"{doc['approver']} may not make a {needed!r} decision")
     _verify_signature(document_bytes, signature, who, approvers["namespace"])
+    return doc
+
+
+def store_approval(run_root: Path, document: bytes, signature: str) -> Path:
+    """Keep the signed document in the run so a later gate (M1) can verify it again."""
+    folder = run_root / "approvals"
+    folder.mkdir(exist_ok=True)
+    path = folder / f"{digest(document).removeprefix('sha256:')}.json"
+    path.write_bytes(document)
+    path.with_name(path.name + ".sig").write_text(signature, encoding="utf-8")
+    return path
+
+
+def verify_approval(
+    document_bytes: bytes,
+    signature: str,
+    *,
+    approvers: Mapping[str, Any],
+    run_id: str,
+    node: str,
+    guards: Collection[str],
+    evidence: Mapping[str, Any],
+) -> Verified:
+    """Accept a signed approval for this run/node against freshly recomputed `evidence`."""
+    doc = parse_signed(document_bytes, signature, approvers=approvers, node=node)
     if doc["run_id"] != run_id or doc["node"] != node:
         raise ApprovalError(f"approval is for {doc['run_id']}/{doc['node']}, not {run_id}/{node}")
     if doc["decision"] not in guards:
@@ -185,7 +205,7 @@ def verify_approval(
     if doc["evidence"] != evidence:
         raise ApprovalError("the evidence changed since this was issued; issue a new approval")
     candidate = doc["candidate"]
-    if doc["decision"] == APPROVE_GUARD:
+    if node == "H1" and doc["decision"] == APPROVE_GUARD:
         if candidate not in evidence["survivors"]:
             raise ApprovalError(
                 f"{candidate!r} is not a B1 survivor ({evidence['survivors']}); "
@@ -193,11 +213,14 @@ def verify_approval(
             )
     elif candidate is not None:
         raise ApprovalError("only a design approval names a candidate")
+    if node == "R1" and doc["decision"] == MERGE_APPROVE_GUARD:
+        if evidence.get("f1_guard") != "all_required_pass":
+            raise ApprovalError("a merge cannot be approved without passing F1 for this patch")
     return Verified(
         approver=doc["approver"],
         guard=doc["decision"],
         candidate=candidate,
         reason=doc["reason"],
         digest=digest(document_bytes),
-        commit_sha=evidence["commit_sha"],
+        approved_sha=evidence.get("approved_sha", evidence["commit_sha"]),
     )

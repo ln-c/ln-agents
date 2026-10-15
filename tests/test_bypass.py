@@ -25,6 +25,7 @@ APPROVED = {
     "ci.py": frozenset({"subprocess"}),  # `uv sync` for the CI toolchain, outside the sandbox
     "grounding.py": frozenset({"subprocess"}),  # G1 runs read-only `git rev-parse` / `git archive`
     "approvals.py": frozenset({"subprocess"}),  # `ssh-keygen -Y verify` on a signed approval
+    "release.py": frozenset({"subprocess"}),  # git plumbing for the candidate tree and M1's branch
     "broker.py": frozenset({"http"}),  # the only route from a worker to a model
     "sandbox_entry.py": frozenset({"subprocess", "http", "urllib"}),  # runs inside bwrap only
 }
