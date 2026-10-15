@@ -10,6 +10,9 @@
 # A check is UNSET when it has no `commands`, or declares a `score` without both `pattern`
 # and `minimum`. An unset check is never treated as passed:
 #   required: true   -> not_evaluated, which blocks the stage
+# Commands may use the placeholders {patch_files} and {patch_modules} as whole argv elements;
+# they expand to the patch's files / module globs (see ci.py). `scripts/` holds the tooling and
+# is not writable by a patch.
 #   required: false  -> skipped, which does not block
 # `score`: the last command's output must match `pattern` (one capture group, a number) and be
 # at least `minimum`. `cause` is the routing cause X uses when the check fails; it must be a
@@ -39,17 +42,19 @@ checks:
     required: false
     cause: implementation_violates_contract
     commands: []
-  dead_code:           # unused code in the patch; needs a tool (for example vulture)
+  dead_code:           # deactivated for now: no tool is wired in (vulture was spiked, too noisy)
     stage: E2
     required: false
     cause: implementation_violates_contract
     commands: []
-  mcdc:                # UNSET: needs a tool and a minimum MC/DC percentage over the patch's
-    stage: E2          # files, so code the protected tests cannot exercise is rejected early.
-    required: true     # Required and unset: E2 cannot pass until this is configured.
+  mcdc:                # MC/DC of the patch's Python files, from unittest.TestCase tests only
+    stage: E2
+    required: true
     cause: implementation_violates_contract
-    commands: []
-    score: {}
+    timeout_seconds: 900
+    commands:
+      - [python, scripts/ci_mcdc.py, --tests, tests, --files, "{patch_files}"]
+    score: {pattern: 'MC/DC ([0-9.]+)%', minimum: 100}
   integration:
     stage: F1
     required: true
@@ -65,9 +70,11 @@ checks:
     required: false
     cause: unknown_or_spent
     commands: []
-  mutation:            # UNSET: needs a tool, a changed-lines mode and a minimum score
+  mutation:            # killed / run mutants of the patch's modules (mutmut)
     stage: F1
     required: true
     cause: requirement_missing
-    commands: []
-    score: {}
+    timeout_seconds: 3000
+    commands:
+      - [python, scripts/ci_mutation.py, --modules, "{patch_modules}"]
+    score: {pattern: 'mutation score ([0-9.]+)%', minimum: 80}

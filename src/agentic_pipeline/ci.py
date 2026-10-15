@@ -16,7 +16,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from agentic_pipeline.sandbox import SandboxSpec, SandboxUnavailable, run_sandboxed
@@ -59,6 +59,40 @@ def is_unset(spec: Mapping[str, Any]) -> bool:
 
 def _result(spec: Mapping[str, Any], status: str, problems: list[str], **extra: Any) -> dict:
     return {"status": status, "problems": problems, "cause": spec["cause"], **extra}
+
+
+def patch_substitutions(patch: Path) -> dict[str, list[str]]:
+    """Values for the argv placeholders a policy command may use.
+
+    `{patch_files}`: the patch's file paths, relative to the repository root. `{patch_modules}`:
+    one dotted module glob per Python file outside `tests/` (`src/pkg/mod.py` -> `pkg.mod*`),
+    for tools that select code by module name. Each placeholder must be a whole argv element
+    and expands in place, to nothing if the patch has no such file.
+    """
+    files = sorted(p.relative_to(patch).as_posix() for p in patch.rglob("*") if p.is_file())
+    modules = []
+    for name in files:
+        path = PurePosixPath(name)
+        if path.suffix != ".py" or path.parts[0] == "tests":
+            continue
+        parts = list(path.with_suffix("").parts)
+        if parts[0] == "src":
+            parts = parts[1:]
+        if parts and parts[-1] == "__init__":
+            parts = parts[:-1]
+        if parts:
+            modules.append(".".join(parts) + "*")
+    return {"{patch_files}": files, "{patch_modules}": modules}
+
+
+def expand(argv: list[str], substitutions: Mapping[str, list[str]]) -> list[str]:
+    out: list[str] = []
+    for arg in argv:
+        if arg in substitutions:
+            out.extend(substitutions[arg])
+        else:
+            out.append(arg)
+    return out
 
 
 def prepare_tree(source: Path, patch: Path, dest: Path) -> None:
@@ -134,7 +168,12 @@ def _score(pattern: str, output: str) -> float | None:
 
 
 def run_check(
-    name: str, spec: Mapping[str, Any], tree: Path, venv: Path | None, toolchain: Mapping[str, Any]
+    name: str,
+    spec: Mapping[str, Any],
+    tree: Path,
+    venv: Path | None,
+    toolchain: Mapping[str, Any],
+    substitutions: Mapping[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Run one configured check; an unset one is not run."""
     if is_unset(spec):
@@ -148,9 +187,10 @@ def run_check(
     }
     runs: list[dict[str, Any]] = []
     output = ""
-    for argv in spec["commands"]:
+    for template in spec["commands"]:
+        argv = expand(list(template), substitutions or {})
         sandbox = SandboxSpec(
-            argv=list(argv),
+            argv=argv,
             write_path=tree,
             ro_binds={VENV: venv, **interpreter_binds(venv)} if venv else {},
             env=env,
@@ -198,6 +238,7 @@ def run_stage(
     results: dict[str, dict[str, Any]] = {}
     runnable = [n for n, s in specs.items() if not is_unset(s)]
     tree, venv = work / "tree", work / "venv"
+    substitutions = patch_substitutions(patch)
     toolchain = ci["toolchain"]
     uses_venv = toolchain["kind"] == "uv_sync"
     problem: str | None = None
@@ -213,6 +254,6 @@ def run_stage(
             results[name] = _result(spec, INFRA, [f"{name}: {problem}"])
         else:
             results[name] = run_check(
-                name, spec, tree, venv if runnable and uses_venv else None, toolchain
+                name, spec, tree, venv if runnable and uses_venv else None, toolchain, substitutions
             )
     return results

@@ -168,6 +168,7 @@ def test_e2_records_an_audit_bound_to_the_patch(build: Build) -> None:
     [
         ({"tests/test_x.py": "def test_x(): assert True\n"}, "write_scope"),
         ({"policy/budgets.yaml": "x: 1\n"}, "write_scope"),
+        ({"scripts/ci_mcdc.py": "x = 1\n"}, "write_scope"),
         ({"docs/adr/0009-new.md": "# adr\n"}, "write_scope"),
         ({"contracts/api.json": "{}\n"}, "write_scope"),
         ({".github/CODEOWNERS": "* @me\n"}, "write_scope"),

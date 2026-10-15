@@ -16,4 +16,5 @@ constraint_paths:
   - policy
   - schemas
   - pipeline
+  - scripts
   - .github

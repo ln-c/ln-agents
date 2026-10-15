@@ -53,8 +53,9 @@ If an input is missing, inconsistent, or not authorized, record the exact blocke
 4. Reject a test as red/green evidence if it fails because the test is malformed, setup is broken, a dependency is unavailable, or an unrelated failure masks the intended behavior.
 5. Distinguish intended baseline failures for new behavior from pre-existing baseline failures. Record pre-existing failures separately; do not attribute them to a new test.
 6. Ask `[CODE]` to validate the test suite, test determinism, and red-phase evidence. Where practical, validate that the relevant new test passes against a known-good implementation or after the intended behavior is introduced.
-7. Freeze the accepted tests and compute SHA-256 hashes over their exact bytes. Store hashes by normalized repository-relative path. Mark protected tests read-only in the execution environment.
-8. **Gate:** Do not proceed to implementation until tests and contracts are validated, frozen, and hash-recorded. If a requirement cannot be expressed as a meaningful test, record the reason and obtain explicit approval for the exception before proceeding.
+7. **MC/DC standard.** Write the tests so that every compound decision (two or more conditions joined by `and`/`or`) in the code under test can reach full modified condition/decision coverage. The E2 `mcdc` check measures this with `pymcdc`, which can only run `unittest.TestCase` tests (pytest can run them too), so write the tests that must establish MC/DC as `unittest.TestCase` classes without pytest fixtures. `policy/ci.yaml` sets the required percentage.
+8. Freeze the accepted tests and compute SHA-256 hashes over their exact bytes. Store hashes by normalized repository-relative path. Mark protected tests read-only in the execution environment.
+9. **Gate:** Do not proceed to implementation until tests and contracts are validated, frozen, and hash-recorded. If a requirement cannot be expressed as a meaningful test, record the reason and obtain explicit approval for the exception before proceeding.
 
 ### E0 — Sandbox initialization (owned by `[CODE]`)
 

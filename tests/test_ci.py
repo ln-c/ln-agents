@@ -186,16 +186,49 @@ def shipped() -> dict[str, Any]:
     return load_yaml(ROOT / "policy" / "ci.yaml")
 
 
-def test_the_shipped_ci_policy_is_valid_and_leaves_mutation_and_mcdc_unset() -> None:
+def test_the_shipped_ci_policy_is_valid_and_wires_mcdc_and_mutation() -> None:
     doc = shipped()
     assert check_ci(doc, ROUTING) == []
-    for name in ("mutation", "mcdc"):
-        assert doc["checks"][name]["required"] is True and ci.is_unset(doc["checks"][name])
+    checks = doc["checks"]
     # MC/DC and dead code judge the implementation, so they run at E2; mutation testing at F1.
-    stages = {n: s["stage"] for n, s in doc["checks"].items()}
+    stages = {n: s["stage"] for n, s in checks.items()}
     assert (stages["mcdc"], stages["dead_code"], stages["mutation"]) == ("E2", "E2", "F1")
-    assert doc["checks"]["dead_code"]["required"] is False
-    assert {s["stage"] for s in doc["checks"].values()} == {"E2", "F1"}
+    for name, minimum in (("mcdc", 100), ("mutation", 80)):
+        assert checks[name]["required"] is True and not ci.is_unset(checks[name])
+        assert checks[name]["score"]["minimum"] == minimum
+    assert checks["mcdc"]["commands"][0][-1] == "{patch_files}"
+    assert checks["mutation"]["commands"][0][-1] == "{patch_modules}"
+    assert checks["dead_code"]["required"] is False and ci.is_unset(checks["dead_code"])
+
+
+def test_placeholders_expand_to_the_patchs_files_and_module_globs(tmp_path: Path) -> None:
+    for rel in (
+        "src/pkg/mod.py",
+        "src/pkg/sub/__init__.py",
+        "tests/test_mod.py",
+        "tools/run.py",
+        "docs/note.md",
+    ):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("")
+    subst = ci.patch_substitutions(tmp_path)
+    assert subst["{patch_files}"] == [
+        "docs/note.md",
+        "src/pkg/mod.py",
+        "src/pkg/sub/__init__.py",
+        "tests/test_mod.py",
+        "tools/run.py",
+    ]
+    assert subst["{patch_modules}"] == ["pkg.mod*", "pkg.sub*", "tools.run*"]
+    argv = ["python", "x.py", "--files", "{patch_files}", "--", "{patch_modules}"]
+    assert ci.expand(argv, {"{patch_files}": ["a", "b"], "{patch_modules}": []}) == [
+        "python",
+        "x.py",
+        "--files",
+        "a",
+        "b",
+        "--",
+    ]
 
 
 @pytest.mark.parametrize(

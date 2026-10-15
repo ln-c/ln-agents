@@ -19,6 +19,8 @@ agentic-pipeline = "agentic_pipeline.cli:main"
 
 [dependency-groups]
 dev = [
+    "mutmut>=3.8.0",
+    "pymcdc>=0.2.6",
     "pytest>=8.0",
     "ruff>=0.8",
 ]
@@ -34,3 +36,11 @@ ignore = ["S101"]  # allow assert in tests / checks
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.mutmut]
+source_paths = ["src/agentic_pipeline"]
+pytest_add_cli_args_test_selection = ["tests"]
+also_copy = ["tests", "scripts", "policy", "pipeline", "schemas", "agents", "docs"]
+# sandbox_entry.py runs under the system python inside bwrap, where mutmut's trampoline
+# (which imports mutmut) cannot load.
+do_not_mutate = ["src/agentic_pipeline/sandbox_entry.py"]

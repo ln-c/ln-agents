@@ -80,6 +80,7 @@ FORBIDDEN_TREES = (
     "policy",
     "schemas",
     "pipeline",
+    "scripts",
     ".github",
 )
 DEPENDENCY_FILES = re.compile(
