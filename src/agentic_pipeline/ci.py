@@ -11,6 +11,7 @@ to a re-run instead of blaming the implementation.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -87,7 +88,7 @@ def prepare_toolchain(tree: Path, venv: Path, toolchain: Mapping[str, Any]) -> N
             cwd=tree,
             env={
                 "PATH": "/usr/bin:/bin",
-                "HOME": str(venv.parent),
+                "HOME": os.environ.get("HOME", str(venv.parent)),  # uv cache and Pythons
                 "UV_PROJECT_ENVIRONMENT": str(venv),
             },
             capture_output=True,
@@ -105,16 +106,21 @@ def interpreter_binds(venv: Path) -> dict[str, Path]:
     """Read-only binds for the venv's interpreter when it lives outside /usr.
 
     A uv-managed Python sits under the user's home, which the sandbox cannot see, so the
-    venv's `python` symlink would dangle. Bind that Python's install prefix at the same path.
+    venv's `python` symlink would dangle. The symlink may name the install through an alias
+    (uv keeps `cpython-3.13-...` pointing at `cpython-3.13.16-...`), so bind the real install
+    at the path the symlink uses, and the venv's `pyvenv.cfg` finds it there too.
     """
+    link = venv / "bin" / "python"
+    if not link.is_symlink():
+        return {}
+    named = Path(os.path.abspath(link.parent / os.readlink(link)))  # as the venv names it
     try:
-        real = (venv / "bin" / "python").resolve(strict=True)
+        real = named.resolve(strict=True)
     except OSError:
         return {}
-    if real.is_relative_to("/usr"):
+    if real.is_relative_to("/usr") and named.is_relative_to("/usr"):
         return {}
-    prefix = real.parent.parent
-    return {str(prefix): prefix}
+    return {str(named.parent.parent): real.parent.parent}
 
 
 def _score(pattern: str, output: str) -> float | None:

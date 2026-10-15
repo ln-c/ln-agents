@@ -105,16 +105,22 @@ def test_a_timeout_is_a_failure(tree: Path) -> None:
     assert result["status"] == ci.FAILED and result["runs"][0]["timed_out"] is True
 
 
-def test_a_uv_managed_interpreter_outside_usr_is_bound_into_the_sandbox(tmp_path: Path) -> None:
-    prefix = tmp_path / "uv" / "cpython-3.14"
-    (prefix / "bin").mkdir(parents=True)
-    (prefix / "bin" / "python3.14").write_text("")
+def test_a_uv_managed_interpreter_outside_usr_is_bound_where_the_venv_names_it(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "uv" / "cpython-3.14.1-linux"
+    (real / "bin").mkdir(parents=True)
+    (real / "bin" / "python3.14").write_text("")
+    alias = tmp_path / "uv" / "cpython-3.14-linux"  # uv's alias for the newest patch release
+    alias.symlink_to(real)
     (tmp_path / "venv" / "bin").mkdir(parents=True)
-    (tmp_path / "venv" / "bin" / "python").symlink_to(prefix / "bin" / "python3.14")
-    assert ci.interpreter_binds(tmp_path / "venv") == {str(prefix): prefix}
+    (tmp_path / "venv" / "bin" / "python").symlink_to(alias / "bin" / "python3.14")
+    assert ci.interpreter_binds(tmp_path / "venv") == {str(alias): real}
     (tmp_path / "bare" / "bin").mkdir(parents=True)
     assert ci.interpreter_binds(tmp_path / "bare") == {}  # no interpreter: nothing to bind
-    assert ci.interpreter_binds(Path("/usr")) == {}
+    (tmp_path / "gone" / "bin").mkdir(parents=True)
+    (tmp_path / "gone" / "bin" / "python").symlink_to(tmp_path / "missing" / "python")
+    assert ci.interpreter_binds(tmp_path / "gone") == {}  # dangling: nothing to bind
 
 
 @needs_sandbox
