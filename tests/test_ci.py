@@ -105,6 +105,18 @@ def test_a_timeout_is_a_failure(tree: Path) -> None:
     assert result["status"] == ci.FAILED and result["runs"][0]["timed_out"] is True
 
 
+def test_a_uv_managed_interpreter_outside_usr_is_bound_into_the_sandbox(tmp_path: Path) -> None:
+    prefix = tmp_path / "uv" / "cpython-3.14"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "python3.14").write_text("")
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "venv" / "bin" / "python").symlink_to(prefix / "bin" / "python3.14")
+    assert ci.interpreter_binds(tmp_path / "venv") == {str(prefix): prefix}
+    (tmp_path / "bare" / "bin").mkdir(parents=True)
+    assert ci.interpreter_binds(tmp_path / "bare") == {}  # no interpreter: nothing to bind
+    assert ci.interpreter_binds(Path("/usr")) == {}
+
+
 @needs_sandbox
 @pytest.mark.parametrize(
     ("printed", "status"),

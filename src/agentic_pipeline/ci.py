@@ -101,6 +101,22 @@ def prepare_toolchain(tree: Path, venv: Path, toolchain: Mapping[str, Any]) -> N
         raise CiInfraError(f"toolchain sync failed: {done.stderr.strip()[-500:]}")
 
 
+def interpreter_binds(venv: Path) -> dict[str, Path]:
+    """Read-only binds for the venv's interpreter when it lives outside /usr.
+
+    A uv-managed Python sits under the user's home, which the sandbox cannot see, so the
+    venv's `python` symlink would dangle. Bind that Python's install prefix at the same path.
+    """
+    try:
+        real = (venv / "bin" / "python").resolve(strict=True)
+    except OSError:
+        return {}
+    if real.is_relative_to("/usr"):
+        return {}
+    prefix = real.parent.parent
+    return {str(prefix): prefix}
+
+
 def _score(pattern: str, output: str) -> float | None:
     found = list(re.finditer(pattern, output))
     if not found or not found[-1].groups():
@@ -130,7 +146,7 @@ def run_check(
         sandbox = SandboxSpec(
             argv=list(argv),
             write_path=tree,
-            ro_binds={VENV: venv} if venv else {},
+            ro_binds={VENV: venv, **interpreter_binds(venv)} if venv else {},
             env=env,
             timeout=float(spec.get("timeout_seconds", toolchain.get("timeout_seconds", 600))),
         )

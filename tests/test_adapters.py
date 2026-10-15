@@ -173,7 +173,8 @@ def test_find_pi_package_rejects_other_package(tmp_path: Path) -> None:
 
 
 def _sandbox_usable() -> bool:
-    bwrap, prlimit, node = (shutil.which(n) for n in ("bwrap", "prlimit", "node"))
+    bwrap, prlimit = (shutil.which(n) for n in ("bwrap", "prlimit"))
+    node = shutil.which("node", path="/usr/bin")  # the sandbox's PATH is /usr/bin only
     if not (bwrap and prlimit and node):
         return False
     argv = bwrap_argv(bwrap, SandboxSpec(argv=["true"]), 0, 1)
