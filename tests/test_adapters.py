@@ -24,6 +24,7 @@ from agentic_pipeline.adapters import (
     PiQwenAdapter,
     embed_inputs,
     find_pi_package,
+    find_sandbox_node,
 )
 from agentic_pipeline.broker import BrokerStats, InferenceBroker
 from agentic_pipeline.dispatch import DispatchGrant
@@ -173,8 +174,12 @@ def test_find_pi_package_rejects_other_package(tmp_path: Path) -> None:
 
 
 def _sandbox_usable() -> bool:
-    bwrap, prlimit, node = (shutil.which(n) for n in ("bwrap", "prlimit", "node"))
-    if not (bwrap and prlimit and node):
+    bwrap, prlimit = (shutil.which(n) for n in ("bwrap", "prlimit"))
+    try:
+        find_sandbox_node()  # node must be under /usr to be visible inside the sandbox
+    except SandboxUnavailable:
+        return False
+    if not (bwrap and prlimit):
         return False
     argv = bwrap_argv(bwrap, SandboxSpec(argv=["true"]), 0, 1)
     probe = argv[: argv.index("python3")] + ["/usr/bin/true"]
@@ -552,3 +557,43 @@ def test_agy_from_registry_requires_a_token_and_a_pinned_model(tmp_path: Path) -
     del registry["providers"]["google_ai_pro"]["model_id"]
     with pytest.raises(LookupError, match="model_id"):
         AgyAdapter.from_registry(registry, host)
+
+
+# ── find_sandbox_node ────────────────────────────────────────────────────────
+
+
+def test_node_under_usr_local_is_found_by_absolute_path() -> None:
+    assert find_sandbox_node(lambda name: "/usr/local/bin/node") == "/usr/local/bin/node"
+
+
+@pytest.mark.parametrize("path", ["/home/me/.nvm/versions/node/v22/bin/node", "/opt/node/bin/node"])
+def test_node_outside_usr_is_refused_with_a_clear_reason(path: str) -> None:
+    with pytest.raises(SandboxUnavailable, match="outside /usr"):
+        find_sandbox_node(lambda name: path)
+
+
+def test_node_that_links_out_of_usr_is_refused(tmp_path: Path) -> None:
+    target = tmp_path / "real" / "node"
+    target.parent.mkdir()
+    target.write_text("")
+    link = tmp_path / "node"
+    link.symlink_to(target)
+    with pytest.raises(SandboxUnavailable, match="outside /usr"):
+        find_sandbox_node(lambda name: str(link))
+
+
+def test_a_missing_node_is_reported() -> None:
+    with pytest.raises(SandboxUnavailable, match="not found"):
+        find_sandbox_node(lambda name: None)
+
+
+def test_the_pi_sandbox_runs_node_by_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "agentic_pipeline.adapters.find_sandbox_node", lambda: "/usr/local/bin/node"
+    )
+    a = adapter(tmp_path, pi_package=fake_package(tmp_path, js="//"))
+    g = grant(tmp_path, {})
+    spec = a.sandbox_spec(g, a.prepare(g), tmp_path / "models.json")
+    assert spec.argv[0] == "/usr/local/bin/node"

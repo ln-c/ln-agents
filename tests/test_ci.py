@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTING = load_yaml(ROOT / "policy" / "routing.yaml")
 needs_sandbox = pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap unavailable or unusable")
 TOOLCHAIN: dict[str, Any] = {"kind": "none", "env": {}, "timeout_seconds": 30}
+
+
+def test_the_sandbox_is_usable_on_ci() -> None:
+    """On CI the sandbox tests must run, not skip: a runner that cannot sandbox is a failure."""
+    if os.environ.get("CI"):
+        assert BWRAP_USABLE, "bwrap is unusable on this CI runner; fix the workflow step"
 
 
 def spec(**over: Any) -> dict[str, Any]:
@@ -96,6 +103,24 @@ def test_a_timeout_is_a_failure(tree: Path) -> None:
     slow = spec(commands=py("import time; time.sleep(30)"), timeout_seconds=1)
     result = ci.run_check("integration", slow, tree, None, TOOLCHAIN)
     assert result["status"] == ci.FAILED and result["runs"][0]["timed_out"] is True
+
+
+def test_a_uv_managed_interpreter_outside_usr_is_bound_where_the_venv_names_it(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "uv" / "cpython-3.14.1-linux"
+    (real / "bin").mkdir(parents=True)
+    (real / "bin" / "python3.14").write_text("")
+    alias = tmp_path / "uv" / "cpython-3.14-linux"  # uv's alias for the newest patch release
+    alias.symlink_to(real)
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "venv" / "bin" / "python").symlink_to(alias / "bin" / "python3.14")
+    assert ci.interpreter_binds(tmp_path / "venv") == {str(alias): real}
+    (tmp_path / "bare" / "bin").mkdir(parents=True)
+    assert ci.interpreter_binds(tmp_path / "bare") == {}  # no interpreter: nothing to bind
+    (tmp_path / "gone" / "bin").mkdir(parents=True)
+    (tmp_path / "gone" / "bin" / "python").symlink_to(tmp_path / "missing" / "python")
+    assert ci.interpreter_binds(tmp_path / "gone") == {}  # dangling: nothing to bind
 
 
 @needs_sandbox
