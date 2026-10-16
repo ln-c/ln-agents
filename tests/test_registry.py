@@ -1,4 +1,4 @@
-"""Tests for model registry invariants (R1-R14)."""
+"""Tests for model registry invariants (R1-R17)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from agentic_pipeline.graph import Graph, load_yaml
-from agentic_pipeline.registry import validate_registry
+from agentic_pipeline.registry import resolve_family, validate_registry
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = load_yaml(ROOT / "policy" / "model_registry.yaml")
@@ -120,6 +120,51 @@ def _unknown_producer_op(r: Registry) -> None:
     r["artifacts"]["synthesis_sealed"]["producer"] = ["A3.missing"]
 
 
+def _google_serves_claude(r: Registry) -> None:
+    r["providers"]["google_ai_pro"]["model_id"] = "claude-sonnet-x"
+
+
+def _google_serves_unknown_model(r: Registry) -> None:
+    r["providers"]["google_ai_pro"]["model_id"] = "mystery-1"
+
+
+def _two_provider_ids_one_family(r: Registry) -> None:
+    r["providers"]["google_ai_pro"].pop("family_by_model_id")
+    r["providers"]["google_ai_pro"]["family"] = "claude"
+
+
+def _both_family_forms(r: Registry) -> None:
+    r["providers"]["claude_pro"]["family_by_model_id"] = [{"pattern": "^c", "family": "claude"}]
+
+
+def _no_family(r: Registry) -> None:
+    del r["providers"]["qwen_local"]["family"]
+
+
+def _bad_family_pattern(r: Registry) -> None:
+    r["providers"]["google_ai_pro"]["family_by_model_id"].insert(0, {"pattern": "(", "family": "x"})
+
+
+def _bad_pattern_after_a_match(r: Registry) -> None:
+    r["providers"]["google_ai_pro"]["family_by_model_id"].append({"pattern": "(", "family": "x"})
+
+
+def _cloud_declared_local(r: Registry) -> None:
+    r["providers"]["claude_pro"]["location"] = "local"
+
+
+def _local_declared_cloud(r: Registry) -> None:
+    r["providers"]["qwen_local"]["location"] = "cloud"
+
+
+def _unknown_access_mode(r: Registry) -> None:
+    r["providers"]["qwen_local"]["access_mode"] = "carrier_pigeon"
+
+
+def _no_location(r: Registry) -> None:
+    del r["providers"]["claude_pro"]["location"]
+
+
 CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ("schema: denylist floor", _drop_denylist_entry, "registry R1"),
     ("path escapes root", _escape_spec, "registry R2"),
@@ -145,6 +190,21 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ("unknown output schema", _unknown_output_schema, "registry R15 A1.proposal_a"),
     ("same backend for A and B", _swap_proposal_a_backend, "registry R14 A1.proposal_b"),
     ("self-critique", _self_critique, "registry R14 A2.critique_b_by_a"),
+    ("same family via another provider", _google_serves_claude, "registry R14 A1.proposal_b"),
+    ("same family, fixed", _two_provider_ids_one_family, "registry R14 A1.proposal_b"),
+    ("schema: location required", _no_location, "registry R1"),
+    ("cloud mode declared local", _cloud_declared_local, "registry R16 providers.claude_pro"),
+    ("local mode declared cloud", _local_declared_cloud, "registry R16 providers.qwen_local"),
+    ("unknown access mode", _unknown_access_mode, "registry R16 providers.qwen_local"),
+    ("model id matches no family", _google_serves_unknown_model, "registry R17 providers.google"),
+    ("both family forms", _both_family_forms, "registry R17 providers.claude_pro"),
+    ("no family", _no_family, "registry R17 providers.qwen_local"),
+    ("bad family pattern", _bad_family_pattern, "registry R17 providers.google_ai_pro"),
+    (
+        "bad pattern after a match",
+        _bad_pattern_after_a_match,
+        "registry R17 providers.google_ai_pro",
+    ),
 ]
 
 
@@ -167,3 +227,36 @@ def test_schema_failure_short_circuits() -> None:
     _drop_bench(registry)
     errors = validate_registry(registry, GRAPH, ROOT)
     assert len(errors) == 1 and errors[0].startswith("registry R1"), errors
+
+
+def test_an_unresolved_family_is_reported_once_not_as_an_independence_failure() -> None:
+    registry = copy.deepcopy(REGISTRY)
+    _google_serves_unknown_model(registry)
+    errors = validate_registry(registry, GRAPH, ROOT)
+    assert any(e.startswith("registry R17") for e in errors)
+    assert not any(e.startswith("registry R14") for e in errors), errors
+
+
+def test_resolve_family_takes_the_first_matching_pattern() -> None:
+    provider = {
+        "model_id": "gemini-3",
+        "family_by_model_id": [
+            {"pattern": "^gemini-", "family": "gemini"},
+            {"pattern": "^gem", "family": "other"},
+        ],
+    }
+    assert resolve_family(provider) == "gemini"
+    assert resolve_family({**provider, "model_id": "claude-x"}) is None
+    assert resolve_family({"family_by_model_id": provider["family_by_model_id"]}) is None
+    assert resolve_family({"family": "qwen3"}) == "qwen3"
+    assert (
+        resolve_family({"model_id": "x", "family_by_model_id": [{"pattern": "(", "family": "x"}]})
+        is None
+    )
+    # `re.match` anchors at the start: a pattern does not match in the middle of an id.
+    assert (
+        resolve_family(
+            {"model_id": "x-gemini-1", "family_by_model_id": provider["family_by_model_id"]}
+        )
+        is None
+    )
