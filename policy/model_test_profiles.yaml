@@ -1,0 +1,10 @@
+# Conformance checks a model provider must pass, by the capability an operation requires of it.
+# A provider's required checks are the union over the `requires` of every operation it can be
+# bound to (policy/model_registry.yaml), so rebinding changes them. A check is a smoke test
+# of the adapter path: it shows a model can follow the pipeline's output contract, not that it
+# is good at the role. Results are host evidence in .conformance/, written by `models test`.
+version: 1
+profiles:
+  design_reasoning: [identity, json_reply]
+  code_generation: [identity, file_output]
+  classification: [identity, json_reply]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,12 @@ from typing import Any
 import yaml
 
 from agentic_pipeline.graph import REPO_ROOT, Graph, load_yaml, validate
-from agentic_pipeline.policies import POLICY_FILES, check_artifact_defaults, validate_policies
+from agentic_pipeline.policies import (
+    POLICY_FILES,
+    check_artifact_defaults,
+    check_test_profiles,
+    validate_policies,
+)
 from agentic_pipeline.registry import validate_registry
 
 
@@ -28,6 +34,15 @@ def _load(root: Path, rel: str, errors: list[str]) -> Any:
     return doc
 
 
+def _capabilities(root: Path) -> list[str]:
+    """The capability vocabulary, from the registry schema (the one place it is defined)."""
+    try:
+        schema = json.loads((root / "schemas" / "model_registry.schema.json").read_text("utf-8"))
+        return list(schema["definitions"]["capability"]["enum"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return []  # the registry check reports the unreadable schema
+
+
 def validate_repo(root: Path = REPO_ROOT) -> list[str]:
     """Return every static invariant violation in the repository (empty means valid)."""
     errors: list[str] = []
@@ -44,6 +59,8 @@ def validate_repo(root: Path = REPO_ROOT) -> list[str]:
         errors += validate_policies(policy_docs)
     if graph is not None and registry is not None:
         errors += validate_registry(registry, graph, root)
+    if policy_docs["model_test_profiles"] is not None:
+        errors += check_test_profiles(policy_docs["model_test_profiles"], _capabilities(root))
     if policy_docs["data_classes"] is not None and registry is not None:
         errors += check_artifact_defaults(policy_docs["data_classes"], registry)
     return errors

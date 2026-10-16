@@ -46,6 +46,9 @@ GUIDANCE: Mapping[str, str] = {
         "which must also give `sources` mapping each component name to the id of the input "
         "proposal it came from (use only ids that appear in the proposal inputs)."
     ),
+    "conformance_probe": (
+        "Field rules:\n- `nonce`: copy the value of `nonce` from the `probe_input` input exactly."
+    ),
     "critique": (
         "Review the proposal on all nine dimensions: (1) explicit and implied context "
         "manifest constraints; (2) API and data-contract satisfaction, versioning and "

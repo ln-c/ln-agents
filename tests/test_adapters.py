@@ -597,3 +597,16 @@ def test_the_pi_sandbox_runs_node_by_absolute_path(
     g = grant(tmp_path, {})
     spec = a.sandbox_spec(g, a.prepare(g), tmp_path / "models.json")
     assert spec.argv[0] == "/usr/local/bin/node"
+
+
+def test_every_adapter_reports_the_identity_it_prepares_with(tmp_path: Path) -> None:
+    """`models test` records `identity()`, and the dispatcher logs `prepare()`; they must agree."""
+    g = grant(tmp_path)
+    for built in (adapter(tmp_path), claude(tmp_path), agy(tmp_path)):
+        call = built.prepare(g)
+        identity = built.identity()
+        assert (call.model, call.model_version, call.access_method) == (
+            identity.model,
+            identity.model_version,
+            identity.access_method,
+        )
