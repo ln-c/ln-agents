@@ -1,5 +1,7 @@
 # Logical model/access registry for agentic-pipeline.
 # This file assigns execution backends; it does not grant permissions or authorize transitions.
+# A model is bound only here: `agents.*.primary` then `model_assistance` (in preference order).
+# stage_requirements names none; its candidate backends are derived from the agent.
 # Resolve aliases to the exact supported tool/model version at runtime and record that resolution.
 # Decisions behind this layout: docs/adr/0003-model-registry-stage-requirements.md
 version: 1
@@ -33,10 +35,13 @@ policy:
 # family and is what independence is judged on (a provider id is only an access path).
 # A provider that can serve several families lists `family_by_model_id` instead: ordered
 # regexes matched against its pinned model id; an id that matches none is a validation error.
+# `capabilities` are what the provider claims it can do (declared, not yet measured); each
+# stage operation lists what it `requires`, and validation fails if a candidate lacks one.
 providers:
   claude_pro:
     access_mode: subscription_tool
     location: cloud
+    capabilities: [code_generation, design_reasoning]
     family: claude
     subscription: Claude Pro
     api_billing_allowed: false
@@ -47,6 +52,7 @@ providers:
   google_ai_pro:
     access_mode: subscription_tool
     location: cloud
+    capabilities: [code_generation, design_reasoning]
     family_by_model_id:
       - {pattern: '^gemini-', family: gemini}
       - {pattern: '^claude-', family: claude}
@@ -64,6 +70,7 @@ providers:
   qwen_local:
     access_mode: local_inference
     location: local
+    capabilities: [classification, code_generation]
     family: qwen3
     model_alias: Qwen3 8B
     network_required: false
@@ -77,6 +84,7 @@ providers:
   clef_flash_free:
     access_mode: free_allowance_only
     location: cloud
+    capabilities: [classification]
     family: clef
     model_alias: Clef-flash
     api_billing_allowed: false
@@ -277,6 +285,7 @@ stage_requirements:
       - id: proposal_a
         agent: design.proposal_a
         role: proposal_author
+        requires: [design_reasoning]
         allowed_reads: [pinned_context_manifest, requirements, applicable_contracts, adr_snapshot]
         denied_reads: [proposal_b_scratch, proposal_b_sealed]
         write_root: proposal_a
@@ -285,6 +294,7 @@ stage_requirements:
       - id: proposal_b
         agent: design.proposal_b
         role: proposal_author
+        requires: [design_reasoning]
         allowed_reads: [pinned_context_manifest, requirements, applicable_contracts, adr_snapshot]
         denied_reads: [proposal_a_scratch, proposal_a_sealed]
         write_root: proposal_b
@@ -297,6 +307,7 @@ stage_requirements:
       - id: critique_b_by_a
         agent: design.proposal_a
         role: cross_reviewer
+        requires: [design_reasoning]
         target_artifact: proposal_b_sealed
         allowed_reads: [pinned_context_manifest, proposal_b_sealed]
         denied_reads: [proposal_b_scratch, critique_a_by_b_sealed]
@@ -306,6 +317,7 @@ stage_requirements:
       - id: critique_a_by_b
         agent: design.proposal_b
         role: cross_reviewer
+        requires: [design_reasoning]
         target_artifact: proposal_a_sealed
         allowed_reads: [pinned_context_manifest, proposal_a_sealed]
         denied_reads: [proposal_a_scratch, critique_b_by_a_sealed]
@@ -314,11 +326,11 @@ stage_requirements:
         output_schema: critique
   A3:
     mode: ordered_any_of
-    backends: [claude_pro, google_ai_pro]
     operations:
       - id: synthesis
         agent: design.synthesis
         role: synthesizer
+        requires: [design_reasoning]
         allowed_reads:
           - pinned_context_manifest
           - requirements
@@ -334,11 +346,11 @@ stage_requirements:
         output_schema: proposal
   A3R:
     mode: ordered_any_of
-    backends: [google_ai_pro, claude_pro]
     operations:
       - id: synthesis_review
         agent: design.synthesis_review
         role: synthesis_reviewer
+        requires: [design_reasoning]
         target_artifact: synthesis_sealed
         allowed_reads: [pinned_context_manifest, synthesis_sealed]
         denied_reads: [proposal_a_scratch, proposal_b_scratch]
@@ -347,35 +359,35 @@ stage_requirements:
         output_schema: critique
   C1:
     mode: ordered_any_of
-    backends: [qwen_local]
     operations:
       # Runs before E0 creates the implementation sandbox.
       - id: module_decomposition
         agent: build
         role: contract_author
+        requires: [code_generation]
         allowed_reads: [pinned_context_manifest, design_decision_sealed, synthesis_sealed, pinned_source_tree, applicable_contracts]
         denied_reads: [proposal_a_scratch, proposal_b_scratch]
         write_root: contracts
         isolation_profile: sealed_inputs_only
   D1:
     mode: ordered_any_of
-    backends: [qwen_local]
     operations:
       - id: test_generation
         agent: build
         role: test_author
+        requires: [code_generation]
         allowed_reads: [pinned_context_manifest, contracts_sealed, pinned_source_tree, protected_tests]
         denied_reads: [implementation_patch]
         write_root: generated_tests
         isolation_profile: sealed_inputs_only
   E1:
     mode: ordered_any_of
-    backends: [qwen_local]
     operations:
       # Tests and contracts are readable; writes are confined to write_root.
       - id: implementation_patch
         agent: build
         role: patch_author
+        requires: [code_generation]
         allowed_reads: [pinned_context_manifest, pinned_source_tree, contracts_sealed, generated_tests_sealed, protected_tests]
         denied_reads: [proposal_a_scratch, proposal_b_scratch]
         write_root: implementation_patch

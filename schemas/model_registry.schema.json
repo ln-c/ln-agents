@@ -9,14 +9,17 @@
     "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
     "id_list": {"type": "array", "items": {"$ref": "#/definitions/id"}, "uniqueItems": true},
     "stage_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9-]*$"},
+    "capability": {"enum": ["classification", "code_generation", "design_reasoning"]},
+    "capability_list": {"type": "array", "items": {"$ref": "#/definitions/capability"}, "uniqueItems": true},
     "version_triple": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 3, "maxItems": 3},
     "operation": {
       "type": "object",
-      "required": ["id", "agent", "role", "allowed_reads", "denied_reads", "write_root", "isolation_profile"],
+      "required": ["id", "agent", "role", "requires", "allowed_reads", "denied_reads", "write_root", "isolation_profile"],
       "properties": {
         "id": {"$ref": "#/definitions/id"},
         "agent": {"type": "string", "pattern": "^[a-z_]+(\\.[a-z_]+)?$"},
         "role": {"$ref": "#/definitions/id"},
+        "requires": {"allOf": [{"$ref": "#/definitions/capability_list"}, {"minItems": 1}]},
         "target_artifact": {"$ref": "#/definitions/id"},
         "allowed_reads": {"allOf": [{"$ref": "#/definitions/id_list"}, {"minItems": 1}]},
         "denied_reads": {"$ref": "#/definitions/id_list"},
@@ -72,6 +75,7 @@
           "location": {"enum": ["local", "cloud"]},
           "api_billing_allowed": {"const": false},
           "family": {"$ref": "#/definitions/id"},
+          "capabilities": {"$ref": "#/definitions/capability_list"},
           "family_by_model_id": {
             "type": "array",
             "minItems": 1,
@@ -205,10 +209,9 @@
           },
           {
             "type": "object",
-            "required": ["mode", "backends", "operations"],
+            "required": ["mode", "operations"],
             "properties": {
               "mode": {"const": "ordered_any_of"},
-              "backends": {"allOf": [{"$ref": "#/definitions/id_list"}, {"minItems": 1}]},
               "operations": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/definitions/operation"}}
             },
             "additionalProperties": false

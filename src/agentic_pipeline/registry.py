@@ -7,7 +7,7 @@ R2   referenced repo paths exist and stay inside the repo root
 R3   agent backend references name declared providers
 R4   stage_requirements covers exactly the graph states executed by a model
 R5   each operation's dotted `agent` resolves to an agents entry
-R6   operation backends are model providers permitted for that agent
+R6   operation backends, derived from the agent's primary and model_assistance, are model providers
 R7   reads and targets resolve to the artifact catalog
 R8   allowed_reads and denied_reads are disjoint
 R9   target_artifact is sealed and readable
@@ -19,6 +19,7 @@ R14  isolated operations use distinct model families; no critic reviews its own 
 R15  an operation's output_schema names a schema that exists in schemas/
 R16  every provider declares where its traffic goes, and it matches its access mode
 R17  every model provider resolves to exactly one model family
+R18  every backend an operation may run on declares the capabilities the operation requires
 """
 
 from __future__ import annotations
@@ -104,11 +105,20 @@ def operations(stage_reqs: Mapping[str, Any]) -> Iterator[tuple[str, Op]]:
 
 
 def op_backends(registry: Mapping[str, Any], stage: str, op: Op) -> list[str]:
-    spec = registry["stage_requirements"][stage]
-    if spec["mode"] == "ordered_any_of":
-        return list(spec["backends"])
+    """Providers an operation may run on, in preference order.
+
+    The agent's entry in `agents` is the only place a model is bound; stage_requirements names
+    none. `all_of` runs on the agent's `primary`. `ordered_any_of` tries the `primary` (when it
+    is a model provider; synthesis, for one, is owned by the orchestrator) and then each
+    `model_assistance` entry, without repeats. A non-model entry is kept so R6 reports it.
+    """
     agent = resolve_agent(registry["agents"], op["agent"]) or {}
-    return [agent["primary"]] if "primary" in agent else []
+    primary = agent.get("primary")
+    if registry["stage_requirements"][stage]["mode"] != "ordered_any_of":
+        return [primary] if primary else []
+    providers = registry["providers"]
+    first = [primary] if providers.get(primary, {}).get("access_mode") in MODEL_ACCESS_MODES else []
+    return list(dict.fromkeys([*first, *(agent.get("model_assistance") or ())]))
 
 
 def _repo_paths(registry: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
@@ -212,8 +222,7 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
             errors.append(f"registry R5 {tag}: unknown agent {op['agent']!r}")
             continue
 
-        # R6. Backends are model providers permitted for the agent.
-        permitted = {agent.get("primary"), *(agent.get("model_assistance") or ())}
+        # R6. Backends are model providers.
         backends = op_backends(registry, stage, op)
         if not backends:
             errors.append(f"registry R6 {tag}: no backend resolved")
@@ -221,8 +230,12 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
             mode = providers.get(backend, {}).get("access_mode")
             if mode not in MODEL_ACCESS_MODES:
                 errors.append(f"registry R6 {tag}: {backend!r} is not a model provider")
-            elif stage_reqs[stage]["mode"] == "ordered_any_of" and backend not in permitted:
-                errors.append(f"registry R6 {tag}: {backend!r} not permitted for {op['agent']}")
+
+        # R18. Declared capabilities cover the operation's requirements.
+        for backend in backends:
+            declared = set(providers.get(backend, {}).get("capabilities") or ())
+            if missing := sorted(set(op["requires"]) - declared):
+                errors.append(f"registry R18 {tag}: {backend!r} does not declare {missing}")
 
         # R7. Artifact references resolve.
         allowed, denied = set(op["allowed_reads"]), set(op["denied_reads"])

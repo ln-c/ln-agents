@@ -1,4 +1,4 @@
-"""Tests for model registry invariants (R1-R17)."""
+"""Tests for model registry invariants (R1-R18)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,12 @@ from typing import Any
 import pytest
 
 from agentic_pipeline.graph import Graph, load_yaml
-from agentic_pipeline.registry import resolve_family, validate_registry
+from agentic_pipeline.registry import (
+    op_backends,
+    operations,
+    resolve_family,
+    validate_registry,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = load_yaml(ROOT / "policy" / "model_registry.yaml")
@@ -85,11 +90,31 @@ def _unknown_agent(r: Registry) -> None:
 
 
 def _non_model_backend(r: Registry) -> None:
-    r["stage_requirements"]["C1"]["backends"] = ["deterministic_rules"]
+    r["agents"]["design"]["synthesis"]["model_assistance"].append("deterministic_rules")
 
 
-def _unpermitted_backend(r: Registry) -> None:
+def _no_backend(r: Registry) -> None:
+    r["agents"]["build"]["primary"] = "deterministic_rules"  # a non-model primary is skipped
+
+
+def _stage_names_a_backend(r: Registry) -> None:
     r["stage_requirements"]["E1"]["backends"] = ["claude_pro"]
+
+
+def _build_on_the_classifier(r: Registry) -> None:
+    r["agents"]["build"]["primary"] = "clef_flash_free"
+
+
+def _no_capabilities_declared(r: Registry) -> None:
+    del r["providers"]["qwen_local"]["capabilities"]
+
+
+def _operation_requires_nothing(r: Registry) -> None:
+    op(r, "E1", "implementation_patch")["requires"] = []
+
+
+def _unknown_capability(r: Registry) -> None:
+    op(r, "E1", "implementation_patch")["requires"] = ["telepathy"]
 
 
 def _unknown_artifact(r: Registry) -> None:
@@ -173,8 +198,13 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ("model state unmapped", _drop_bench, "registry R4 BENCH"),
     ("code state mapped", _map_code_state, "registry R4 G1"),
     ("unknown agent", _unknown_agent, "registry R5 E1.implementation_patch"),
-    ("non-model backend", _non_model_backend, "registry R6 C1.module_decomposition"),
-    ("backend not permitted", _unpermitted_backend, "registry R6 E1.implementation_patch"),
+    ("non-model backend", _non_model_backend, "registry R6 A3.synthesis"),
+    ("no backend resolved", _no_backend, "registry R6 C1.module_decomposition"),
+    ("stage names a backend", _stage_names_a_backend, "registry R1"),
+    ("build on the classifier", _build_on_the_classifier, "registry R18 E1.implementation_patch"),
+    ("no capabilities declared", _no_capabilities_declared, "registry R18 C1.module_decomposition"),
+    ("operation requires nothing", _operation_requires_nothing, "registry R1"),
+    ("unknown capability", _unknown_capability, "registry R1"),
     ("unknown artifact", _unknown_artifact, "registry R7 D1.test_generation"),
     ("allowed and denied", _allowed_and_denied, "registry R8 E1.implementation_patch"),
     ("unsealed target", _unsealed_target, "registry R9 A2.critique_b_by_a"),
@@ -260,3 +290,22 @@ def test_resolve_family_takes_the_first_matching_pattern() -> None:
         )
         is None
     )
+
+
+def test_candidate_backends_per_operation_are_pinned() -> None:
+    """What each operation may run on, in preference order; a refactor must not change it."""
+    got = {
+        f"{stage}.{o['id']}": op_backends(REGISTRY, stage, o)
+        for stage, o in operations(REGISTRY["stage_requirements"])
+    }
+    assert got == {
+        "A1.proposal_a": ["claude_pro"],
+        "A1.proposal_b": ["google_ai_pro"],
+        "A2.critique_b_by_a": ["claude_pro"],
+        "A2.critique_a_by_b": ["google_ai_pro"],
+        "A3.synthesis": ["claude_pro", "google_ai_pro"],
+        "A3R.synthesis_review": ["google_ai_pro", "claude_pro"],
+        "C1.module_decomposition": ["qwen_local"],
+        "D1.test_generation": ["qwen_local"],
+        "E1.implementation_patch": ["qwen_local"],
+    }
