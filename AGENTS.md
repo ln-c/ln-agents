@@ -37,7 +37,7 @@ This repository's deterministic implementation remains authoritative. Agent spec
 1. `pipeline/graph.yaml` is the source of truth for legal states and transitions; this document and all model prompts are subordinate to it.
 2. Every run is bound to a pinned Git SHA, context-manifest digest, policy/config versions, and artifact digests.
 3. User declarations are not repository facts until verified. Missing or conflicting evidence is explicit and fails closed at required gates.
-4. Design A (Claude Pro) and Design B (Google AI Pro) receive separate sessions and separate write roots. Neither may read the other's proposal before its own proposal is sealed. If the runtime cannot enforce this, independence is unmet and the run pauses or records the unmet requirement.
+4. Design A and Design B use two different model families, bound in `policy/model_registry.yaml` (currently A = Claude Pro, B = Google AI Pro), and receive separate sessions and separate write roots. Neither may read the other's proposal before its own proposal is sealed. If the runtime cannot enforce this, independence is unmet and the run pauses or records the unmet requirement.
 5. Model output is untrusted data. Validate schemas, artifact references, path allowlists, tool calls, and claims before use.
 6. Filesystem permissions, network access, secret access, protected paths, and sandboxing must be enforced outside the model.
 7. Build agents cannot modify protected tests, frozen contracts, ADRs, policy, budgets, approvals, or release state.
