@@ -54,6 +54,7 @@ from agentic_pipeline.manifest import (
     publish_stage_manifest,
     resolve_sealed_inputs,
 )
+from agentic_pipeline.registry import resolve_family
 from agentic_pipeline.run_state import PolicySnapshot
 from agentic_pipeline.schemas import ValidationError, validate
 
@@ -214,6 +215,24 @@ def _backend(ctx: HandlerContext, stage: str, operation: str) -> str:
     return str(doc["operations"][operation]["backend"])
 
 
+def _family(ctx: HandlerContext, backend: str) -> str:
+    """The model family behind a recorded backend, from the registry this run froze."""
+    family = resolve_family(ctx.registry["providers"].get(backend) or {})
+    if family is None:
+        raise GateError(f"backend {backend!r} has no resolvable model family")
+    return family
+
+
+def _same_model_family(ctx: HandlerContext, a: tuple[str, str], b: tuple[str, str]) -> bool:
+    """Did two recorded operations (stage, operation) run on the same model family?
+
+    A shared backend counts even if its family cannot be resolved. An unresolvable family
+    raises, so independence is never granted on missing evidence.
+    """
+    first, second = _backend(ctx, *a), _backend(ctx, *b)
+    return first == second or _family(ctx, first) == _family(ctx, second)
+
+
 def critique_problems(ctx: HandlerContext) -> tuple[str, dict[str, Any], dict[str, list[str]]]:
     """(input digest, parsed critiques, problems per critique).
 
@@ -274,8 +293,8 @@ def _critique_binding_errors(
         if finding.get("proposal_id", doc["target_proposal_id"]) != doc["target_proposal_id"]:
             errors.append(f"finding {finding['id']} is about a different proposal")
     # Independence comes from the recorded backends, not from a model's own claim.
-    if _backend(ctx, "A2", operation) == _backend(ctx, "A1", target_op):
-        errors.append("critic ran on the same backend as the proposal it reviews")
+    if _same_model_family(ctx, ("A2", operation), ("A1", target_op)):
+        errors.append("critic ran on the same backend or model family as the proposal it reviews")
     return errors
 
 
@@ -460,10 +479,10 @@ def _checked_review(
             problems.append("manifest_hash does not match the pinned context manifest")
         if critique["target_proposal_id"] != (proposal or {}).get("id"):
             problems.append("target_proposal_id is not the candidate's id")
-        if _backend(ctx, CRITIC_STAGES[operation], operation) == _backend(
-            ctx, target_stage, target_op
+        if _same_model_family(
+            ctx, (CRITIC_STAGES[operation], operation), (target_stage, target_op)
         ):
-            problems.append("the reviewer ran on the same backend as the author")
+            problems.append("the reviewer ran on the same backend or model family as the author")
     return critique, problems
 
 

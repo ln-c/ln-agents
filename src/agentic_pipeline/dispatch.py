@@ -114,9 +114,6 @@ class AdapterResult:
     resolved_model: str | None = None  # model the provider reports it actually used
 
 
-# Provider access modes whose traffic leaves the host (policy/data_classes.yaml applies).
-CLOUD_ACCESS_MODES = frozenset({"subscription_tool", "free_allowance_only"})
-
 # Isolation checks the dispatcher enforces itself; adapters must enforce the rest.
 DISPATCHER_ENFORCED = frozenset({"proposal_path_layout", "sealed_input_verification"})
 
@@ -262,9 +259,10 @@ class Dispatcher:
         order = self.data_classes["order"]
         classes = [i.data_class for i in found.values()] + ["unknown"] * bool(errors)
         data_class = max(classes or ["unknown"], key=order.index)
-        mode = self.registry["providers"][backend]["access_mode"]
+        # Only a provider declared `local` stays on the host; a missing or odd value is cloud.
+        location = self.registry["providers"][backend].get("location")
         allowed = self.data_classes["classes"][data_class].get("cloud_allowed") is True
-        if mode in CLOUD_ACCESS_MODES and not allowed:
+        if location != "local" and not allowed:
             errors.append(f"data class {data_class!r} may not be sent to cloud backend {backend}")
         return {aid: i.path for aid, i in found.items()}, data_class, errors
 

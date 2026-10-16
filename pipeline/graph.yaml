@@ -53,7 +53,7 @@ states:
   A1:
     kind: model
     executor: model
-    doc: Independent proposals A (Claude) and B (Gemini); no cross-visibility.
+    doc: Independent proposals A and B from two model families (bound in the registry); no cross-visibility.
     produces: proposal
     edges:
       - {to: A2, guard: always}
@@ -175,7 +175,7 @@ states:
   E1:
     kind: model
     executor: model
-    doc: Pi + Qwen3 8B writes implementation files only.
+    doc: Pi with the local build model (bound in the registry) writes implementation files only.
     edges:
       - {to: E2, guard: always}
   E2:

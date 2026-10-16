@@ -1,4 +1,4 @@
-# 0003. Model Registry Stage Requirements and Provider Assignment
+# 0003. Model Registry Stage Requirements and Model Binding
 
 Date: 2026-10-12
 Status: Proposed
@@ -7,16 +7,18 @@ Status: Proposed
 
 The model registry overlay (`policy/model_registry.yaml`) and `pipeline/graph.yaml` disagreed on several points, and the registry had no per-stage operation scopes for the runtime to enforce. Each item below is a human-owned decision; nothing here takes effect until @ln-c approves it.
 
+Concrete models change faster than this architecture does. The decisions below therefore fix **roles, constraints and where a model is named**, not which model fills a role. Wherever a decision names a provider, that is the *current binding* recorded in the registry at the time of writing; it is not part of the decision, and changing it needs no new ADR as long as the constraints in decisions 9–11 still hold.
+
 ## Decisions
 
-### 1. Design A = Claude Pro, Design B = Google AI Pro
-`AGENTS.md` (invariant 4), `CLAUDE.md`, and the registry all assign A to Claude and B to Google. Only the free-text `doc:` on graph state `A1` said the reverse. The graph doc string is corrected to match; no state or edge changes.
+### 1. Design A and Design B are two independent model families
+Designs A and B must come from different model families, in separate sessions (decision 10 defines independence). Current binding: A = `claude_pro`, B = `google_ai_pro`. `AGENTS.md` (invariant 4) and `CLAUDE.md` still state this binding as a rule; this ADR does not change them, and aligning them with this decision is a follow-up human edit. Earlier, only the free-text `doc:` on graph state `A1` said the reverse. That string now names no model, so the registry is its only source; no state or edge changes.
 
-### 2. Build primary is `qwen_local`
-Graph state `E1` is "Pi + Qwen3 8B". The registry previously named `claude_pro` primary with Qwen as fallback. Cloud models now reach build only through the graph's `E3 → E4` escalation path, which is disabled in `stage_requirements` until `policy/escalation.yaml` targets map to registry providers.
+### 2. Build runs on a local model; cloud models reach build only through escalation
+The build stages (`C1`, `D1`, `E1`) use a local model, and cloud models reach build only through the graph's `E3 → E4` escalation path, which is disabled in `stage_requirements` until `policy/escalation.yaml` targets map to registry providers. Current binding: `qwen_local`. The registry previously named `claude_pro` primary with Qwen as fallback.
 
 ### 3. A3 synthesis keeps `deterministic_orchestrator` as owner
-The orchestrator owns synthesis; one model from `model_assistance` (Claude first, then Google) drafts it. `A4` validates the result deterministically.
+The orchestrator owns synthesis; one model from `model_assistance`, in the order the registry lists, drafts it. Current binding: Claude first, then Google. `A4` validates the result deterministically.
 
 ### 4. Retry budgets are consumed per graph edge
 `graph.yaml` consumes an edge's budget each time the edge is taken. A stage with several model invocations (A1, A2) still consumes one unit per entering edge. Per-invocation records exist only for provenance correlation.
@@ -33,7 +35,18 @@ The schema requires eight credential and billing-redirect environment variables 
 ### 8. Provenance events are hash-chained
 Every event carries `prev_hash` and `event_hash`. A new `model_result` event correlates with `model_call` through `operation_id` and `invocation_id`.
 
+### 9. Models are bound in the registry and nowhere else
+A role (agent, stage operation) is stable; the model that fills it is a registry entry. The registry names concrete models, and the ADRs, the graph, agent specifications and tests do not (the graph's `doc:` strings are descriptive only). Changing a binding is a registry change reviewed through CODEOWNERS; it must still pass `validate`, which re-checks decisions 10 and 11. Introducing a new provider or runtime still needs an adapter and its tests once; re-binding an existing provider does not.
+
+### 10. Independence is judged on model family, not provider id
+A provider is an access path; a model family (`claude`, `gemini`, `qwen3`, ...) is what must differ. Each model provider declares a `family`, or lists ordered `family_by_model_id` patterns that are matched against its pinned model id, so a provider that can serve several families (`agy` also offers Claude and GPT-OSS models) cannot be re-pointed at a family already in use without failing validation. Rule R14 requires distinct families for operations under session separation, and the A2 and A3R gates apply the same comparison to the recorded backends at run time. A family that cannot be resolved is an error (R17) and never counts as independent. Limit: some providers report no resolved model (the `agy` adapter records the requested model), so this check covers the model the registry requests, not the model the provider confirms it served.
+
+### 11. Data location is declared and fails closed
+Each provider declares `location: local | cloud` (rule R16 checks it against its access mode, and an unknown access mode is an error). Dispatch applies `policy/data_classes.yaml` to every provider whose location is not `local`, so a missing or unrecognised value is treated as cloud. Previously this was a set of access-mode names in code, and a mode outside that set was treated as local.
+
 ## Consequences
 
-- Validators in `src/agentic_pipeline/` must cross-check `stage_requirements` against the graph, the artifact catalog, workspace roots, and isolation profiles (follow-up PR).
+- Validators in `src/agentic_pipeline/` cross-check `stage_requirements` against the graph, the artifact catalog, workspace roots, isolation profiles, provider locations and model families (`registry.py`, R1–R17).
+- Not yet done, in later changes: a single binding point (a model catalog that roles reference, replacing the per-stage `backends` lists and `agents.*.primary`), per-model capability and context metadata, and recorded conformance results for each bound model. A setup command that proposes bindings would emit a diff for human review; it would not write `policy/`.
+- The `^claude-` and `^gpt-oss` patterns for `google_ai_pro` are unverified guesses about `agy`'s model ids, and only the `^gemini-` pattern matches the pinned id. An id that matches no pattern fails validation, so a wrong guess blocks rather than weakens independence; confirm the patterns against `agy models`.
 - All model stages stay blocked on hosts where a provider's agent is unavailable (executable missing or below the minimum version), a prohibited credential variable is set, or sandbox enforcement cannot be verified. The pipeline does not inspect login state, plan, or billing settings; those are the user's responsibility, and a call that fails on auth or quota is reported by the adapter at run time.

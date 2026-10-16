@@ -721,6 +721,35 @@ def test_a_critic_on_the_proposals_backend_is_a_self_critique(
         design.guard("A2")
 
 
+def _extra_provider(design: Design, name: str, **fields: Any) -> None:
+    design.runner.registry["providers"][name] = {
+        "access_mode": "subscription_tool",
+        "location": "cloud",
+        "api_billing_allowed": False,
+        **fields,
+    }
+
+
+def test_a_critic_on_another_provider_of_the_proposals_family_is_a_self_critique(
+    design: Design, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _extra_provider(design, "gemini_elsewhere", family="gemini")  # not proposal_b's provider id
+    monkeypatch.setitem(BACKENDS, "critique_b_by_a", "gemini_elsewhere")
+    a2_ready(design)
+    with pytest.raises(GateError, match="same backend or model family"):
+        design.guard("A2")
+
+
+def test_a_critic_whose_family_is_unknown_is_not_granted_independence(
+    design: Design, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _extra_provider(design, "mystery")  # no family declared
+    monkeypatch.setitem(BACKENDS, "critique_b_by_a", "mystery")
+    a2_ready(design)
+    with pytest.raises(GateError, match="no resolvable model family"):
+        design.guard("A2")
+
+
 def test_a_text_only_critique_blocks(design: Design) -> None:
     design.seal_valid()
     h = design.context_hash

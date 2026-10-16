@@ -66,8 +66,23 @@
       "minProperties": 1,
       "additionalProperties": {
         "type": "object",
-        "required": ["access_mode", "api_billing_allowed"],
-        "properties": {"access_mode": {"type": "string"}, "api_billing_allowed": {"const": false}},
+        "required": ["access_mode", "location", "api_billing_allowed"],
+        "properties": {
+          "access_mode": {"type": "string"},
+          "location": {"enum": ["local", "cloud"]},
+          "api_billing_allowed": {"const": false},
+          "family": {"$ref": "#/definitions/id"},
+          "family_by_model_id": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["pattern", "family"],
+              "properties": {"pattern": {"type": "string", "minLength": 1}, "family": {"$ref": "#/definitions/id"}},
+              "additionalProperties": false
+            }
+          }
+        },
         "additionalProperties": true,
         "allOf": [
           {

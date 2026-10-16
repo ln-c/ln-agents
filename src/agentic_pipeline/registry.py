@@ -15,12 +15,15 @@ R10  unsealed artifacts are readable only by the operation that produces them
 R11  an operation never reads output of another operation in the same stage
 R12  write roots are declared, unshared, distinct, and non-nested
 R13  isolation profiles are declared; artifact producers name real states/operations
-R14  isolated operations use distinct backends; no critic reviews its own agent's work
+R14  isolated operations use distinct model families; no critic reviews its own agent's work
 R15  an operation's output_schema names a schema that exists in schemas/
+R16  every provider declares where its traffic goes, and it matches its access mode
+R17  every model provider resolves to exactly one model family
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -29,6 +32,18 @@ from agentic_pipeline.graph import Graph
 from agentic_pipeline.schemas import ValidationError, validator
 
 MODEL_ACCESS_MODES = frozenset({"subscription_tool", "local_inference", "free_allowance_only"})
+# Where each provider access mode's traffic goes. A mode not listed is rejected (R16), and
+# dispatch treats anything that is not `local` as leaving the host.
+ACCESS_MODE_LOCATION: Mapping[str, str] = {
+    "subscription_tool": "cloud",
+    "free_allowance_only": "cloud",
+    "local_inference": "local",
+    "local_code": "local",
+    "local_or_ci_tools": "local",
+    "repository_runtime": "local",
+    "local_code_and_storage": "local",
+    "human_interface_and_repository_runtime": "local",
+}
 BACKEND_KEYS = frozenset(
     {
         "primary",
@@ -59,6 +74,27 @@ def resolve_agent(agents: Mapping[str, Any], dotted: str) -> Mapping[str, Any] |
             return None
         node = node[part]
     return node if isinstance(node, Mapping) else None
+
+
+def resolve_family(provider: Mapping[str, Any]) -> str | None:
+    """The model family a provider serves, or None when it cannot be determined.
+
+    A fixed `family` wins. Otherwise the provider's pinned model id is matched against the
+    ordered `family_by_model_id` patterns (`re.match`, so a pattern is anchored at the start);
+    the first match decides. A bad pattern, a missing model id or no match is None.
+    """
+    if "family" in provider:
+        return str(provider["family"])
+    model_id = provider.get("model_id") or (provider.get("readiness") or {}).get("model_id")
+    if not isinstance(model_id, str):
+        return None
+    for rule in provider.get("family_by_model_id") or ():
+        try:
+            if re.match(rule["pattern"], model_id):
+                return str(rule["family"])
+        except re.error:
+            return None
+    return None
 
 
 def operations(stage_reqs: Mapping[str, Any]) -> Iterator[tuple[str, Op]]:
@@ -115,6 +151,36 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
     stage_reqs = registry["stage_requirements"]
     ops = list(operations(stage_reqs))
     op_index = {f"{stage}.{op['id']}": op for stage, op in ops}
+
+    # R16/R17. Provider location and model family.
+    for name, provider in providers.items():
+        mode = provider["access_mode"]
+        expected = ACCESS_MODE_LOCATION.get(mode)
+        if expected is None:
+            errors.append(f"registry R16 providers.{name}: unknown access mode {mode!r}")
+        elif provider["location"] != expected:
+            errors.append(
+                f"registry R16 providers.{name}: access mode {mode!r} is {expected}, "
+                f"declared {provider['location']!r}"
+            )
+        if mode not in MODEL_ACCESS_MODES:
+            continue
+        if ("family" in provider) == ("family_by_model_id" in provider):
+            errors.append(
+                f"registry R17 providers.{name}: declare exactly one of family, family_by_model_id"
+            )
+        else:
+            bad = False
+            for rule in provider.get("family_by_model_id") or ():
+                try:
+                    re.compile(rule["pattern"])
+                except re.error as exc:
+                    bad = True
+                    errors.append(
+                        f"registry R17 providers.{name}: bad pattern {rule['pattern']!r}: {exc}"
+                    )
+            if not bad and resolve_family(provider) is None:
+                errors.append(f"registry R17 providers.{name}: model id matches no family pattern")
 
     # R2. Repo paths exist and do not escape the root.
     repo = root.resolve()
@@ -226,7 +292,8 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
                     f"registry R15 {stage}.{op['id']}: output_schema {name!r} has no schema file"
                 )
 
-    # R14. Independence: distinct backends under session separation; no self-critique.
+    # R14. Independence: distinct model families under session separation; no self-critique.
+    # A family that cannot be resolved is R17's error, not a second one here.
     for stage, spec in stage_reqs.items():
         if spec["mode"] != "all_of":
             continue
@@ -235,12 +302,15 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
             if "session_separation" not in profiles.get(op["isolation_profile"], ()):
                 continue
             for backend in op_backends(registry, stage, op):
-                if backend in seen:
+                family = resolve_family(providers.get(backend, {}))
+                if family is None:
+                    continue
+                if family in seen:
                     errors.append(
-                        f"registry R14 {stage}.{op['id']}: shares backend {backend!r} "
-                        f"with {stage}.{seen[backend]}"
+                        f"registry R14 {stage}.{op['id']}: backend {backend!r} shares "
+                        f"model family {family!r} with {stage}.{seen[family]}"
                     )
-                seen.setdefault(backend, op["id"])
+                seen.setdefault(family, op["id"])
     for stage, op in ops:
         target = op.get("target_artifact")
         for producer in artifacts.get(target, {}).get("producer", ()) if target else ():

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -395,6 +396,34 @@ def test_cloud_backend_blocked_for_non_cloud_data(
     with pytest.raises(DispatchBlocked, match=f"data class '{expected}' may not be sent"):
         d.dispatch_stage("G4", "always", "A1", {})
     assert events(d) == [] and d.ledger.reserved == {} and adapters["claude_pro"].grants == []
+
+
+def test_a_provider_declared_cloud_is_blocked_whatever_its_access_mode(
+    tmp_path: Path, adapters: dict
+) -> None:
+    registry = copy.deepcopy(REGISTRY)
+    registry["providers"]["qwen_local"]["access_mode"] = "a_new_mode"
+    registry["providers"]["qwen_local"]["location"] = "cloud"
+    d = make(tmp_path, adapters, data_class="confidential")
+    d.registry = registry
+    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen_local"):
+        d.dispatch_stage("E0", "always", "E1", {})
+    assert adapters["qwen_local"].grants == []
+
+
+@pytest.mark.parametrize("location", [None, "elsewhere"])
+def test_a_provider_without_a_declared_local_location_is_treated_as_cloud(
+    tmp_path: Path, adapters: dict, location: str | None
+) -> None:
+    registry = copy.deepcopy(REGISTRY)
+    if location is None:
+        del registry["providers"]["qwen_local"]["location"]
+    else:
+        registry["providers"]["qwen_local"]["location"] = location
+    d = make(tmp_path, adapters, data_class="confidential")
+    d.registry = registry
+    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen_local"):
+        d.dispatch_stage("E0", "always", "E1", {})
 
 
 def test_local_backend_accepts_confidential_data(tmp_path: Path, adapters: dict) -> None:
