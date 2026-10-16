@@ -2,8 +2,8 @@
 
 PiQwenAdapter runs the Pi coding agent inside the bwrap sandbox (sandbox.py).
 Pi's only model is a `broker` provider pointing at the in-sandbox shim, which
-relays to the host-side InferenceBroker, which alone talks to Ollama. Pi runs
-offline, ignores project-local config in its inputs, saves no session, loads
+relays to the host-side InferenceBroker, which alone talks to the local server (Ollama or an
+OpenVINO Model Server). Pi runs offline, ignores project-local config in its inputs, saves no session, loads
 no extensions/skills/MCP, and gets file tools only (no shell).
 
 ClaudeAdapter runs `claude -p` text-only inside bwrap with the host network
