@@ -69,6 +69,20 @@ def ollama_upstream(host: str, port: int, timeout: float) -> Upstream:
     return call
 
 
+def ovms_upstream(host: str, port: int, timeout: float) -> Upstream:
+    """Forward to an OpenVINO Model Server on loopback.
+
+    The sandbox's shim speaks `/v1/...` and the broker's allowed paths stay `/v1/...`; OVMS
+    serves its OpenAI-compatible API under `/v3`, so the path is rewritten here, on the host.
+    """
+    forward = ollama_upstream(host, port, timeout)
+
+    def call(path: str, body: bytes) -> tuple[int, Mapping[str, str], Iterator[bytes]]:
+        return forward("/v3/" + path.removeprefix("/v1/"), body)
+
+    return call
+
+
 class InferenceBroker:
     def __init__(self, policy: BrokerPolicy, upstream: Upstream) -> None:
         self.policy = policy

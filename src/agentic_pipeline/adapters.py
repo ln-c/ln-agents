@@ -28,10 +28,21 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agentic_pipeline.broker import BrokerPolicy, InferenceBroker, Upstream, ollama_upstream
+from agentic_pipeline.broker import (
+    BrokerPolicy,
+    InferenceBroker,
+    Upstream,
+    ollama_upstream,
+    ovms_upstream,
+)
 from agentic_pipeline.design_tasks import extract_json_object, json_task
 from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, PreparedCall
-from agentic_pipeline.readiness import Host, ollama_model_digest, resolve_executable
+from agentic_pipeline.readiness import (
+    Host,
+    ollama_model_digest,
+    ovms_model_version,
+    resolve_executable,
+)
 from agentic_pipeline.sandbox import (
     HOME,
     INPUTS,
@@ -140,14 +151,20 @@ class PiQwenAdapter:
     def from_registry(
         cls, registry: Mapping[str, Any], backend: str, **overrides: Any
     ) -> PiQwenAdapter:
-        """Build for a catalog model on an Ollama provider, resolving Pi and the model digest."""
+        """Build for a model on a local server (Ollama or OVMS), resolving Pi and the model."""
         model = registry["models"][backend]
         spec = registry["providers"][model["provider"]]["readiness"]
+        if spec["protocol"] == "ovms":
+            version = ovms_model_version(spec, model["model_id"])
+            upstream = ovms_upstream(spec["host"], spec["port"], timeout=600.0)
+        else:
+            version = ollama_model_digest(spec, model["model_id"])
+            upstream = ollama_upstream(spec["host"], spec["port"], timeout=600.0)
         return cls(
             pi_package=overrides.pop("pi_package", None) or find_pi_package(),
             model_id=model["model_id"],
-            model_version=ollama_model_digest(spec, model["model_id"]),
-            upstream=ollama_upstream(spec["host"], spec["port"], timeout=600.0),
+            model_version=version,
+            upstream=upstream,
             **overrides,
         )
 

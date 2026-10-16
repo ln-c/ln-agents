@@ -76,6 +76,22 @@ providers:
       host: 127.0.0.1
       port: 11434
       timeout_seconds: 1.0
+  # OpenVINO Model Server on loopback (Intel CPU/GPU/NPU). It serves an OpenAI-compatible API
+  # under /v3, which the broker reaches by rewriting the sandbox's /v1 path on the host. OVMS
+  # reports no build digest, so a model's provenance records "no build digest reported".
+  openvino_local:
+    access_mode: local_inference
+    location: local
+    family_patterns:
+      - {pattern: '^OpenVINO/Qwen3-', family: qwen3}
+      - {pattern: '^meossistant/clef-flash', family: clef}
+    network_required: false
+    api_billing_allowed: false
+    readiness:
+      protocol: ovms
+      host: 127.0.0.1
+      port: 8000
+      timeout_seconds: 1.0
   clef_flash_free:
     access_mode: free_allowance_only
     location: cloud
@@ -129,6 +145,13 @@ models:
     alias: Clef-flash
     family: clef
     capabilities: [classification]
+  # Served by OpenVINO Model Server under the Hugging Face repo name (the models in the local
+  # Hugging Face cache). No capabilities are claimed yet: `models test` needs a bound role to
+  # derive its checks from, so claim some, or bind one, before testing it.
+  openvino_qwen3_8b_int4_cw: {provider: openvino_local, model_id: "OpenVINO/Qwen3-8B-int4-cw-ov", alias: "Qwen3 8B int4 (channel-wise, OpenVINO)", family: qwen3, capabilities: []}
+  openvino_qwen3_1_7b_int4: {provider: openvino_local, model_id: "OpenVINO/Qwen3-1.7B-int4-ov", alias: "Qwen3 1.7B int4 (OpenVINO)", family: qwen3, capabilities: []}
+  openvino_qwen3_0_6b_int4: {provider: openvino_local, model_id: "OpenVINO/Qwen3-0.6B-int4-ov", alias: "Qwen3 0.6B int4 (OpenVINO)", family: qwen3, capabilities: []}
+  openvino_clef_flash: {provider: openvino_local, model_id: "meossistant/clef-flash-openvino", alias: "Clef-flash (OpenVINO)", family: clef, capabilities: []}
   # Everything `agy models` offered when this catalog was written (13 ids). Only the pinned
   # Gemini 3.8 Flash (High) has claimed capabilities; the rest are known, unclaimed, unbindable.
   gemini_4_argon_medium: {provider: google_ai_pro, model_id: gemini-4-argon-medium, alias: "Gemini 4 Argon (Medium)", family: gemini, capabilities: []}

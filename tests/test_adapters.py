@@ -616,3 +616,41 @@ def test_every_adapter_reports_the_identity_it_prepares_with(tmp_path: Path) -> 
             identity.model_version,
             identity.access_method,
         )
+
+
+def test_pi_adapter_builds_for_an_openvino_model_through_the_v3_upstream(tmp_path: Path) -> None:
+    """Built from the catalog against a stand-in OVMS; Pi itself is a stub package."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    model = "OpenVINO/Qwen3-8B-int4-cw-ov"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"data": [{"id": model}]}).encode())
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        registry = load_yaml(ROOT / "policy" / "model_registry.yaml")
+        registry["providers"]["openvino_local"]["readiness"]["port"] = server.server_address[1]
+        built = PiQwenAdapter.from_registry(
+            registry, "openvino_qwen3_8b_int4_cw", pi_package=fake_package(tmp_path)
+        )
+        identity = built.identity()
+        assert identity.model == model
+        assert identity.model_version == f"{model}@ovms (no build digest reported)"
+        assert "local_inference via pi 9.9.9" in identity.access_method
+        registry["models"]["openvino_qwen3_8b_int4_cw"]["model_id"] = "OpenVINO/not-served"
+        with pytest.raises(LookupError, match="not served"):
+            PiQwenAdapter.from_registry(
+                registry, "openvino_qwen3_8b_int4_cw", pi_package=fake_package(tmp_path / "b")
+            )
+    finally:
+        server.shutdown()
+        server.server_close()

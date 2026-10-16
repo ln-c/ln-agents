@@ -114,7 +114,7 @@
                   "type": "object",
                   "required": ["protocol", "host", "port", "timeout_seconds"],
                   "properties": {
-                    "protocol": {"enum": ["ollama"]},
+                    "protocol": {"enum": ["ollama", "ovms"]},
                     "host": {"enum": ["127.0.0.1", "::1"]},
                     "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                     "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 30}

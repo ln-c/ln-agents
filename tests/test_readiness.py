@@ -25,11 +25,13 @@ from agentic_pipeline.readiness import (
     Report,
     Status,
     evaluate_stage,
+    ovms_model_version,
     parse_sandbox_probe,
     probe_credential_env,
     probe_executable,
     probe_listeners,
     probe_ollama,
+    probe_ovms,
     probe_sandbox,
     run_preflight,
 )
@@ -167,6 +169,92 @@ def test_probe_ollama_stopped() -> None:
     provider, models = probe_ollama({**QWEN, "port": port}, {"qwen3_8b": "qwen3:8b"})
     assert [c.status for c in provider] == [Status.FAILED]
     assert [c.status for c in models.values()] == [Status.UNVERIFIED]
+
+
+# ── OpenVINO Model Server endpoint ───────────────────────────────────────────
+
+OPENVINO = REGISTRY["providers"]["openvino_local"]["readiness"]
+OV_MODEL = "OpenVINO/Qwen3-8B-int4-cw-ov"
+
+
+@pytest.fixture
+def ovms() -> Iterator[dict[str, Any]]:
+    state: dict[str, Any] = {"ready": 200, "models": (200, b'{"data": []}')}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            if self.path == "/v2/health/ready":
+                self.send_response(state["ready"])
+                self.end_headers()
+            elif self.path == "/v3/models":
+                code, body = state["models"]
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    state["spec"] = {**OPENVINO, "port": server.server_address[1]}
+    yield state
+    server.shutdown()
+    server.server_close()
+
+
+def _served(*names: str) -> tuple[int, bytes]:
+    return 200, json.dumps({"object": "list", "data": [{"id": n} for n in names]}).encode()
+
+
+def test_probe_ovms_reports_each_model_separately(ovms: dict[str, Any]) -> None:
+    ovms["models"] = _served(OV_MODEL)
+    provider, models = probe_ovms(ovms["spec"], {"a": OV_MODEL, "b": "OpenVINO/other"})
+    assert [c.status for c in provider] == [Status.VERIFIED]
+    assert {m: c.status for m, c in models.items()} == {"a": Status.VERIFIED, "b": Status.FAILED}
+
+
+@pytest.mark.parametrize(
+    ("ready", "models", "daemon", "inventory"),
+    [
+        (503, _served(OV_MODEL), Status.FAILED, Status.UNVERIFIED),
+        (200, (500, b""), Status.VERIFIED, Status.UNVERIFIED),
+        (200, (200, b"<html>"), Status.VERIFIED, Status.FAILED),
+        (200, (200, b'{"data": [{"name": "x"}]}'), Status.VERIFIED, Status.FAILED),
+    ],
+    ids=["not-ready", "models-error", "malformed", "wrong-shape"],
+)
+def test_probe_ovms_fails_closed(
+    ovms: dict[str, Any], ready: int, models: tuple[int, bytes], daemon: Status, inventory: Status
+) -> None:
+    ovms.update(ready=ready, models=models)
+    provider, per_model = probe_ovms(ovms["spec"], {"a": OV_MODEL})
+    assert [c.status for c in provider] == [daemon]
+    assert per_model["a"].status is inventory
+
+
+def test_probe_ovms_stopped() -> None:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    provider, models = probe_ovms({**OPENVINO, "port": port}, {"a": OV_MODEL})
+    assert [c.status for c in provider] == [Status.FAILED]
+    assert models["a"].status is Status.UNVERIFIED
+
+
+def test_ovms_model_version_requires_the_model_to_be_served(ovms: dict[str, Any]) -> None:
+    ovms["models"] = _served(OV_MODEL)
+    assert (
+        ovms_model_version(ovms["spec"], OV_MODEL) == f"{OV_MODEL}@ovms (no build digest reported)"
+    )
+    with pytest.raises(LookupError, match="not served"):
+        ovms_model_version(ovms["spec"], "OpenVINO/other")
+    ovms["models"] = (500, b"")
+    with pytest.raises(LookupError, match="HTTP 500"):
+        ovms_model_version(ovms["spec"], OV_MODEL)
 
 
 # ── Listener binding (/proc/net/tcp, /proc/net/tcp6) ─────────────────────────

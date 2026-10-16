@@ -8,11 +8,12 @@ import os
 import struct
 import threading
 from collections.abc import Iterator, Mapping
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import pytest
 
-from agentic_pipeline.broker import BrokerPolicy, InferenceBroker
+from agentic_pipeline.broker import BrokerPolicy, InferenceBroker, ovms_upstream
 from agentic_pipeline.sandbox_entry import MAX_FRAME_BYTES, read_frame, write_frame
 
 MODEL = "qwen3:8b"
@@ -150,3 +151,36 @@ def test_oversized_response_truncated_and_recorded() -> None:
     status, body = exchange(broker, [request()])[0]
     assert status == 200 and body == b"0123456"
     assert any("response exceeded" in r for r in broker.stats.rejected)
+
+
+def test_ovms_upstream_rewrites_the_path_to_v3_on_the_host() -> None:
+    seen: list[tuple[str, bytes]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - http.server API
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            seen.append((self.path, body))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        upstream = ovms_upstream("127.0.0.1", server.server_address[1], timeout=5.0)
+        status, headers, chunks = upstream("/v1/chat/completions", b'{"model": "m"}')
+        assert status == 200 and b"".join(chunks) == b'{"ok": true}'
+        assert headers == {"Content-Type": "application/json"}
+        assert seen == [("/v3/chat/completions", b'{"model": "m"}')]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_broker_still_allows_only_the_v1_chat_path_for_ovms() -> None:
+    """The rewrite happens after validation: a worker cannot name a /v3 path itself."""
+    assert BrokerPolicy("m").allowed_paths == frozenset({"/v1/chat/completions"})

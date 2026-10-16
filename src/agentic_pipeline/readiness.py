@@ -140,14 +140,18 @@ def probe_executable(spec: Mapping[str, Any], host: Host) -> Check:
     return Check("executable", Status.VERIFIED, f"{spec['executable']} {version} at {path}")
 
 
-def _ollama_tags(spec: Mapping[str, Any]) -> tuple[int, bytes]:
+def _local_get(spec: Mapping[str, Any], path: str) -> tuple[int, bytes]:
     conn = http.client.HTTPConnection(spec["host"], spec["port"], timeout=spec["timeout_seconds"])
     try:
-        conn.request("GET", "/api/tags")
+        conn.request("GET", path)
         resp = conn.getresponse()
         return resp.status, resp.read()
     finally:
         conn.close()
+
+
+def _ollama_tags(spec: Mapping[str, Any]) -> tuple[int, bytes]:
+    return _local_get(spec, "/api/tags")
 
 
 def _tagged_models(body: bytes) -> dict[str, str]:
@@ -188,6 +192,71 @@ def probe_ollama(
         )
         for name, tag in model_ids.items()
     }
+
+
+OVMS_READY = "/v2/health/ready"  # KServe health endpoint
+OVMS_MODELS = "/v3/models"  # OpenAI-compatible model list
+
+
+def _ovms_models(body: bytes) -> set[str]:
+    """Served model names from an OpenAI-style /v3/models body; raises on malformed input."""
+    return {str(m["id"]) for m in json.loads(body)["data"]}
+
+
+def probe_ovms(
+    spec: Mapping[str, Any], model_ids: Mapping[str, str]
+) -> tuple[list[Check], dict[str, Check]]:
+    """(provider checks, per-model inventory checks keyed by catalog id) for an OpenVINO server.
+
+    `model_ids` maps each catalog model id served by this provider to the name OVMS serves it
+    under. The endpoints follow the OVMS documentation and have not been exercised against a
+    live server here; any answer that does not match is a failed or unverified check.
+    """
+    host, port = spec["host"], spec["port"]
+
+    def all_models(status: Status, detail: str) -> dict[str, Check]:
+        return {name: Check("model_inventory", status, detail) for name in model_ids}
+
+    try:
+        status, _ = _local_get(spec, OVMS_READY)
+    except OSError as exc:
+        daemon = Check("daemon", Status.FAILED, f"{host}:{port} unreachable: {exc}")
+        return [daemon], all_models(Status.UNVERIFIED, "server unreachable")
+    if status != 200:
+        daemon = Check("daemon", Status.FAILED, f"GET {OVMS_READY} returned HTTP {status}")
+        return [daemon], all_models(Status.UNVERIFIED, "server not ready")
+    daemon = Check("daemon", Status.VERIFIED, f"ovms ready on {host}:{port}")
+    try:
+        status, body = _local_get(spec, OVMS_MODELS)
+        if status != 200:
+            return [daemon], all_models(Status.UNVERIFIED, f"GET {OVMS_MODELS} returned {status}")
+        served = _ovms_models(body)
+    except OSError as exc:
+        return [daemon], all_models(Status.UNVERIFIED, f"GET {OVMS_MODELS} failed: {exc}")
+    except (ValueError, KeyError, TypeError):
+        return [daemon], all_models(Status.FAILED, f"malformed {OVMS_MODELS} response")
+    return [daemon], {
+        name: (
+            Check("model_inventory", Status.VERIFIED, f"{served_as} served")
+            if served_as in served
+            else Check("model_inventory", Status.FAILED, f"{served_as} not served")
+        )
+        for name, served_as in model_ids.items()
+    }
+
+
+def ovms_model_version(spec: Mapping[str, Any], model_id: str) -> str:
+    """Provenance string for a served model; OVMS reports no build digest, so none is pinned."""
+    status, body = _local_get(spec, OVMS_MODELS)
+    if status != 200:
+        raise LookupError(f"GET {OVMS_MODELS} returned HTTP {status}")
+    try:
+        served = _ovms_models(body)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LookupError(f"malformed {OVMS_MODELS} response") from exc
+    if model_id not in served:
+        raise LookupError(f"{model_id} is not served")
+    return f"{model_id}@ovms (no build digest reported)"
 
 
 def ollama_model_digest(spec: Mapping[str, Any], model_id: str) -> str:
@@ -403,7 +472,8 @@ def run_preflight(
             tags = {
                 m: v["model_id"] for m, v in registry["models"].items() if v["provider"] == name
             }
-            daemon, inventory = probe_ollama(spec, tags)
+            probe = probe_ovms if spec["protocol"] == "ovms" else probe_ollama
+            daemon, inventory = probe(spec, tags)
             report.providers[name] = [*daemon, probe_listeners(spec["port"], host.proc_root)]
             for model, check in inventory.items():
                 report.models[model] = [check]

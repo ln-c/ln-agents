@@ -187,6 +187,10 @@ def _provider_without_patterns(r: Registry) -> None:
     del r["providers"]["clef_flash_free"]["family_patterns"]
 
 
+def _openvino_qwen_declared_clef(r: Registry) -> None:
+    r["models"]["openvino_qwen3_8b_int4_cw"]["family"] = "clef"
+
+
 def _binds_a_provider(r: Registry) -> None:
     r["agents"]["build"]["primary"] = "qwen_local"
 
@@ -405,7 +409,9 @@ def test_every_model_agy_lists_matches_its_family_pattern(model_id: str, family:
 
 def test_known_but_unclaimed_models_cannot_be_bound() -> None:
     unclaimed = [m for m, v in REGISTRY["models"].items() if not v["capabilities"]]
-    assert len(unclaimed) == 12  # every agy model but the pinned one
+    agy = [m for m, v in REGISTRY["models"].items() if v["provider"] == "google_ai_pro"]
+    openvino = [m for m, v in REGISTRY["models"].items() if v["provider"] == "openvino_local"]
+    assert sorted(unclaimed) == sorted([*(set(agy) - {GEMINI}), *openvino])
     for model in unclaimed:
         registry = copy.deepcopy(REGISTRY)
         registry["agents"]["design"]["proposal_b"]["primary"] = model
