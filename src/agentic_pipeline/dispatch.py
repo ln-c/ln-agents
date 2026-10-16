@@ -93,6 +93,15 @@ class DispatchGrant:
 
 
 @dataclass(frozen=True, slots=True)
+class Identity:
+    """What an adapter runs: the same three fields every `model_call` event records."""
+
+    model: str
+    model_version: str
+    access_method: str
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedCall:
     model: str
     model_version: str
@@ -128,6 +137,10 @@ class ExplainsUnavailable(Protocol):
 class BackendAdapter(Protocol):
     # Isolation checks (registry isolation_profiles vocabulary) this adapter enforces.
     enforced_isolation: frozenset[str]
+
+    def identity(self) -> Identity:
+        """The model and access path `prepare` reports, without building a prompt."""
+        ...
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         """Resolve model/version and build the prompt. Must not call out."""
