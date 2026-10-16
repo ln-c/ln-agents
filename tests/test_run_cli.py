@@ -13,7 +13,10 @@ import pytest
 
 from agentic_pipeline import run_cli
 from agentic_pipeline.cli import main
+from agentic_pipeline.graph import REPO_ROOT, load_yaml
 from agentic_pipeline.run_state import PauseCause, RunStore, Status
+
+REGISTRY = load_yaml(REPO_ROOT / "policy" / "model_registry.yaml")
 
 
 def run(*args: str, runs_dir: Path) -> int:
@@ -138,25 +141,30 @@ def test_status_previews_recovery(tmp_path: Path, capsys: pytest.CaptureFixture[
 def test_adapter_build_failures_are_explained(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentic_pipeline import adapters
 
-    def no_creds(registry: object) -> object:
+    def no_creds(registry: object, backend: str) -> object:
         raise LookupError("credentials.json not found")
 
-    def no_ollama(registry: object) -> object:
+    def no_ollama(registry: object, backend: str) -> object:
         raise OSError("connection refused")
 
     monkeypatch.setattr(adapters.ClaudeAdapter, "from_registry", staticmethod(no_creds))
 
-    def no_token(registry: object) -> object:
+    def no_token(registry: object, backend: str) -> object:
         raise LookupError("antigravity-oauth-token not found")
 
     monkeypatch.setattr(adapters.PiQwenAdapter, "from_registry", staticmethod(no_ollama))
     monkeypatch.setattr(adapters.AgyAdapter, "from_registry", staticmethod(no_token))
-    lazy = run_cli.LazyAdapters({})
-    assert "claude_pro" not in lazy and "qwen_local" not in lazy and "google_ai_pro" not in lazy
-    assert lazy.unavailable("claude_pro") == "LookupError: credentials.json not found"
-    assert lazy.unavailable("qwen_local") == "OSError: connection refused"
-    assert lazy.unavailable("google_ai_pro") == "LookupError: antigravity-oauth-token not found"
-    assert lazy.unavailable("clef_flash_free") is None  # no adapter exists for it at all
+    lazy = run_cli.LazyAdapters(REGISTRY)
+    models = ("claude_cli_default", "qwen3_8b", "gemini_3_8_flash_high")
+    assert all(m not in lazy for m in models)
+    assert lazy.unavailable("claude_cli_default") == "LookupError: credentials.json not found"
+    assert lazy.unavailable("qwen3_8b") == "OSError: connection refused"
+    assert (
+        lazy.unavailable("gemini_3_8_flash_high")
+        == "LookupError: antigravity-oauth-token not found"
+    )
+    assert lazy.unavailable("clef_flash") is None  # no adapter exists for it at all
+    assert lazy.unavailable("not_a_model") is None
 
 
 def test_resume_refuses_a_crash_it_just_discovered(
@@ -235,14 +243,14 @@ def test_confirmation_treats_end_of_input_as_no(monkeypatch: pytest.MonkeyPatch)
 def test_unexpected_adapter_errors_are_explained(monkeypatch: pytest.MonkeyPatch) -> None:
     from agentic_pipeline import adapters
 
-    def broken(registry: object) -> object:
+    def broken(registry: object, backend: str) -> object:
         raise TypeError("missing field 'readiness'")
 
     monkeypatch.setattr(adapters.ClaudeAdapter, "from_registry", staticmethod(broken))
     monkeypatch.setattr(adapters.PiQwenAdapter, "from_registry", staticmethod(broken))
-    lazy = run_cli.LazyAdapters({})
-    assert "claude_pro" not in lazy and "qwen_local" not in lazy
-    assert lazy.unavailable("claude_pro") == "TypeError: missing field 'readiness'"
+    lazy = run_cli.LazyAdapters(REGISTRY)
+    assert "claude_cli_default" not in lazy and "qwen3_8b" not in lazy
+    assert lazy.unavailable("claude_cli_default") == "TypeError: missing field 'readiness'"
 
 
 def test_dispatcher_readiness_uses_the_frozen_registry(
@@ -363,8 +371,8 @@ def test_only_the_needed_adapter_is_built(monkeypatch: pytest.MonkeyPatch) -> No
     built: list[str] = []
 
     def factory(name: str) -> object:
-        def make(registry: object) -> object:
-            built.append(name)
+        def make(registry: object, backend: str) -> object:
+            built.append(backend)
             return object()
 
         return make
@@ -374,9 +382,9 @@ def test_only_the_needed_adapter_is_built(monkeypatch: pytest.MonkeyPatch) -> No
         "_adapter_factories",
         lambda: {"qwen_local": factory("qwen_local"), "claude_pro": factory("claude_pro")},
     )
-    lazy = run_cli.LazyAdapters({})
-    assert "qwen_local" in lazy and lazy["qwen_local"] is not None
-    assert built == ["qwen_local"]  # the Claude adapter (and its auth probe) never ran
+    lazy = run_cli.LazyAdapters(REGISTRY)
+    assert "qwen3_8b" in lazy and lazy["qwen3_8b"] is not None
+    assert built == ["qwen3_8b"]  # the Claude adapter (and its auth probe) never ran
 
 
 @pytest.mark.parametrize("value", ["0", "-3"])

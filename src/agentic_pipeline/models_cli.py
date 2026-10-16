@@ -1,9 +1,9 @@
 """`python -m agentic_pipeline models {discover,test}`: what is bound, and does it conform.
 
 `discover` is read-only: it never calls a model. `test` makes real model calls through the
-provider's adapter, outside any run, so it spends the provider's subscription allowance (not
+model's adapter, outside any run, so it spends the provider's subscription allowance (not
 pipeline budget) and applies the dispatcher's own pre-call gates first: the credential
-denylist, the provider's readiness checks, and the isolation checks its operations need.
+denylist, the model's readiness checks, and the isolation checks its operations need.
 """
 
 from __future__ import annotations
@@ -27,18 +27,18 @@ from agentic_pipeline.conformance import (
 from agentic_pipeline.dispatch import DISPATCHER_ENFORCED, BackendAdapter, Identity
 from agentic_pipeline.graph import REPO_ROOT, load_yaml
 from agentic_pipeline.readiness import Report, Status, run_preflight
-from agentic_pipeline.registry import MODEL_ACCESS_MODES, resolve_family
+from agentic_pipeline.registry import backend_location
 
 PROFILES_FILE = Path("policy") / "model_test_profiles.yaml"
 
 
-def _default_adapter(registry: Mapping[str, Any], provider: str) -> BackendAdapter:
+def _default_adapter(registry: Mapping[str, Any], model: str) -> BackendAdapter:
     from agentic_pipeline.run_cli import LazyAdapters  # imports the real adapters lazily
 
     adapters = LazyAdapters(registry)
-    if (why := adapters.unavailable(provider)) is not None:
+    if (why := adapters.unavailable(model)) is not None:
         raise LookupError(why)
-    return adapters[provider]
+    return adapters[model]
 
 
 @dataclass(slots=True)
@@ -57,13 +57,9 @@ def _load(root: Path) -> tuple[Mapping[str, Any], Mapping[str, Any], str]:
     return registry, profiles, "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-def _model_providers(registry: Mapping[str, Any]) -> list[str]:
-    return [n for n, p in registry["providers"].items() if p["access_mode"] in MODEL_ACCESS_MODES]
-
-
-def _identity(deps: Deps, registry: Mapping[str, Any], provider: str) -> Identity | None:
+def _identity(deps: Deps, registry: Mapping[str, Any], model: str) -> Identity | None:
     try:
-        return deps.make_adapter(registry, provider).identity()
+        return deps.make_adapter(registry, model).identity()
     except Exception:  # an adapter that cannot be built has no identity to compare
         return None
 
@@ -75,19 +71,21 @@ def discover(root: Path, deps: Deps) -> int:
     if report.static_errors:
         return 1
     registry, profiles, profiles_digest = _load(root)
-    for name in _model_providers(registry):
-        provider = registry["providers"][name]
+    for name, entry in registry["models"].items():
         bound = bound_operations(registry, name)
-        blockers = report.provider_blockers(name)
-        print(f"{name}")
-        print(f"  family:       {resolve_family(provider) or 'UNRESOLVED'}")
-        print(f"  location:     {provider['location']}")
-        print(f"  capabilities: {', '.join(provider.get('capabilities') or []) or '-'}")
-        print(f"  bound to:     {', '.join(f'{s}.{o}' for s, o in bound) or '(no operation)'}")
-        print(f"  readiness:    {'ready' if not blockers else '; '.join(blockers)}")
+        caps = ", ".join(entry["capabilities"]) or "(none claimed)"
         if not bound:
-            print("  conformance:  not required (not bound)")
+            note = "known, bindable" if entry["capabilities"] else "known, unclaimed"
+            print(f"{name}  [{entry['provider']}:{entry['model_id']}, {entry['family']}] {note}")
             continue
+        blockers = report.backend_blockers(name)
+        print(f"{name}")
+        print(f"  model:        {entry['provider']}:{entry['model_id']}")
+        print(f"  family:       {entry['family']}")
+        print(f"  location:     {backend_location(registry, name)}")
+        print(f"  capabilities: {caps}")
+        print(f"  bound to:     {', '.join(f'{s}.{o}' for s, o in bound)}")
+        print(f"  readiness:    {'ready' if not blockers else '; '.join(blockers)}")
         status, detail = conformance_status(
             root, registry, profiles, profiles_digest, name, _identity(deps, registry, name)
         )
@@ -95,10 +93,10 @@ def discover(root: Path, deps: Deps) -> int:
     return 0
 
 
-def _needed_isolation(registry: Mapping[str, Any], provider: str) -> set[str]:
-    """Isolation checks required by the operations this provider is bound to."""
+def _needed_isolation(registry: Mapping[str, Any], model: str) -> set[str]:
+    """Isolation checks required by the operations this model is bound to."""
     needed: set[str] = set()
-    for stage, op_id in bound_operations(registry, provider):
+    for stage, op_id in bound_operations(registry, model):
         op = next(
             o for o in registry["stage_requirements"][stage]["operations"] if o["id"] == op_id
         )
@@ -106,15 +104,15 @@ def _needed_isolation(registry: Mapping[str, Any], provider: str) -> set[str]:
     return needed
 
 
-def _refusals(report: Report, registry: Mapping[str, Any], provider: str) -> list[str]:
+def _refusals(report: Report, registry: Mapping[str, Any], model: str) -> list[str]:
     """Why a conformance call may not be made now (the dispatcher's pre-call gates)."""
     reasons = [
         f"{c.name} {c.status}: {c.detail}"
         for c in report.global_checks
         if c.status is not Status.VERIFIED
     ]
-    reasons += report.provider_blockers(name=provider)
-    for check in sorted(_needed_isolation(registry, provider)):
+    reasons += report.backend_blockers(model)
+    for check in sorted(_needed_isolation(registry, model)):
         found = report.isolation.get(check)
         if found is None:
             reasons.append(f"isolation {check} not reported")
@@ -123,38 +121,38 @@ def _refusals(report: Report, registry: Mapping[str, Any], provider: str) -> lis
     return list(dict.fromkeys(reasons))
 
 
-def test(root: Path, provider: str, deps: Deps) -> int:
+def test(root: Path, model: str, deps: Deps) -> int:
     report = deps.preflight(root)
     for err in report.static_errors:
         print(f"ERROR: {err}", file=sys.stderr)
     if report.static_errors:
         return 1
     registry, profiles, profiles_digest = _load(root)
-    if provider not in _model_providers(registry):
-        print(f"ERROR: {provider!r} is not a model provider", file=sys.stderr)
+    if model not in registry["models"]:
+        print(f"ERROR: {model!r} is not a model in the catalog", file=sys.stderr)
         return 1
-    checks = required_checks(registry, profiles, provider)
+    checks = required_checks(registry, profiles, model)
     if not checks:
-        print(f"ERROR: {provider} is not bound to any operation; nothing to test", file=sys.stderr)
+        print(f"ERROR: {model} is not bound to any operation; nothing to test", file=sys.stderr)
         return 1
-    if reasons := _refusals(report, registry, provider):
-        print(f"{provider}: not testing; the dispatcher would refuse it too:", file=sys.stderr)
+    if reasons := _refusals(report, registry, model):
+        print(f"{model}: not testing; the dispatcher would refuse it too:", file=sys.stderr)
         for reason in reasons:
             print(f"  - {reason}", file=sys.stderr)
         return 1
     try:
-        adapter = deps.make_adapter(registry, provider)
+        adapter = deps.make_adapter(registry, model)
     except Exception as exc:
-        print(f"ERROR: no adapter for {provider}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"ERROR: no adapter for {model}: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    needed = _needed_isolation(registry, provider) - DISPATCHER_ENFORCED
+    needed = _needed_isolation(registry, model) - DISPATCHER_ENFORCED
     if gaps := sorted(needed - set(adapter.enforced_isolation)):
-        print(f"ERROR: the {provider} adapter does not enforce {gaps}", file=sys.stderr)
+        print(f"ERROR: the {model} adapter does not enforce {gaps}", file=sys.stderr)
         return 1
-    print(f"{provider}: running {', '.join(checks)} (live calls use its subscription allowance)")
+    print(f"{model}: running {', '.join(checks)} (live calls use its subscription allowance)")
     with tempfile.TemporaryDirectory(prefix="agentic-conformance-") as work:
         record = run_conformance(
-            provider, adapter, registry, profiles, profiles_digest, Path(work), **deps.run_kwargs
+            model, adapter, registry, profiles, profiles_digest, Path(work), **deps.run_kwargs
         )
     path, digest = write_record(root, record)
     for check in record["checks"]:
@@ -167,13 +165,13 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
     models = sub.add_parser("models", help="inspect and conformance-test bound models")
     commands = models.add_subparsers(dest="models_command", required=True)
     for name, text in (
-        ("discover", "read-only: bindings, readiness and conformance per model provider"),
-        ("test", "LIVE: run the conformance probes against one provider and record the result"),
+        ("discover", "read-only: the model catalog, bindings, readiness and conformance"),
+        ("test", "LIVE: run the conformance probes against one model and record the result"),
     ):
         cmd = commands.add_parser(name, help=text)
         cmd.add_argument("--root", type=Path, default=REPO_ROOT)
         if name == "test":
-            cmd.add_argument("--provider", required=True)
+            cmd.add_argument("--model", required=True, help="a catalog model id")
 
 
 def models_command(args: argparse.Namespace, deps: Deps | None = None) -> int:
@@ -181,7 +179,7 @@ def models_command(args: argparse.Namespace, deps: Deps | None = None) -> int:
     try:
         if args.models_command == "discover":
             return discover(args.root, deps)
-        return test(args.root, args.provider, deps)
+        return test(args.root, args.model, deps)
     except (OSError, KeyError, ValueError) as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

@@ -18,6 +18,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from agentic_pipeline.approvals import (
     REMEDIATION_CAUSES,
@@ -47,7 +48,8 @@ from agentic_pipeline.transition import BudgetLedger
 DEFAULT_RUNS_DIR = REPO_ROOT / ".runs"
 
 
-def _adapter_factories() -> dict[str, Callable[[Mapping[str, object]], BackendAdapter]]:
+def _adapter_factories() -> dict[str, Callable[[Mapping[str, Any], str], BackendAdapter]]:
+    """Adapter constructors by provider id; each is called with the registry and a model id."""
     from agentic_pipeline.adapters import AgyAdapter, ClaudeAdapter, PiQwenAdapter
 
     return {
@@ -63,7 +65,7 @@ class LazyAdapters(Mapping[str, BackendAdapter]):
     A Qwen-only stage never constructs (or probes credentials for) the Claude adapter.
     """
 
-    def __init__(self, registry: Mapping[str, object]) -> None:
+    def __init__(self, registry: Mapping[str, Any]) -> None:
         self._registry = registry
         self._built: dict[str, BackendAdapter] = {}
         self._failed: dict[str, str] = {}
@@ -71,11 +73,12 @@ class LazyAdapters(Mapping[str, BackendAdapter]):
     def _build(self, name: str) -> BackendAdapter | None:
         if name in self._built or name in self._failed:
             return self._built.get(name)
-        factory = _adapter_factories().get(name)
+        model = self._registry["models"].get(name)
+        factory = _adapter_factories().get(model["provider"]) if model else None
         if factory is None:
             return None
         try:
-            self._built[name] = factory(self._registry)
+            self._built[name] = factory(self._registry, name)
         except Exception as exc:  # any failure: dispatch blocks with this reason
             self._failed[name] = f"{type(exc).__name__}: {exc}"
         return self._built.get(name)
@@ -92,7 +95,7 @@ class LazyAdapters(Mapping[str, BackendAdapter]):
         return adapter
 
     def __iter__(self) -> Iterator[str]:  # builds everything; dispatch never iterates
-        return (name for name in _adapter_factories() if self._build(name) is not None)
+        return (name for name in self._registry["models"] if self._build(name) is not None)
 
     def __len__(self) -> int:
         return sum(1 for _ in self)

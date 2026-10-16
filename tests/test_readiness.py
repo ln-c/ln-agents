@@ -128,6 +128,15 @@ def ollama() -> Iterator[dict[str, Any]]:
     server.server_close()
 
 
+def test_probe_ollama_reports_each_model_separately(ollama: dict[str, Any]) -> None:
+    ollama.update(status=200, body=_tags("qwen3:8b"))
+    _, models = probe_ollama(ollama["spec"], {"qwen3_8b": "qwen3:8b", "other": "llama3"})
+    assert {m: c.status for m, c in models.items()} == {
+        "qwen3_8b": Status.VERIFIED,
+        "other": Status.FAILED,
+    }
+
+
 def _tags(*names: str) -> bytes:
     return json.dumps({"models": [{"name": n} for n in names]}).encode()
 
@@ -146,16 +155,18 @@ def test_probe_ollama(
     ollama: dict[str, Any], status: int, body: bytes, daemon: Status, inventory: Status
 ) -> None:
     ollama.update(status=status, body=body)
-    checks = probe_ollama(ollama["spec"])
-    assert [c.status for c in checks] == [daemon, inventory], checks
+    provider, models = probe_ollama(ollama["spec"], {"qwen3_8b": "qwen3:8b"})
+    assert [c.status for c in provider] == [daemon]
+    assert [c.status for c in models.values()] == [inventory], models
 
 
 def test_probe_ollama_stopped() -> None:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    checks = probe_ollama({**QWEN, "port": port})
-    assert [c.status for c in checks] == [Status.FAILED, Status.UNVERIFIED]
+    provider, models = probe_ollama({**QWEN, "port": port}, {"qwen3_8b": "qwen3:8b"})
+    assert [c.status for c in provider] == [Status.FAILED]
+    assert [c.status for c in models.values()] == [Status.UNVERIFIED]
 
 
 # ── Listener binding (/proc/net/tcp, /proc/net/tcp6) ─────────────────────────
@@ -308,6 +319,7 @@ def ready_report() -> Report:
             "google_ai_pro": [Check("executable", ok, "")],
             "qwen_local": [Check("daemon", ok, ""), Check("listener_binding", ok, "")],
         },
+        models={"qwen3_8b": [Check("model_inventory", ok, "")]},
         isolation={name: Check(name, ok, "") for name in ISOLATION},
         registry=REGISTRY,
     )
@@ -321,7 +333,10 @@ def _downgrade(checks: list[Check], name: str, status: Status = Status.UNVERIFIE
 def test_all_verified_a1_eligible_with_role_backends() -> None:
     verdict = evaluate_stage("A1", ready_report())
     assert verdict.eligible, verdict.reasons
-    assert verdict.backends == {"proposal_a": "claude_pro", "proposal_b": "google_ai_pro"}
+    assert verdict.backends == {
+        "proposal_a": "claude_cli_default",
+        "proposal_b": "gemini_3_8_flash_high",
+    }
 
 
 def test_a1_blocked_when_one_cloud_agent_unavailable() -> None:
@@ -329,14 +344,22 @@ def test_a1_blocked_when_one_cloud_agent_unavailable() -> None:
     _downgrade(report.providers["google_ai_pro"], "executable")
     verdict = evaluate_stage("A1", report)
     assert not verdict.eligible
-    assert "proposal_b: google_ai_pro.executable UNVERIFIED" in verdict.reasons
+    assert "proposal_b: gemini_3_8_flash_high.executable UNVERIFIED" in verdict.reasons
 
 
 def test_a3_falls_back_in_declared_order() -> None:
     report = ready_report()
     _downgrade(report.providers["claude_pro"], "executable")
     verdict = evaluate_stage("A3", report)
-    assert verdict.eligible and verdict.backends == {"synthesis": "google_ai_pro"}
+    assert verdict.eligible and verdict.backends == {"synthesis": "gemini_3_8_flash_high"}
+
+
+def test_a_model_missing_from_the_local_inventory_blocks_build() -> None:
+    report = ready_report()
+    _downgrade(report.models["qwen3_8b"], "model_inventory", Status.FAILED)
+    verdict = evaluate_stage("E1", report)
+    assert not verdict.eligible
+    assert "implementation_patch: qwen3_8b.model_inventory FAILED" in verdict.reasons
 
 
 def test_isolation_check_blocks_stage() -> None:

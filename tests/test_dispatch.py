@@ -75,9 +75,13 @@ def seed(
 
 
 def report(*, unready: tuple[str, ...] = (), credential: Status = Status.VERIFIED) -> Report:
+    models = REGISTRY["models"]
+    down = {
+        models[m]["provider"] for m in unready
+    }  # `unready` names models; probes are per provider
+
     def checks(name: str) -> list[Check]:
-        status = Status.UNVERIFIED if name in unready else Status.VERIFIED
-        return [Check("executable", status, "")]
+        return [Check("executable", Status.UNVERIFIED if name in down else Status.VERIFIED, "")]
 
     return Report(
         static_errors=[],
@@ -131,7 +135,7 @@ def allow_all(edge: Edge, ctx: Mapping[str, Any]) -> bool:
 
 @pytest.fixture
 def adapters() -> dict[str, FakeAdapter]:
-    return {b: FakeAdapter() for b in ("claude_pro", "google_ai_pro", "qwen_local")}
+    return {b: FakeAdapter() for b in ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_8b")}
 
 
 def make(
@@ -175,8 +179,8 @@ def test_a1_happy_path_runs_both_operations_with_role_backends(
     d = make(tmp_path, adapters)
     outcome = d.dispatch_stage("A2", "blocking_flaw", "A1", {})
     assert set(outcome.results) == {"proposal_a", "proposal_b"} and not outcome.provisional
-    assert [g.operation_id for g in adapters["claude_pro"].grants] == ["proposal_a"]
-    assert [g.operation_id for g in adapters["google_ai_pro"].grants] == ["proposal_b"]
+    assert [g.operation_id for g in adapters["claude_cli_default"].grants] == ["proposal_a"]
+    assert [g.operation_id for g in adapters["gemini_3_8_flash_high"].grants] == ["proposal_b"]
     assert events(d) == ["model_call", "model_result", "model_call", "model_result"]
     assert verify_provenance_chain(d.log.path).ok
     assert d.ledger.consumed == {"design": 1}  # one unit per edge, not per invocation
@@ -184,7 +188,7 @@ def test_a1_happy_path_runs_both_operations_with_role_backends(
 
 def test_grant_carries_only_declared_scope(tmp_path: Path, adapters: dict) -> None:
     make(tmp_path, adapters).dispatch_stage("G4", "always", "A1", {})
-    grant = adapters["claude_pro"].grants[0]
+    grant = adapters["claude_cli_default"].grants[0]
     assert grant.allowed_reads == (
         "pinned_context_manifest",
         "requirements",
@@ -196,8 +200,8 @@ def test_grant_carries_only_declared_scope(tmp_path: Path, adapters: dict) -> No
 
 
 def test_ineligible_stage_blocked_before_anything(tmp_path: Path, adapters: dict) -> None:
-    d = make(tmp_path, adapters, reports=iter([report(unready=("google_ai_pro",))]))
-    with pytest.raises(DispatchBlocked, match="google_ai_pro.executable"):
+    d = make(tmp_path, adapters, reports=iter([report(unready=("gemini_3_8_flash_high",))]))
+    with pytest.raises(DispatchBlocked, match="gemini_3_8_flash_high.executable"):
         d.dispatch_stage("A2", "blocking_flaw", "A1", {})
     assert events(d) == [] and d.ledger.consumed == {} and d.ledger.reserved == {}
 
@@ -216,7 +220,7 @@ def test_deny_all_guards_by_default(tmp_path: Path, adapters: dict) -> None:
 
 
 def test_missing_adapter_blocks(tmp_path: Path, adapters: dict) -> None:
-    del adapters["google_ai_pro"]
+    del adapters["gemini_3_8_flash_high"]
     with pytest.raises(DispatchBlocked, match="no adapter"):
         make(tmp_path, adapters).dispatch_stage("G4", "always", "A1", {})
 
@@ -233,7 +237,7 @@ def test_pre_call_log_failure_releases_budget(tmp_path: Path, adapters: dict) ->
     with pytest.raises(DispatchBlocked, match="pre-call"):
         d.dispatch_stage("A2", "blocking_flaw", "A1", {})
     assert d.ledger.consumed == {} and d.ledger.reserved == {"design": 0}
-    assert adapters["claude_pro"].grants == []
+    assert adapters["claude_cli_default"].grants == []
 
 
 def test_post_call_log_failure_keeps_budget_consumed(tmp_path: Path, adapters: dict) -> None:
@@ -245,40 +249,47 @@ def test_post_call_log_failure_keeps_budget_consumed(tmp_path: Path, adapters: d
 
 
 def test_adapter_exception_logged_and_pauses(tmp_path: Path, adapters: dict) -> None:
-    adapters["claude_pro"].raise_on_invoke = True
+    adapters["claude_cli_default"].raise_on_invoke = True
     d = make(tmp_path, adapters)
     with pytest.raises(RunPaused, match="adapter failed"):
         d.dispatch_stage("G4", "always", "A1", {})
     assert events(d) == ["model_call", "exception"]
     assert verify_provenance_chain(d.log.path).ok
-    assert adapters["google_ai_pro"].grants == []  # second operation never starts
+    assert adapters["gemini_3_8_flash_high"].grants == []  # second operation never starts
 
 
 @pytest.mark.parametrize("status", ["quota_exhausted", "auth_failed", "error"])
 def test_non_ok_result_pauses_without_fallback(tmp_path: Path, adapters: dict, status: str) -> None:
-    adapters["claude_pro"].status = status
+    adapters["claude_cli_default"].status = status
     d = make(tmp_path, adapters)
     with pytest.raises(RunPaused, match=status):
         d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
-    assert adapters["google_ai_pro"].grants == []  # no in-flight fallback to the next backend
+    assert (
+        adapters["gemini_3_8_flash_high"].grants == []
+    )  # no in-flight fallback to the next backend
     assert events(d) == ["model_call", "model_result"]
 
 
 def test_readiness_lost_between_operations_pauses(tmp_path: Path, adapters: dict) -> None:
-    reports = iter([report(), report(unready=("google_ai_pro",))])
+    reports = iter([report(), report(unready=("gemini_3_8_flash_high",))])
     d = make(tmp_path, adapters, reports=reports)
     with pytest.raises(RunPaused, match="readiness lost"):
         d.dispatch_stage("A2", "blocking_flaw", "A1", {})
     assert events(d) == ["model_call", "model_result", "exception"]
-    assert adapters["google_ai_pro"].grants == []
+    assert adapters["gemini_3_8_flash_high"].grants == []
     assert d.ledger.consumed == {"design": 1}
 
 
 def test_ordered_any_of_uses_first_ready_backend(tmp_path: Path, adapters: dict) -> None:
-    d = make(tmp_path, adapters, reports=iter(lambda: report(unready=("claude_pro",)), None))
+    d = make(
+        tmp_path, adapters, reports=iter(lambda: report(unready=("claude_cli_default",)), None)
+    )
     outcome = d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
     assert set(outcome.results) == {"synthesis"}
-    assert adapters["claude_pro"].grants == [] and len(adapters["google_ai_pro"].grants) == 1
+    assert (
+        adapters["claude_cli_default"].grants == []
+        and len(adapters["gemini_3_8_flash_high"].grants) == 1
+    )
 
 
 # ── Sealed inputs and stage manifests ────────────────────────────────────────
@@ -290,12 +301,12 @@ def test_manifest_seals_operation_outputs(tmp_path: Path, adapters: dict) -> Non
     manifest = load_manifest(d.run_root, "A1", "run-1")
     assert manifest is not None and outcome.manifest == d.run_root / "manifests" / "A1.json"
     assert set(manifest["artifacts"]) == {"proposal_a_sealed", "proposal_b_sealed"}
-    grant = adapters["claude_pro"].grants[0]
+    grant = adapters["claude_cli_default"].grants[0]
     entry = manifest["artifacts"]["proposal_a_sealed"]
     assert entry["path"] == f"attempts/{grant.attempt}/design/proposal_a" and entry["sealed"]
     assert entry["digest"] == digest_path(grant.write_path)
     assert manifest["provenance_tip"] == verify_provenance_chain(d.log.path).tip
-    assert manifest["operations"]["proposal_b"]["backend"] == "google_ai_pro"
+    assert manifest["operations"]["proposal_b"]["backend"] == "gemini_3_8_flash_high"
 
 
 def test_downstream_stage_reads_what_upstream_sealed(tmp_path: Path, adapters: dict) -> None:
@@ -330,11 +341,11 @@ def test_tampered_sealed_input_blocks(tmp_path: Path, adapters: dict) -> None:
 def test_input_changed_between_operations_pauses(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters)
     target = d.run_root / "seed" / "requirements" / "content.txt"
-    adapters["claude_pro"].side_effect = lambda: target.write_text("swapped mid-stage\n")
+    adapters["claude_cli_default"].side_effect = lambda: target.write_text("swapped mid-stage\n")
     with pytest.raises(RunPaused, match="sealed input changed"):
         d.dispatch_stage("G4", "always", "A1", {})
     assert events(d) == ["model_call", "model_result", "exception"]
-    assert adapters["google_ai_pro"].grants == []
+    assert adapters["gemini_3_8_flash_high"].grants == []
 
 
 def test_manifest_publish_failure_leaves_outputs_provisional(
@@ -357,14 +368,14 @@ def test_each_attempt_gets_a_fresh_write_root(tmp_path: Path, adapters: dict) ->
     d = make(tmp_path, adapters)
     d.dispatch_stage("G4", "always", "A1", {})
     d.dispatch_stage("A2", "blocking_flaw", "A1", {})
-    first, second = (g.write_path for g in adapters["claude_pro"].grants)
+    first, second = (g.write_path for g in adapters["claude_cli_default"].grants)
     assert first != second and first.is_dir() and second.is_dir()
 
 
 def test_adapter_must_enforce_profile_checks(tmp_path: Path, adapters: dict) -> None:
-    adapters["qwen_local"].enforced_isolation = frozenset({"network_disabled"})
+    adapters["qwen3_8b"].enforced_isolation = frozenset({"network_disabled"})
     d = make(tmp_path, adapters)
-    with pytest.raises(DispatchBlocked, match="qwen_local adapter does not enforce"):
+    with pytest.raises(DispatchBlocked, match="qwen3_8b adapter does not enforce"):
         d.dispatch_stage("E0", "always", "E1", {})
     assert events(d) == [] and not (d.run_root / "attempts").exists()
 
@@ -372,7 +383,7 @@ def test_adapter_must_enforce_profile_checks(tmp_path: Path, adapters: dict) -> 
 def test_grant_carries_verified_input_paths(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters)
     d.dispatch_stage("E0", "always", "E1", {})
-    g = adapters["qwen_local"].grants[0]
+    g = adapters["qwen3_8b"].grants[0]
     assert g.role == "patch_author"
     assert set(g.inputs) == {
         "pinned_context_manifest",
@@ -395,7 +406,9 @@ def test_cloud_backend_blocked_for_non_cloud_data(
     expected = data_class or "unknown"  # unclassified inputs count as unknown
     with pytest.raises(DispatchBlocked, match=f"data class '{expected}' may not be sent"):
         d.dispatch_stage("G4", "always", "A1", {})
-    assert events(d) == [] and d.ledger.reserved == {} and adapters["claude_pro"].grants == []
+    assert (
+        events(d) == [] and d.ledger.reserved == {} and adapters["claude_cli_default"].grants == []
+    )
 
 
 def test_a_provider_declared_cloud_is_blocked_whatever_its_access_mode(
@@ -406,9 +419,9 @@ def test_a_provider_declared_cloud_is_blocked_whatever_its_access_mode(
     registry["providers"]["qwen_local"]["location"] = "cloud"
     d = make(tmp_path, adapters, data_class="confidential")
     d.registry = registry
-    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen_local"):
+    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen3_8b"):
         d.dispatch_stage("E0", "always", "E1", {})
-    assert adapters["qwen_local"].grants == []
+    assert adapters["qwen3_8b"].grants == []
 
 
 @pytest.mark.parametrize("location", [None, "elsewhere"])
@@ -422,14 +435,14 @@ def test_a_provider_without_a_declared_local_location_is_treated_as_cloud(
         registry["providers"]["qwen_local"]["location"] = location
     d = make(tmp_path, adapters, data_class="confidential")
     d.registry = registry
-    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen_local"):
+    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen3_8b"):
         d.dispatch_stage("E0", "always", "E1", {})
 
 
 def test_local_backend_accepts_confidential_data(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, data_class="confidential")
     d.dispatch_stage("E0", "always", "E1", {})
-    assert adapters["qwen_local"].grants[0].data_class == "confidential"
+    assert adapters["qwen3_8b"].grants[0].data_class == "confidential"
 
 
 def test_outputs_inherit_most_restrictive_input_class(tmp_path: Path, adapters: dict) -> None:
@@ -444,7 +457,7 @@ def test_outputs_inherit_most_restrictive_input_class(tmp_path: Path, adapters: 
 
 
 def test_resolved_model_recorded_in_provenance(tmp_path: Path, adapters: dict) -> None:
-    adapters["claude_pro"].resolved_model = "claude-opus-5-5"
+    adapters["claude_cli_default"].resolved_model = "claude-opus-5-5"
     d = make(tmp_path, adapters)
     d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
     results = [json.loads(line) for line in d.log.path.read_text().splitlines()]
@@ -454,8 +467,8 @@ def test_resolved_model_recorded_in_provenance(tmp_path: Path, adapters: dict) -
 def test_missing_adapter_reason_is_surfaced(tmp_path: Path, adapters: dict) -> None:
     class Explained(dict):
         def unavailable(self, name: str) -> str | None:
-            return "LookupError: not signed in" if name == "google_ai_pro" else None
+            return "LookupError: not signed in" if name == "gemini_3_8_flash_high" else None
 
-    explained = Explained({k: v for k, v in adapters.items() if k != "google_ai_pro"})
-    with pytest.raises(DispatchBlocked, match="google_ai_pro: LookupError: not signed in"):
+    explained = Explained({k: v for k, v in adapters.items() if k != "gemini_3_8_flash_high"})
+    with pytest.raises(DispatchBlocked, match="gemini_3_8_flash_high: LookupError: not signed in"):
         make(tmp_path, explained).dispatch_stage("G4", "always", "A1", {})

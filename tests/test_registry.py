@@ -1,4 +1,5 @@
 """Tests for model registry invariants (R1-R18)."""
+# ruff: noqa: E501
 
 from __future__ import annotations
 
@@ -11,9 +12,12 @@ import pytest
 
 from agentic_pipeline.graph import Graph, load_yaml
 from agentic_pipeline.registry import (
+    backend_capabilities,
+    backend_family,
+    backend_location,
     op_backends,
     operations,
-    resolve_family,
+    pattern_family,
     validate_registry,
 )
 
@@ -29,7 +33,7 @@ def op(reg: Registry, stage: str, op_id: str) -> dict[str, Any]:
 
 
 def _swap_proposal_a_backend(r: Registry) -> None:
-    r["agents"]["design"]["proposal_a"]["primary"] = "google_ai_pro"
+    r["agents"]["design"]["proposal_a"]["primary"] = "gemini_3_8_flash_high"
 
 
 def _self_critique(r: Registry) -> None:
@@ -102,11 +106,11 @@ def _stage_names_a_backend(r: Registry) -> None:
 
 
 def _build_on_the_classifier(r: Registry) -> None:
-    r["agents"]["build"]["primary"] = "clef_flash_free"
+    r["agents"]["build"]["primary"] = "clef_flash"
 
 
 def _no_capabilities_declared(r: Registry) -> None:
-    del r["providers"]["qwen_local"]["capabilities"]
+    r["models"]["qwen3_8b"]["capabilities"] = []
 
 
 def _operation_requires_nothing(r: Registry) -> None:
@@ -145,33 +149,54 @@ def _unknown_producer_op(r: Registry) -> None:
     r["artifacts"]["synthesis_sealed"]["producer"] = ["A3.missing"]
 
 
-def _google_serves_claude(r: Registry) -> None:
-    r["providers"]["google_ai_pro"]["model_id"] = "claude-sonnet-x"
+def _design_b_on_claude_via_agy(r: Registry) -> None:
+    r["models"]["claude_sonnet_5_5_high"]["capabilities"] = ["design_reasoning"]
+    r["agents"]["design"]["proposal_b"]["primary"] = "claude_sonnet_5_5_high"
 
 
-def _google_serves_unknown_model(r: Registry) -> None:
-    r["providers"]["google_ai_pro"]["model_id"] = "mystery-1"
+def _model_id_matches_no_pattern(r: Registry) -> None:
+    r["models"]["gemini_3_8_flash_high"]["model_id"] = "mystery-1"
 
 
-def _two_provider_ids_one_family(r: Registry) -> None:
-    r["providers"]["google_ai_pro"].pop("family_by_model_id")
-    r["providers"]["google_ai_pro"]["family"] = "claude"
+def _mislabelled_family(r: Registry) -> None:
+    r["models"]["claude_opus_5_5_low"]["family"] = "gemini"
 
 
-def _both_family_forms(r: Registry) -> None:
-    r["providers"]["claude_pro"]["family_by_model_id"] = [{"pattern": "^c", "family": "claude"}]
+def _model_on_a_non_model_provider(r: Registry) -> None:
+    r["models"]["qwen3_8b"]["provider"] = "deterministic_rules"
 
 
-def _no_family(r: Registry) -> None:
-    del r["providers"]["qwen_local"]["family"]
+def _duplicate_model(r: Registry) -> None:
+    r["models"]["gemini_twin"] = dict(r["models"]["gemini_3_8_flash_high"])
+
+
+def _claude_model_declared_gemini(r: Registry) -> None:
+    r["models"]["claude_cli_default"]["family"] = "gemini"
+
+
+def _ollama_model_with_no_pattern(r: Registry) -> None:
+    r["models"]["llama3"] = {
+        "provider": "qwen_local",
+        "model_id": "llama3",
+        "family": "llama",
+        "capabilities": [],
+    }
+
+
+def _provider_without_patterns(r: Registry) -> None:
+    del r["providers"]["clef_flash_free"]["family_patterns"]
+
+
+def _binds_a_provider(r: Registry) -> None:
+    r["agents"]["build"]["primary"] = "qwen_local"
 
 
 def _bad_family_pattern(r: Registry) -> None:
-    r["providers"]["google_ai_pro"]["family_by_model_id"].insert(0, {"pattern": "(", "family": "x"})
+    r["providers"]["google_ai_pro"]["family_patterns"].insert(0, {"pattern": "(", "family": "x"})
 
 
 def _bad_pattern_after_a_match(r: Registry) -> None:
-    r["providers"]["google_ai_pro"]["family_by_model_id"].append({"pattern": "(", "family": "x"})
+    r["providers"]["google_ai_pro"]["family_patterns"].append({"pattern": "(", "family": "x"})
 
 
 def _cloud_declared_local(r: Registry) -> None:
@@ -220,15 +245,39 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ("unknown output schema", _unknown_output_schema, "registry R15 A1.proposal_a"),
     ("same backend for A and B", _swap_proposal_a_backend, "registry R14 A1.proposal_b"),
     ("self-critique", _self_critique, "registry R14 A2.critique_b_by_a"),
-    ("same family via another provider", _google_serves_claude, "registry R14 A1.proposal_b"),
-    ("same family, fixed", _two_provider_ids_one_family, "registry R14 A1.proposal_b"),
+    (
+        "design B on a claude model via agy",
+        _design_b_on_claude_via_agy,
+        "registry R14 A1.proposal_b",
+    ),
+    ("binds a provider, not a model", _binds_a_provider, "registry R3 agents.build.primary"),
     ("schema: location required", _no_location, "registry R1"),
     ("cloud mode declared local", _cloud_declared_local, "registry R16 providers.claude_pro"),
     ("local mode declared cloud", _local_declared_cloud, "registry R16 providers.qwen_local"),
     ("unknown access mode", _unknown_access_mode, "registry R16 providers.qwen_local"),
-    ("model id matches no family", _google_serves_unknown_model, "registry R17 providers.google"),
-    ("both family forms", _both_family_forms, "registry R17 providers.claude_pro"),
-    ("no family", _no_family, "registry R17 providers.qwen_local"),
+    ("model id matches no pattern", _model_id_matches_no_pattern, "registry R17 models.gemini_3"),
+    (
+        "family disagrees with the id",
+        _mislabelled_family,
+        "registry R17 models.claude_opus_5_5_low",
+    ),
+    (
+        "model on a non-model provider",
+        _model_on_a_non_model_provider,
+        "registry R17 models.qwen3_8b",
+    ),
+    ("duplicate provider and model_id", _duplicate_model, "registry R17 models.gemini_twin"),
+    (
+        "claude model declared gemini",
+        _claude_model_declared_gemini,
+        "registry R17 models.claude_cli_default",
+    ),
+    ("ollama model with no pattern", _ollama_model_with_no_pattern, "registry R17 models.llama3"),
+    (
+        "provider without patterns",
+        _provider_without_patterns,
+        "registry R17 providers.clef_flash_free",
+    ),
     ("bad family pattern", _bad_family_pattern, "registry R17 providers.google_ai_pro"),
     (
         "bad pattern after a match",
@@ -259,56 +308,68 @@ def test_schema_failure_short_circuits() -> None:
     assert len(errors) == 1 and errors[0].startswith("registry R1"), errors
 
 
-def test_an_unresolved_family_is_reported_once_not_as_an_independence_failure() -> None:
+def test_an_unclassifiable_model_is_reported_once_not_as_an_independence_failure() -> None:
     registry = copy.deepcopy(REGISTRY)
-    _google_serves_unknown_model(registry)
+    _model_id_matches_no_pattern(registry)
     errors = validate_registry(registry, GRAPH, ROOT)
     assert any(e.startswith("registry R17") for e in errors)
     assert not any(e.startswith("registry R14") for e in errors), errors
 
 
-def test_resolve_family_takes_the_first_matching_pattern() -> None:
+def test_pattern_family_takes_the_first_matching_pattern() -> None:
     provider = {
-        "model_id": "gemini-3",
-        "family_by_model_id": [
+        "family_patterns": [
             {"pattern": "^gemini-", "family": "gemini"},
             {"pattern": "^gem", "family": "other"},
-        ],
+        ]
     }
-    assert resolve_family(provider) == "gemini"
-    assert resolve_family({**provider, "model_id": "claude-x"}) is None
-    assert resolve_family({"family_by_model_id": provider["family_by_model_id"]}) is None
-    assert resolve_family({"family": "qwen3"}) == "qwen3"
-    assert (
-        resolve_family({"model_id": "x", "family_by_model_id": [{"pattern": "(", "family": "x"}]})
-        is None
-    )
+    assert pattern_family(provider, "gemini-3") == "gemini"
+    assert pattern_family(provider, "claude-x") is None
+    assert pattern_family({}, "gemini-3") is None
+    assert pattern_family({"family_patterns": [{"pattern": "(", "family": "x"}]}, "x") is None
     # `re.match` anchors at the start: a pattern does not match in the middle of an id.
-    assert (
-        resolve_family(
-            {"model_id": "x-gemini-1", "family_by_model_id": provider["family_by_model_id"]}
-        )
-        is None
-    )
+    assert pattern_family(provider, "x-gemini-1") is None
 
 
-def test_candidate_backends_per_operation_are_pinned() -> None:
+CLAUDE, GEMINI, QWEN = "claude_cli_default", "gemini_3_8_flash_high", "qwen3_8b"
+
+
+def test_candidate_models_per_operation_are_pinned() -> None:
     """What each operation may run on, in preference order; a refactor must not change it."""
     got = {
         f"{stage}.{o['id']}": op_backends(REGISTRY, stage, o)
         for stage, o in operations(REGISTRY["stage_requirements"])
     }
     assert got == {
-        "A1.proposal_a": ["claude_pro"],
-        "A1.proposal_b": ["google_ai_pro"],
-        "A2.critique_b_by_a": ["claude_pro"],
-        "A2.critique_a_by_b": ["google_ai_pro"],
-        "A3.synthesis": ["claude_pro", "google_ai_pro"],
-        "A3R.synthesis_review": ["google_ai_pro", "claude_pro"],
-        "C1.module_decomposition": ["qwen_local"],
-        "D1.test_generation": ["qwen_local"],
-        "E1.implementation_patch": ["qwen_local"],
+        "A1.proposal_a": [CLAUDE],
+        "A1.proposal_b": [GEMINI],
+        "A2.critique_b_by_a": [CLAUDE],
+        "A2.critique_a_by_b": [GEMINI],
+        "A3.synthesis": [CLAUDE, GEMINI],
+        "A3R.synthesis_review": [GEMINI, CLAUDE],
+        "C1.module_decomposition": [QWEN],
+        "D1.test_generation": [QWEN],
+        "E1.implementation_patch": [QWEN],
     }
+
+
+def test_each_candidates_resolved_properties_are_pinned() -> None:
+    """(provider, model id, family, location, capabilities): same as before the catalog."""
+    resolved = {
+        m: (
+            REGISTRY["models"][m]["provider"],
+            REGISTRY["models"][m]["model_id"],
+            backend_family(REGISTRY, m),
+            backend_location(REGISTRY, m),
+            sorted(backend_capabilities(REGISTRY, m)),
+        )
+        for m in (CLAUDE, GEMINI, QWEN)
+    }
+    assert resolved == {
+        CLAUDE: ("claude_pro", "cli-default", "claude", "cloud", ["code_generation", "design_reasoning"]),
+        GEMINI: ("google_ai_pro", "gemini-3.8-flash-high", "gemini", "cloud", ["code_generation", "design_reasoning"]),
+        QWEN: ("qwen_local", "qwen3:8b", "qwen3", "local", ["classification", "code_generation"]),
+    }  # fmt: skip
 
 
 AGY_MODELS = {  # `agy models`, as listed by the tool
@@ -328,20 +389,46 @@ AGY_MODELS = {  # `agy models`, as listed by the tool
 }
 
 
+def test_the_catalog_holds_every_model_agy_lists_with_the_right_family() -> None:
+    catalog = {
+        m["model_id"]: m["family"]
+        for m in REGISTRY["models"].values()
+        if m["provider"] == "google_ai_pro"
+    }
+    assert catalog == AGY_MODELS
+
+
 @pytest.mark.parametrize(("model_id", "family"), AGY_MODELS.items())
-def test_every_model_agy_lists_resolves_to_its_family(model_id: str, family: str) -> None:
-    provider = {**REGISTRY["providers"]["google_ai_pro"], "model_id": model_id}
-    assert resolve_family(provider) == family
+def test_every_model_agy_lists_matches_its_family_pattern(model_id: str, family: str) -> None:
+    assert pattern_family(REGISTRY["providers"]["google_ai_pro"], model_id) == family
 
 
-@pytest.mark.parametrize("model_id", [m for m, f in AGY_MODELS.items() if f != "gemini"])
-def test_design_b_cannot_be_pointed_at_a_model_agy_serves_from_another_family(
-    model_id: str,
+def test_known_but_unclaimed_models_cannot_be_bound() -> None:
+    unclaimed = [m for m, v in REGISTRY["models"].items() if not v["capabilities"]]
+    assert len(unclaimed) == 12  # every agy model but the pinned one
+    for model in unclaimed:
+        registry = copy.deepcopy(REGISTRY)
+        registry["agents"]["design"]["proposal_b"]["primary"] = model
+        errors = validate_registry(registry, GRAPH, ROOT)
+        assert any(e.startswith("registry R18 A1.proposal_b") for e in errors), (model, errors)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        m
+        for m, v in REGISTRY["models"].items()
+        if v["provider"] == "google_ai_pro" and v["family"] != "gemini"
+    ],
+)
+def test_design_b_cannot_use_a_claude_model_agy_serves_but_can_use_another_family(
+    model: str,
 ) -> None:
     registry = copy.deepcopy(REGISTRY)
-    registry["providers"]["google_ai_pro"]["model_id"] = model_id
+    registry["models"][model]["capabilities"] = ["code_generation", "design_reasoning"]
+    registry["agents"]["design"]["proposal_b"]["primary"] = model
     errors = validate_registry(registry, GRAPH, ROOT)
-    if AGY_MODELS[model_id] == "claude":  # shares a family with design A
+    if registry["models"][model]["family"] == "claude":  # shares a family with design A
         assert any(e.startswith("registry R14 A1.proposal_b") for e in errors), errors
-    else:  # a family of its own is independent of both A and the others
+    else:  # a family of its own is independent of design A
         assert not errors, errors

@@ -30,19 +30,19 @@ policy:
   # Child processes receive an allowlisted environment, not the dispatcher's.
   child_process_env: allowlist_only
 
-# `location` says whether a provider's traffic leaves the host; dispatch applies
-# policy/data_classes.yaml to anything that is not `local`. `family` names the underlying model
-# family and is what independence is judged on (a provider id is only an access path).
-# A provider that can serve several families lists `family_by_model_id` instead: ordered
-# regexes matched against its pinned model id; an id that matches none is a validation error.
-# `capabilities` are what the provider claims it can do (declared, not yet measured); each
-# stage operation lists what it `requires`, and validation fails if a candidate lacks one.
+# A provider is an access path (how the pipeline reaches a model); a model is bound in `models`
+# below. `location` says whether a provider's traffic leaves the host; dispatch applies
+# policy/data_classes.yaml to anything that is not `local`. Every model provider lists
+# `family_patterns`: ordered regexes over a model id, and every model of that provider must
+# declare the family its id matches (an id that matches none is an error). A provider that can
+# serve several families (agy, Ollama) cannot have a model catalogued under the wrong one.
 providers:
   claude_pro:
     access_mode: subscription_tool
     location: cloud
-    capabilities: [code_generation, design_reasoning]
-    family: claude
+    family_patterns:
+      - {pattern: '^cli-default$', family: claude}
+      - {pattern: '^claude-', family: claude}
     subscription: Claude Pro
     api_billing_allowed: false
     readiness:
@@ -52,17 +52,14 @@ providers:
   google_ai_pro:
     access_mode: subscription_tool
     location: cloud
-    capabilities: [code_generation, design_reasoning]
-    family_by_model_id:
+    family_patterns:
       - {pattern: '^gemini-', family: gemini}
       - {pattern: '^claude-', family: claude}
       - {pattern: '^gpt-oss', family: gpt_oss}
     subscription: Google AI Pro
     api_billing_allowed: false
-    # agy also offers non-Google models (it lists Claude and GPT-OSS), so the model is
-    # pinned here: independent design needs Design B to stay off Claude. Change it
-    # deliberately; `agy models` lists the ids.
-    model_id: gemini-3.8-flash-high
+    # agy also offers non-Google models (it lists Claude and GPT-OSS), so independent design
+    # needs Design B bound to a model whose declared family is not Claude's.
     readiness:
       executable: agy
       version_pattern: '^(\d+)\.(\d+)\.(\d+)$'
@@ -70,23 +67,20 @@ providers:
   qwen_local:
     access_mode: local_inference
     location: local
-    capabilities: [classification, code_generation]
-    family: qwen3
-    model_alias: Qwen3 8B
+    family_patterns:
+      - {pattern: '^qwen3', family: qwen3}
     network_required: false
     api_billing_allowed: false
     readiness:
       protocol: ollama
       host: 127.0.0.1
       port: 11434
-      model_id: "qwen3:8b"
       timeout_seconds: 1.0
   clef_flash_free:
     access_mode: free_allowance_only
     location: cloud
-    capabilities: [classification]
-    family: clef
-    model_alias: Clef-flash
+    family_patterns:
+      - {pattern: '^clef', family: clef}
     api_billing_allowed: false
     optional: true
     quota_exhaustion: disable_and_use_deterministic_rule_or_pause
@@ -111,11 +105,51 @@ providers:
     location: local
     api_billing_allowed: false
 
+# The model catalog. Each entry is one model a provider can serve: `family` is what design
+# independence is judged on, and `capabilities` are what is claimed it can do (declared, not
+# measured; see policy/model_test_profiles.yaml). An empty `capabilities` list is a known model
+# nobody has claimed anything for: it cannot be bound to any operation until someone does.
+# Roles bind to these ids in `agents` below, so changing a model is a one-line change there.
+models:
+  claude_cli_default:
+    provider: claude_pro
+    model_id: cli-default  # whatever the claude CLI resolves; the CLI takes no model flag here
+    alias: Claude (CLI default)
+    family: claude
+    capabilities: [code_generation, design_reasoning]
+  qwen3_8b:
+    provider: qwen_local
+    model_id: "qwen3:8b"
+    alias: Qwen3 8B
+    family: qwen3
+    capabilities: [classification, code_generation]
+  clef_flash:
+    provider: clef_flash_free
+    model_id: clef-flash
+    alias: Clef-flash
+    family: clef
+    capabilities: [classification]
+  # Everything `agy models` offered when this catalog was written (13 ids). Only the pinned
+  # Gemini 3.8 Flash (High) has claimed capabilities; the rest are known, unclaimed, unbindable.
+  gemini_4_argon_medium: {provider: google_ai_pro, model_id: gemini-4-argon-medium, alias: "Gemini 4 Argon (Medium)", family: gemini, capabilities: []}
+  gemini_4_argon_high: {provider: google_ai_pro, model_id: gemini-4-argon-high, alias: "Gemini 4 Argon (High)", family: gemini, capabilities: []}
+  gemini_4_argon_low: {provider: google_ai_pro, model_id: gemini-4-argon-low, alias: "Gemini 4 Argon (Low)", family: gemini, capabilities: []}
+  gemini_3_8_flash_high: {provider: google_ai_pro, model_id: gemini-3.8-flash-high, alias: "Gemini 3.8 Flash (High)", family: gemini, capabilities: [code_generation, design_reasoning]}
+  gemini_3_8_flash_medium: {provider: google_ai_pro, model_id: gemini-3.8-flash-medium, alias: "Gemini 3.8 Flash (Medium)", family: gemini, capabilities: []}
+  gemini_3_8_flash_low: {provider: google_ai_pro, model_id: gemini-3.8-flash-low, alias: "Gemini 3.8 Flash (Low)", family: gemini, capabilities: []}
+  claude_opus_5_5_low: {provider: google_ai_pro, model_id: claude-opus-5-5-low, alias: "Claude Opus 5.5 (Low)", family: claude, capabilities: []}
+  claude_opus_5_5_medium: {provider: google_ai_pro, model_id: claude-opus-5-5-medium, alias: "Claude Opus 5.5 (Medium)", family: claude, capabilities: []}
+  claude_opus_5_5_high: {provider: google_ai_pro, model_id: claude-opus-5-5-high, alias: "Claude Opus 5.5 (High)", family: claude, capabilities: []}
+  claude_sonnet_5_5_low: {provider: google_ai_pro, model_id: claude-sonnet-5-5-low, alias: "Claude Sonnet 5.5 (Low)", family: claude, capabilities: []}
+  claude_sonnet_5_5_medium: {provider: google_ai_pro, model_id: claude-sonnet-5-5-medium, alias: "Claude Sonnet 5.5 (Medium)", family: claude, capabilities: []}
+  claude_sonnet_5_5_high: {provider: google_ai_pro, model_id: claude-sonnet-5-5-high, alias: "Claude Sonnet 5.5 (High)", family: claude, capabilities: []}
+  gpt_oss_120b_medium: {provider: google_ai_pro, model_id: gpt-oss-120b-medium, alias: "GPT-OSS 120B (Medium)", family: gpt_oss, capabilities: []}
+
 agents:
   grounding:
     spec: agents/pipeline-grounding-agent.md
-    primary: qwen_local
-    escalation: claude_pro
+    primary: qwen3_8b
+    escalation: claude_cli_default
     escalation_trigger: unresolved_ambiguity_or_insufficient_local_quality
     allowed_writes: [grounding_artifacts]
     may_change_state: false
@@ -124,21 +158,21 @@ agents:
     spec: agents/pipeline-design-agent.md
     # Per-operation read/write scopes live in stage_requirements (A1, A2, A3).
     proposal_a:
-      primary: claude_pro
+      primary: claude_cli_default
       isolation_group: design_a
     proposal_b:
-      primary: google_ai_pro
+      primary: gemini_3_8_flash_high
       isolation_group: design_b
     synthesis:
       primary: deterministic_orchestrator
-      model_assistance: [claude_pro, google_ai_pro]
+      model_assistance: [claude_cli_default, gemini_3_8_flash_high]
       requires_both_proposals_sealed: true
       unresolved_conflict_route: human_authority
     # Reviews and scores the validated synthesis. Google is tried first because A3 prefers
-    # Claude; B2 only counts the scores if the recorded backends differ.
+    # Claude; B2 only counts the scores if the recorded models are of different families.
     synthesis_review:
       primary: deterministic_orchestrator
-      model_assistance: [google_ai_pro, claude_pro]
+      model_assistance: [gemini_3_8_flash_high, claude_cli_default]
 
   scoring_authorization:
     primary: deterministic_rules
@@ -153,7 +187,7 @@ agents:
   build:
     spec: agents/pipeline-build-agent.md
     # graph E1: "Pi + Qwen3 8B". Cloud models reach build only through E3 -> E4.
-    primary: qwen_local
+    primary: qwen3_8b
     cloud_escalation: graph_e3_e4_only
     allowed_writes: [assigned_implementation_paths]
     protected_paths_write_denied: [tests, contracts, adr, policy, budgets, approvals, release_state, pipeline/graph.yaml, schemas]
@@ -162,7 +196,7 @@ agents:
   exception_router:
     spec: agents/pipeline-exception-router.md
     primary: deterministic_rules
-    optional_classifier: clef_flash_free
+    optional_classifier: clef_flash
     classifier_role: bounded_classification_only
     may_change_policy: false
     may_authorize_security_override: false
@@ -173,8 +207,8 @@ agents:
   release:
     spec: agents/pipeline-release-agent.md
     primary: deterministic_ci_git_policy
-    explanation_fallback: qwen_local
-    cloud_explanation_fallback: claude_pro
+    explanation_fallback: qwen3_8b
+    cloud_explanation_fallback: claude_cli_default
     merge_approval_required: true
     deploy_approval_separate: true
     model_may_authorize_release: false
@@ -182,15 +216,15 @@ agents:
   learning:
     spec: agents/pipeline-learning-agent.md
     primary: local_ledger_and_deterministic_metrics
-    analysis_fallback: qwen_local
-    subscription_analysis: claude_pro
+    analysis_fallback: qwen3_8b
+    subscription_analysis: claude_cli_default
     index_update_condition: successful_merge_and_exact_merged_sha
     calibration_requires_human_review: true
 
   human_authority:
     spec: agents/pipeline-human-authority-agent.md
     primary: human_approval_ui_and_deterministic_state_machine
-    model_assistance: [claude_pro, google_ai_pro, qwen_local]
+    model_assistance: [claude_cli_default, gemini_3_8_flash_high, qwen3_8b]
     approval_decider: human_only
     security_veto_override_by_model: false
 

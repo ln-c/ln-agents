@@ -137,13 +137,16 @@ class PiQwenAdapter:
     )
 
     @classmethod
-    def from_registry(cls, registry: Mapping[str, Any], **overrides: Any) -> PiQwenAdapter:
-        """Build from the qwen_local readiness spec, resolving Pi and the model digest."""
-        spec = registry["providers"]["qwen_local"]["readiness"]
+    def from_registry(
+        cls, registry: Mapping[str, Any], backend: str, **overrides: Any
+    ) -> PiQwenAdapter:
+        """Build for a catalog model on an Ollama provider, resolving Pi and the model digest."""
+        model = registry["models"][backend]
+        spec = registry["providers"][model["provider"]]["readiness"]
         return cls(
             pi_package=overrides.pop("pi_package", None) or find_pi_package(),
-            model_id=spec["model_id"],
-            model_version=ollama_model_digest(spec),
+            model_id=model["model_id"],
+            model_version=ollama_model_digest(spec, model["model_id"]),
             upstream=ollama_upstream(spec["host"], spec["port"], timeout=600.0),
             **overrides,
         )
@@ -316,10 +319,11 @@ class ClaudeAdapter:
 
     @classmethod
     def from_registry(
-        cls, registry: Mapping[str, Any], host: Host | None = None, **overrides: Any
+        cls, registry: Mapping[str, Any], backend: str, host: Host | None = None, **overrides: Any
     ) -> ClaudeAdapter:
         host = host or Host.real()
-        path, version = resolve_executable(registry["providers"]["claude_pro"]["readiness"], host)
+        provider = registry["providers"][registry["models"][backend]["provider"]]
+        path, version = resolve_executable(provider["readiness"], host)
         credentials = host.home / ".claude" / ".credentials.json"
         if not credentials.is_file():
             raise LookupError(f"{credentials} not found; sign in with `claude` first")
@@ -420,18 +424,16 @@ class AgyAdapter:
 
     @classmethod
     def from_registry(
-        cls, registry: Mapping[str, Any], host: Host | None = None, **overrides: Any
+        cls, registry: Mapping[str, Any], backend: str, host: Host | None = None, **overrides: Any
     ) -> AgyAdapter:
         host = host or Host.real()
-        provider = registry["providers"]["google_ai_pro"]
+        model = registry["models"][backend]
+        provider = registry["providers"][model["provider"]]
         path, version = resolve_executable(provider["readiness"], host)
         token = host.home / AGY_TOKEN_REL
         if not token.is_file():
             raise LookupError(f"{token} not found; sign in with `agy` first")
-        model_id = provider.get("model_id")
-        if not model_id:
-            raise LookupError("providers.google_ai_pro.model_id is not set; agy offers many models")
-        return cls(Path(path).resolve(), version, token, model_id, **overrides)
+        return cls(Path(path).resolve(), version, token, model["model_id"], **overrides)
 
     def identity(self) -> Identity:
         return Identity(

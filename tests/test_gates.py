@@ -24,12 +24,12 @@ from agentic_pipeline.schemas import validate
 
 # Recorded backend per operation (the registry's A1/A2 assignment): independent by design.
 BACKENDS = {
-    "proposal_a": "claude_pro",
-    "proposal_b": "google_ai_pro",
-    "synthesis": "claude_pro",
-    "critique_b_by_a": "claude_pro",
-    "critique_a_by_b": "google_ai_pro",
-    "synthesis_review": "google_ai_pro",  # the synthesis ran on claude_pro
+    "proposal_a": "claude_cli_default",
+    "proposal_b": "gemini_3_8_flash_high",
+    "synthesis": "claude_cli_default",
+    "critique_b_by_a": "claude_cli_default",
+    "critique_a_by_b": "gemini_3_8_flash_high",
+    "synthesis_review": "gemini_3_8_flash_high",  # the synthesis ran on claude_cli_default
 }
 
 
@@ -531,7 +531,7 @@ def test_a_review_on_the_synthesizers_backend_is_not_counted(
     design: Design, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     design.seal_valid()
-    monkeypatch.setitem(BACKENDS, "synthesis_review", "claude_pro")  # same as the synthesis
+    monkeypatch.setitem(BACKENDS, "synthesis_review", "claude_cli_default")  # same as the synthesis
     design.seal_reviews()
     doc = published_scores(design)
     s = doc["candidates"]["synthesis_sealed"]
@@ -715,36 +715,35 @@ def test_an_unusable_critique_blocks_instead_of_reading_as_clean(
 def test_a_critic_on_the_proposals_backend_is_a_self_critique(
     design: Design, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setitem(BACKENDS, "critique_b_by_a", "google_ai_pro")  # same as proposal_b
+    monkeypatch.setitem(BACKENDS, "critique_b_by_a", "gemini_3_8_flash_high")  # same as proposal_b
     a2_ready(design)
     with pytest.raises(GateError, match="same backend"):
         design.guard("A2")
 
 
-def _extra_provider(design: Design, name: str, **fields: Any) -> None:
-    design.runner.registry["providers"][name] = {
-        "access_mode": "subscription_tool",
-        "location": "cloud",
-        "api_billing_allowed": False,
-        **fields,
+def _extra_model(design: Design, name: str, family: str) -> None:
+    design.runner.registry["models"][name] = {
+        "provider": "google_ai_pro",
+        "model_id": name,
+        "family": family,
+        "capabilities": ["design_reasoning"],
     }
 
 
-def test_a_critic_on_another_provider_of_the_proposals_family_is_a_self_critique(
+def test_a_critic_on_another_model_of_the_proposals_family_is_a_self_critique(
     design: Design, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _extra_provider(design, "gemini_elsewhere", family="gemini")  # not proposal_b's provider id
+    _extra_model(design, "gemini_elsewhere", "gemini")  # not proposal_b's model id
     monkeypatch.setitem(BACKENDS, "critique_b_by_a", "gemini_elsewhere")
     a2_ready(design)
     with pytest.raises(GateError, match="same backend or model family"):
         design.guard("A2")
 
 
-def test_a_critic_whose_family_is_unknown_is_not_granted_independence(
+def test_a_critic_that_is_not_a_catalog_model_is_not_granted_independence(
     design: Design, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _extra_provider(design, "mystery")  # no family declared
-    monkeypatch.setitem(BACKENDS, "critique_b_by_a", "mystery")
+    monkeypatch.setitem(BACKENDS, "critique_b_by_a", "mystery")  # no such model
     a2_ready(design)
     with pytest.raises(GateError, match="no resolvable model family"):
         design.guard("A2")
@@ -992,7 +991,7 @@ def test_findings_that_do_not_bind_do_not_fire_the_adr_veto(design: Design) -> N
 def test_a_review_on_the_authors_backend_cannot_fire_the_adr_veto(
     design: Design, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setitem(BACKENDS, "critique_a_by_b", "claude_pro")  # same as proposal_a
+    monkeypatch.setitem(BACKENDS, "critique_a_by_b", "claude_cli_default")  # same as proposal_a
     seal_clean_design(design)
     seal_reviews(design, [finding("f1", "ADR 0001")])
     design.guard("B1")

@@ -1,16 +1,16 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "conformance_result",
-  "title": "Recorded conformance result for one model provider (host evidence, not policy)",
+  "title": "Recorded conformance result for one catalog model (host evidence, not policy)",
   "type": "object",
   "required": [
-    "version", "provider", "identity", "provider_digest", "profiles_digest",
+    "version", "model", "identity", "entry_digest", "profiles_digest",
     "required_checks", "checks", "passed", "recorded_at"
   ],
   "additionalProperties": false,
   "properties": {
     "version": {"const": 1},
-    "provider": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "model": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
     "identity": {
       "type": "object",
       "required": ["model", "model_version", "access_method"],
@@ -21,7 +21,7 @@
         "access_method": {"type": "string", "minLength": 1}
       }
     },
-    "provider_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "entry_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "profiles_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "required_checks": {
       "type": "array",

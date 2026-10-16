@@ -50,7 +50,7 @@ from agentic_pipeline.manifest import (
 )
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.readiness import Report, evaluate_stage
-from agentic_pipeline.registry import operations
+from agentic_pipeline.registry import backend_location, operations
 from agentic_pipeline.transition import (
     BudgetLedger,
     GuardEvaluator,
@@ -273,7 +273,7 @@ class Dispatcher:
         classes = [i.data_class for i in found.values()] + ["unknown"] * bool(errors)
         data_class = max(classes or ["unknown"], key=order.index)
         # Only a provider declared `local` stays on the host; a missing or odd value is cloud.
-        location = self.registry["providers"][backend].get("location")
+        location = backend_location(self.registry, backend)
         allowed = self.data_classes["classes"][data_class].get("cloud_allowed") is True
         if location != "local" and not allowed:
             errors.append(f"data class {data_class!r} may not be sent to cloud backend {backend}")
