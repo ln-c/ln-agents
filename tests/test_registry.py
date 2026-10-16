@@ -309,3 +309,39 @@ def test_candidate_backends_per_operation_are_pinned() -> None:
         "D1.test_generation": ["qwen_local"],
         "E1.implementation_patch": ["qwen_local"],
     }
+
+
+AGY_MODELS = {  # `agy models`, as listed by the tool
+    "gemini-4-argon-medium": "gemini",
+    "gemini-4-argon-high": "gemini",
+    "gemini-4-argon-low": "gemini",
+    "gemini-3.8-flash-high": "gemini",
+    "gemini-3.8-flash-medium": "gemini",
+    "gemini-3.8-flash-low": "gemini",
+    "claude-opus-5-5-low": "claude",
+    "claude-opus-5-5-medium": "claude",
+    "claude-opus-5-5-high": "claude",
+    "claude-sonnet-5-5-low": "claude",
+    "claude-sonnet-5-5-medium": "claude",
+    "claude-sonnet-5-5-high": "claude",
+    "gpt-oss-120b-medium": "gpt_oss",
+}
+
+
+@pytest.mark.parametrize(("model_id", "family"), AGY_MODELS.items())
+def test_every_model_agy_lists_resolves_to_its_family(model_id: str, family: str) -> None:
+    provider = {**REGISTRY["providers"]["google_ai_pro"], "model_id": model_id}
+    assert resolve_family(provider) == family
+
+
+@pytest.mark.parametrize("model_id", [m for m, f in AGY_MODELS.items() if f != "gemini"])
+def test_design_b_cannot_be_pointed_at_a_model_agy_serves_from_another_family(
+    model_id: str,
+) -> None:
+    registry = copy.deepcopy(REGISTRY)
+    registry["providers"]["google_ai_pro"]["model_id"] = model_id
+    errors = validate_registry(registry, GRAPH, ROOT)
+    if AGY_MODELS[model_id] == "claude":  # shares a family with design A
+        assert any(e.startswith("registry R14 A1.proposal_b") for e in errors), errors
+    else:  # a family of its own is independent of both A and the others
+        assert not errors, errors
