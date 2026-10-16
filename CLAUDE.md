@@ -19,7 +19,7 @@ Act only in the phase and role explicitly assigned by the orchestrator. Do not c
 
 ### Design isolation
 
-- Design A uses the Claude subscription-backed tool; Design B uses the Google AI Pro subscription-backed tool.
+- Design A and Design B use two different model families, bound in `policy/model_registry.yaml` (currently A = Claude Pro, B = Google AI Pro).
 - Each proposal starts from the same sealed requirements/context snapshot and runs in an isolated session and write root.
 - Do not read the other proposal or its critique until your own proposal is sealed.
 - If isolation cannot be demonstrated by runtime controls, report `isolation_unverified`; do not claim independent multi-model review.
