@@ -1,0 +1,187 @@
+"""`python -m agentic_pipeline models {discover,test}`: what is bound, and does it conform.
+
+`discover` is read-only: it never calls a model. `test` makes real model calls through the
+provider's adapter, outside any run, so it spends the provider's subscription allowance (not
+pipeline budget) and applies the dispatcher's own pre-call gates first: the credential
+denylist, the provider's readiness checks, and the isolation checks its operations need.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import sys
+import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from agentic_pipeline.conformance import (
+    bound_operations,
+    conformance_status,
+    required_checks,
+    run_conformance,
+    write_record,
+)
+from agentic_pipeline.dispatch import DISPATCHER_ENFORCED, BackendAdapter, Identity
+from agentic_pipeline.graph import REPO_ROOT, load_yaml
+from agentic_pipeline.readiness import Report, Status, run_preflight
+from agentic_pipeline.registry import MODEL_ACCESS_MODES, resolve_family
+
+PROFILES_FILE = Path("policy") / "model_test_profiles.yaml"
+
+
+def _default_adapter(registry: Mapping[str, Any], provider: str) -> BackendAdapter:
+    from agentic_pipeline.run_cli import LazyAdapters  # imports the real adapters lazily
+
+    adapters = LazyAdapters(registry)
+    if (why := adapters.unavailable(provider)) is not None:
+        raise LookupError(why)
+    return adapters[provider]
+
+
+@dataclass(slots=True)
+class Deps:
+    """Everything with side effects, injectable for tests."""
+
+    preflight: Callable[[Path], Report] = run_preflight
+    make_adapter: Callable[[Mapping[str, Any], str], BackendAdapter] = _default_adapter
+    run_kwargs: dict[str, Any] = field(default_factory=dict)  # new_nonce / clock overrides
+
+
+def _load(root: Path) -> tuple[Mapping[str, Any], Mapping[str, Any], str]:
+    registry = load_yaml(root / "policy" / "model_registry.yaml")
+    raw = (root / PROFILES_FILE).read_bytes()
+    profiles = load_yaml(root / PROFILES_FILE)
+    return registry, profiles, "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _model_providers(registry: Mapping[str, Any]) -> list[str]:
+    return [n for n, p in registry["providers"].items() if p["access_mode"] in MODEL_ACCESS_MODES]
+
+
+def _identity(deps: Deps, registry: Mapping[str, Any], provider: str) -> Identity | None:
+    try:
+        return deps.make_adapter(registry, provider).identity()
+    except Exception:  # an adapter that cannot be built has no identity to compare
+        return None
+
+
+def discover(root: Path, deps: Deps) -> int:
+    report = deps.preflight(root)
+    for err in report.static_errors:
+        print(f"ERROR: {err}", file=sys.stderr)
+    if report.static_errors:
+        return 1
+    registry, profiles, profiles_digest = _load(root)
+    for name in _model_providers(registry):
+        provider = registry["providers"][name]
+        bound = bound_operations(registry, name)
+        blockers = report.provider_blockers(name)
+        print(f"{name}")
+        print(f"  family:       {resolve_family(provider) or 'UNRESOLVED'}")
+        print(f"  location:     {provider['location']}")
+        print(f"  capabilities: {', '.join(provider.get('capabilities') or []) or '-'}")
+        print(f"  bound to:     {', '.join(f'{s}.{o}' for s, o in bound) or '(no operation)'}")
+        print(f"  readiness:    {'ready' if not blockers else '; '.join(blockers)}")
+        if not bound:
+            print("  conformance:  not required (not bound)")
+            continue
+        status, detail = conformance_status(
+            root, registry, profiles, profiles_digest, name, _identity(deps, registry, name)
+        )
+        print(f"  conformance:  {status} ({detail})")
+    return 0
+
+
+def _needed_isolation(registry: Mapping[str, Any], provider: str) -> set[str]:
+    """Isolation checks required by the operations this provider is bound to."""
+    needed: set[str] = set()
+    for stage, op_id in bound_operations(registry, provider):
+        op = next(
+            o for o in registry["stage_requirements"][stage]["operations"] if o["id"] == op_id
+        )
+        needed.update(registry["isolation_profiles"][op["isolation_profile"]])
+    return needed
+
+
+def _refusals(report: Report, registry: Mapping[str, Any], provider: str) -> list[str]:
+    """Why a conformance call may not be made now (the dispatcher's pre-call gates)."""
+    reasons = [
+        f"{c.name} {c.status}: {c.detail}"
+        for c in report.global_checks
+        if c.status is not Status.VERIFIED
+    ]
+    reasons += report.provider_blockers(name=provider)
+    for check in sorted(_needed_isolation(registry, provider)):
+        found = report.isolation.get(check)
+        if found is None:
+            reasons.append(f"isolation {check} not reported")
+        elif found.status is not Status.VERIFIED:
+            reasons.append(f"isolation {check} {found.status}: {found.detail}")
+    return list(dict.fromkeys(reasons))
+
+
+def test(root: Path, provider: str, deps: Deps) -> int:
+    report = deps.preflight(root)
+    for err in report.static_errors:
+        print(f"ERROR: {err}", file=sys.stderr)
+    if report.static_errors:
+        return 1
+    registry, profiles, profiles_digest = _load(root)
+    if provider not in _model_providers(registry):
+        print(f"ERROR: {provider!r} is not a model provider", file=sys.stderr)
+        return 1
+    checks = required_checks(registry, profiles, provider)
+    if not checks:
+        print(f"ERROR: {provider} is not bound to any operation; nothing to test", file=sys.stderr)
+        return 1
+    if reasons := _refusals(report, registry, provider):
+        print(f"{provider}: not testing; the dispatcher would refuse it too:", file=sys.stderr)
+        for reason in reasons:
+            print(f"  - {reason}", file=sys.stderr)
+        return 1
+    try:
+        adapter = deps.make_adapter(registry, provider)
+    except Exception as exc:
+        print(f"ERROR: no adapter for {provider}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    needed = _needed_isolation(registry, provider) - DISPATCHER_ENFORCED
+    if gaps := sorted(needed - set(adapter.enforced_isolation)):
+        print(f"ERROR: the {provider} adapter does not enforce {gaps}", file=sys.stderr)
+        return 1
+    print(f"{provider}: running {', '.join(checks)} (live calls use its subscription allowance)")
+    with tempfile.TemporaryDirectory(prefix="agentic-conformance-") as work:
+        record = run_conformance(
+            provider, adapter, registry, profiles, profiles_digest, Path(work), **deps.run_kwargs
+        )
+    path, digest = write_record(root, record)
+    for check in record["checks"]:
+        print(f"  {check['status']:<4}  {check['name']:<12}  {check['detail']}")
+    print(f"{'PASSED' if record['passed'] else 'FAILED'}: {path.relative_to(root)} {digest}")
+    return 0 if record["passed"] else 1
+
+
+def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    models = sub.add_parser("models", help="inspect and conformance-test bound models")
+    commands = models.add_subparsers(dest="models_command", required=True)
+    for name, text in (
+        ("discover", "read-only: bindings, readiness and conformance per model provider"),
+        ("test", "LIVE: run the conformance probes against one provider and record the result"),
+    ):
+        cmd = commands.add_parser(name, help=text)
+        cmd.add_argument("--root", type=Path, default=REPO_ROOT)
+        if name == "test":
+            cmd.add_argument("--provider", required=True)
+
+
+def models_command(args: argparse.Namespace, deps: Deps | None = None) -> int:
+    deps = deps or Deps()
+    try:
+        if args.models_command == "discover":
+            return discover(args.root, deps)
+        return test(args.root, args.provider, deps)
+    except (OSError, KeyError, ValueError) as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1

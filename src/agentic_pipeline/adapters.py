@@ -24,13 +24,13 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from agentic_pipeline.broker import BrokerPolicy, InferenceBroker, Upstream, ollama_upstream
 from agentic_pipeline.design_tasks import extract_json_object, json_task
-from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, PreparedCall
+from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, PreparedCall
 from agentic_pipeline.readiness import Host, ollama_model_digest, resolve_executable
 from agentic_pipeline.sandbox import (
     HOME,
@@ -153,12 +153,16 @@ class PiQwenAdapter:
         meta = json.loads((self.pi_package / "package.json").read_text(encoding="utf-8"))
         return str(meta.get("version", "unknown"))
 
-    def prepare(self, grant: DispatchGrant) -> PreparedCall:
-        return PreparedCall(
+    def identity(self) -> Identity:
+        return Identity(
             model=self.model_id,
             model_version=self.model_version,
             access_method=f"local_inference via pi {self.pi_version} in bwrap through broker",
-            prompt=self.prompt_builder(grant).encode("utf-8"),
+        )
+
+    def prepare(self, grant: DispatchGrant) -> PreparedCall:
+        return PreparedCall(
+            **asdict(self.identity()), prompt=self.prompt_builder(grant).encode("utf-8")
         )
 
     def models_config(self) -> dict[str, Any]:
@@ -321,16 +325,18 @@ class ClaudeAdapter:
             raise LookupError(f"{credentials} not found; sign in with `claude` first")
         return cls(Path(path).resolve(), version, credentials, **overrides)
 
+    def identity(self) -> Identity:
+        return Identity(
+            model="claude_pro:cli-default",  # the provider-resolved model is recorded after
+            model_version=f"claude-code {self.cli_version}",
+            access_method="subscription_tool via claude -p in bwrap (text-only)",
+        )
+
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         user = f"{self.task_builder(grant)}\n\n{embed_inputs(grant.inputs)}"
         system = CLAUDE_JSON_SYSTEM_PROMPT if grant.output_schema else CLAUDE_SYSTEM_PROMPT
         prompt = json.dumps({"system": system, "user": user}, sort_keys=True)
-        return PreparedCall(
-            model="claude_pro:cli-default",  # the provider-resolved model is recorded after
-            model_version=f"claude-code {self.cli_version}",
-            access_method="subscription_tool via claude -p in bwrap (text-only)",
-            prompt=prompt.encode("utf-8"),
-        )
+        return PreparedCall(**asdict(self.identity()), prompt=prompt.encode("utf-8"))
 
     def sandbox_spec(self, call: PreparedCall) -> SandboxSpec:
         prompt = json.loads(call.prompt)
@@ -427,17 +433,19 @@ class AgyAdapter:
             raise LookupError("providers.google_ai_pro.model_id is not set; agy offers many models")
         return cls(Path(path).resolve(), version, token, model_id, **overrides)
 
+    def identity(self) -> Identity:
+        return Identity(
+            model=f"google_ai_pro:{self.model_id}",  # requested; agy does not report the model used
+            model_version=f"agy {self.cli_version}",
+            access_method="subscription_tool via agy -p in bwrap (tools auto-denied)",
+        )
+
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         preamble = AGY_JSON_PREAMBLE if grant.output_schema else AGY_PREAMBLE
         prompt = f"{preamble}\n\n{self.task_builder(grant)}\n\n{embed_inputs(grant.inputs)}"
         if len(prompt.encode("utf-8")) > AGY_MAX_PROMPT_BYTES:
             raise ValueError(f"prompt exceeds {AGY_MAX_PROMPT_BYTES} bytes; too large for agy -p")
-        return PreparedCall(
-            model=f"google_ai_pro:{self.model_id}",  # requested; agy does not report the model used
-            model_version=f"agy {self.cli_version}",
-            access_method="subscription_tool via agy -p in bwrap (tools auto-denied)",
-            prompt=prompt.encode("utf-8"),
-        )
+        return PreparedCall(**asdict(self.identity()), prompt=prompt.encode("utf-8"))
 
     def sandbox_spec(self, call: PreparedCall) -> SandboxSpec:
         return SandboxSpec(

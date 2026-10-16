@@ -17,6 +17,8 @@ MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
 # Code artifacts must stay off cloud backends; weakening one is a policy-review event.
 CODE_ARTIFACTS = ("pinned_source_tree", "protected_tests")
 GROUNDING_PRODUCERS = ("START", "G1", "G4")
+# Checks conformance.py implements; policy/model_test_profiles.yaml may name only these.
+CHECK_NAMES = ("identity", "json_reply", "file_output")
 POLICY_FILES = (
     "weights",
     "vetoes",
@@ -29,6 +31,7 @@ POLICY_FILES = (
     "ci",
     "routing",
     "release",
+    "model_test_profiles",
 )
 
 
@@ -281,6 +284,31 @@ def check_fast_path(doc: Mapping[str, Any]) -> list[str]:
         errors.append("fast_path: require_all must not be empty")
     elif "no_active_veto" not in require_all:
         errors.append("fast_path: require_all must include no_active_veto")
+    return errors
+
+
+def check_test_profiles(doc: Mapping[str, Any], capabilities: list[str]) -> list[str]:
+    """Every capability a registry operation can require has a profile of implemented checks."""
+    profiles = doc.get("profiles")
+    if not isinstance(profiles, dict):
+        return ["model_test_profiles: profiles must be a mapping"]
+    errors: list[str] = []
+    for capability in capabilities:
+        if capability not in profiles:
+            errors.append(f"model_test_profiles: no profile for capability {capability!r}")
+    for capability, checks in profiles.items():
+        if capability not in capabilities:
+            errors.append(f"model_test_profiles: {capability!r} is not a registry capability")
+        if not isinstance(checks, list) or not checks:
+            errors.append(f"model_test_profiles: {capability} needs a non-empty list of checks")
+            continue
+        if checks[0] != "identity":
+            errors.append(f"model_test_profiles: {capability} must start with the identity check")
+        for name in checks:
+            if name not in CHECK_NAMES:
+                errors.append(f"model_test_profiles: {capability} names unknown check {name!r}")
+        if len(set(map(str, checks))) != len(checks):
+            errors.append(f"model_test_profiles: {capability} repeats a check")
     return errors
 
 
