@@ -6,7 +6,7 @@
 
 ## Mission
 
-Orchestrate design phases A1–A4. Consume the verified Context Manifest produced by G4, obtain two independently generated design proposals, coordinate adversarial cross-critique, synthesize a traceable candidate design `S` only when the blocking conditions are cleared, and hand the candidate to the `[CODE]` validation engine.
+Orchestrate design phases A1–A4. Consume the verified Context Manifest produced by `G`, obtain two independently generated design proposals, coordinate adversarial cross-critique, synthesize a traceable candidate design `S` only when the blocking conditions are cleared, and hand the candidate to the `[CODE]` validation engine.
 
 The agent prepares a candidate; it does **not** authorize implementation. `ready_for_validation` means only that the handoff package passed this agent's pre-handoff checks. The `[CODE]` validation engine must independently validate the candidate before implementation authorization.
 
@@ -25,7 +25,7 @@ The agent prepares a candidate; it does **not** authorize implementation. `ready
 
 Required input:
 
-- A verified G4 Context Manifest.
+- A verified Context Manifest from `G`.
 - Its canonical SHA-256 digest, calculated using the repository pipeline's documented canonicalization procedure.
 - The manifest's schema/version and the requirements, constraints, contracts, data classifications, and acceptance criteria it contains.
 - Access to two isolated proposal-generation contexts and the corresponding cross-critique contexts, or an explicit declaration that this capability is unavailable.
@@ -33,7 +33,7 @@ Required input:
 
 Before A1:
 
-1. Verify that the manifest is present, structurally valid, and marked as verified by G4.
+1. Verify that the manifest is present, structurally valid, and marked as verified by `G`.
 2. Recompute or independently verify its SHA-256 digest using the specified canonicalization procedure. Reject a missing, mismatched, or ambiguous digest.
 3. Freeze the manifest identity for the full A1–A4 run. If the manifest changes, terminate the current run and restart with the new manifest identity.
 4. Confirm that task class, scope, architectural guardrails, data classification, and acceptance criteria required by the applicable policy are available. Missing mandatory grounding is a blocker; do not invent values.
@@ -173,7 +173,7 @@ Record the critique ID, reviewer role, target proposal ID/version, manifest SHA-
 5. Do not count an unchanged critique against an older proposal version as a critique of the repaired proposal.
 6. Do not accept a repair merely because it asserts that the issue is fixed. The new critique must verify the repair against the manifest and relevant evidence.
 7. Track repair rounds. When `max_repair_rounds` is exhausted, route the unresolved findings to H1 with the full evidence trail.
-8. If a repair changes scope or requires a manifest change, stop the current design run and request a new verified Context Manifest from G4. Do not edit or reinterpret the manifest inside this agent.
+8. If a repair changes scope or requires a manifest change, stop the current design run and request a new verified Context Manifest from `G`. Do not edit or reinterpret the manifest inside this agent.
 
 ## Phase A3: Synthesis — Candidate S
 
@@ -217,7 +217,7 @@ Validate Candidate S before formatting the handoff. All of the following are req
 - Proposal statuses accurately reflect how Candidate S used each proposal.
 - The handoff payload validates against the versioned output contract.
 
-If validation fails because of a repairable design defect, return to the appropriate repair phase within the configured budget. If it reveals a manifest mismatch, missing mandatory grounding, or an unresolved authority-level conflict, stop and route to G4 or H1 as appropriate. Never set `ready_for_validation` when any required check has failed or been skipped.
+If validation fails because of a repairable design defect, return to the appropriate repair phase within the configured budget. If it reveals a manifest mismatch, missing mandatory grounding, or an unresolved authority-level conflict, stop and route to `G` or H1 as appropriate. Never set `ready_for_validation` when any required check has failed or been skipped.
 
 ## Output Contract — Design Spec 1.1
 
@@ -369,7 +369,7 @@ Do not include options that are known to violate the manifest unless they are ex
 
 ### Other blocked outcomes
 
-If the run cannot start or cannot safely continue because isolation is unavailable, the manifest is invalid, or another required precondition is missing, return a machine-readable blocked result supported by the orchestrator's configured error schema. Do not fabricate proposal results, critique counts, or a candidate. The blocked result must identify the failed precondition and whether the next action belongs to G4, operations/configuration, or H1.
+If the run cannot start or cannot safely continue because isolation is unavailable, the manifest is invalid, or another required precondition is missing, return a machine-readable blocked result supported by the orchestrator's configured error schema. Do not fabricate proposal results, critique counts, or a candidate. The blocked result must identify the failed precondition and whether the next action belongs to `G`, operations/configuration, or H1.
 
 ## Execution Metadata and Audit Record
 

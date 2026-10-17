@@ -24,7 +24,7 @@ This repository's deterministic implementation remains authoritative. Agent spec
 
 | Agent | Specification | Existing pipeline stages |
 |---|---|---|
-| Grounding | [`agents/pipeline-grounding-agent.md`](agents/pipeline-grounding-agent.md) | ENTRY–G4; context manifest and evidence |
+| Grounding | [`agents/pipeline-grounding-agent.md`](agents/pipeline-grounding-agent.md) | START, G; context manifest and evidence |
 | Design | [`agents/pipeline-design-agent.md`](agents/pipeline-design-agent.md) | A1–A4; independent proposals, critique, synthesis |
 | Build | [`agents/pipeline-build-agent.md`](agents/pipeline-build-agent.md) | C1–E4; decomposition, contracts, tests, implementation |
 | Exception Router | [`agents/pipeline-exception-router.md`](agents/pipeline-exception-router.md) | X; evidence-based exception classification and routing |

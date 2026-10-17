@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "context_manifest",
-  "title": "Context manifest (G4): hashed and immutable for the run",
+  "title": "Context manifest (G): hashed and immutable for the run",
   "type": "object",
   "required": ["run_id", "commit_sha", "contract_versions", "data_classes", "policy_version", "scorer_version", "hash"],
   "additionalProperties": false,

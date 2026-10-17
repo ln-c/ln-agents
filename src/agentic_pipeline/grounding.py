@@ -1,31 +1,34 @@
-"""Deterministic grounding handlers for START and G1-G4.
+"""Deterministic grounding handlers for START and G.
 
 Run directory layout (relative to the per-run root):
 
     inputs/entry_spec.json                       copied in by `run init`
     grounding/START/requirements/                sealed copy of the entry spec
-    grounding/G1/{pinned_source_tree,applicable_contracts,protected_tests}/
+    grounding/G/{pinned_source_tree,applicable_contracts,protected_tests}/
                                                  extracted from git at the pinned SHA, sealed
-    grounding/G1/pinned_snapshot/snapshot.json   the SHA and contract versions, sealed
-    grounding/G2/classification.json             audit record of the classification pass
-    grounding/G3/file_index.json                 minimal file-level index
-    grounding/G4/pinned_context_manifest/        the hashed context manifest (sealed)
+    grounding/G/pinned_snapshot/snapshot.json    the SHA and contract versions, sealed
+    grounding/G/pinned_context_manifest/         the hashed context manifest, sealed
+    grounding/G/classification.json              audit record of the classification pass
+    grounding/G/file_index.json                  minimal file-level index (not sealed)
 
-Every stage publishes (or, for G2, updates) a stage manifest, which is how downstream
-stages find its sealed artifacts. These sit outside every `workspace_roots` path.
+`G` does four things in one handler: it pins HEAD and seals the source tree, contracts and
+protected tests; classifies every artifact; indexes the source tree; and writes the hashed
+context manifest. Everything it seals is published in ONE stage manifest, which is the commit
+point: a crash earlier leaves nothing published and a retry starts again, and once it is
+published a retry changes nothing, so a half-finished run never re-pins a different SHA. The
+only other write is the data class on the `requirements` that START sealed, which is
+idempotent and happens before that commit point. Manifests sit outside every
+`workspace_roots` path.
 
 Limits, stated plainly:
-* G2 classifies by artifact role from `artifact_defaults` in policy/data_classes.yaml
+* Classification is by artifact role from `artifact_defaults` in policy/data_classes.yaml
   (code confidential, specs and contracts internal); an artifact missing there is
   `unknown`. The entry spec's `declared_classification` may only RAISE `requirements`:
   a label that is not a policy class counts as `unknown`. There are no path or content
   rules, so one class covers a whole artifact.
-* G3 builds a file-level index only. SCIP, Tree-sitter, vector and graph indexes are
+* The index is file-level only. SCIP, Tree-sitter, vector and graph indexes are
   not built; the index file says so.
 * `applicable_contracts` is whatever `contracts/` holds at the SHA (empty today).
-
-Handlers are idempotent: a stage whose manifest already verifies is not redone, so a
-half-finished run never re-pins a different SHA.
 """
 
 from __future__ import annotations
@@ -62,9 +65,17 @@ SNAPSHOT_FILE = "snapshot.json"
 MAX_ENTRY_SPEC_BYTES = 1 << 20
 DEFERRED_INDEXES = ["scip", "tree_sitter", "vector", "graph"]
 
-G1_ARTIFACTS = ("pinned_source_tree", "applicable_contracts", "pinned_snapshot", "protected_tests")
-# Repo subtree each G1 artifact is taken from (None = the whole tree).
-G1_SOURCES: dict[str, str | None] = {
+GROUND_STAGE = "G"
+PINNED_ARTIFACTS = (
+    "pinned_source_tree",
+    "applicable_contracts",
+    "pinned_snapshot",
+    "protected_tests",
+)
+GROUND_ARTIFACTS = (*PINNED_ARTIFACTS, "pinned_context_manifest")
+# Repo subtree each pinned artifact is taken from (None = the whole tree); the snapshot record
+# is written by `ground` itself.
+PINNED_SOURCES: dict[str, str | None] = {
     "pinned_source_tree": None,
     "applicable_contracts": "contracts",
     "protected_tests": "tests",
@@ -125,7 +136,7 @@ def _published(ctx: HandlerContext, stage: str, ids: tuple[str, ...]) -> dict[st
     """The stage's manifest if published; None if the stage never published.
 
     A published manifest that is unreadable, differs from `ids`, or no longer matches the
-    disk raises: redoing the stage would silently re-pin it (G1 to a HEAD that moved).
+    disk raises: redoing the stage would silently re-pin it (`G` to a HEAD that moved).
     """
     try:
         doc = load_manifest(ctx.run_root, stage, ctx.run_id)
@@ -249,29 +260,7 @@ def start(ctx: HandlerContext) -> str:
     return "task_class_valid"
 
 
-# ── G1 ───────────────────────────────────────────────────────────────────────
-
-
-def pin_snapshot(ctx: HandlerContext) -> str:
-    """Pin HEAD and seal the source tree, contracts, and protected tests at it."""
-    _policy(ctx)
-    if _published(ctx, "G1", G1_ARTIFACTS):
-        return "always"
-    sha = _git(ctx.root, "rev-parse", "--verify", "HEAD^{commit}").strip()
-    base = _fresh(_stage_dir(ctx, "G1"))
-    for artifact, subdir in G1_SOURCES.items():
-        _extract(ctx.root, sha, subdir, base / artifact)
-    snapshot = {
-        "commit_sha": sha,
-        "contract_versions": _contract_versions(ctx.root, sha),
-    }
-    (base / "pinned_snapshot").mkdir()
-    atomic_write_json(base / "pinned_snapshot" / SNAPSHOT_FILE, snapshot)
-    _publish(ctx, "G1", {artifact: base / artifact for artifact in G1_ARTIFACTS})
-    return "always"
-
-
-# ── G2 ───────────────────────────────────────────────────────────────────────
+# ── G ────────────────────────────────────────────────────────────────────────
 
 
 def classify_artifact(artifact_id: str, policy: PolicySnapshot, declared: str | None = None) -> str:
@@ -290,48 +279,19 @@ def classify_artifact(artifact_id: str, policy: PolicySnapshot, declared: str | 
     return cls
 
 
-def classify(ctx: HandlerContext) -> str:
-    """Record a data class on every artifact START and G1 published."""
-    snap = _policy(ctx)
-    stages = {"START": ("requirements",), "G1": G1_ARTIFACTS}
-    spec = json.loads((ctx.run_root / INPUTS_DIR / ENTRY_SPEC_FILE).read_bytes())
-    declared = spec["data"]["declared_classification"]
-    classes = {
-        artifact: classify_artifact(
-            artifact, snap, declared if artifact == "requirements" else None
-        )
-        for ids in stages.values()
-        for artifact in ids
-    }
-    audit = _fresh(_stage_dir(ctx, "G2"))
-    atomic_write_json(
-        audit / "classification.json",
-        {"rules": "artifact_defaults", "declared_classification": declared, "classes": classes},
-    )
-    for stage, ids in stages.items():
-        doc = _published(ctx, stage, ids)
-        if doc is None:
-            raise GroundingError(f"{stage}: manifest missing")
-        if all("data_class" in e for e in doc["artifacts"].values()):
-            continue
-        for artifact in ids:
-            doc["artifacts"][artifact]["data_class"] = classes[artifact]
-        publish_stage_manifest(ctx.run_root, doc)
-    return "always"
+def _classify_requirements(ctx: HandlerContext, classes: Mapping[str, str]) -> None:
+    """Record the data class on the `requirements` START sealed; a no-op once recorded."""
+    doc = _published(ctx, "START", ("requirements",))
+    if doc is None:
+        raise GroundingError("START: manifest missing")
+    if all("data_class" in e for e in doc["artifacts"].values()):
+        return
+    doc["artifacts"]["requirements"]["data_class"] = classes["requirements"]
+    publish_stage_manifest(ctx.run_root, doc)
 
 
-# ── G3 ───────────────────────────────────────────────────────────────────────
-
-
-def build_index(ctx: HandlerContext) -> str:
+def _file_index(tree: Path) -> dict[str, Any]:
     """Minimal file-level index of the pinned source tree (not a code-intelligence index)."""
-    _policy(ctx)
-    inputs, errors = resolve_sealed_inputs(
-        ctx.run_root, ctx.run_id, ctx.registry, ["pinned_source_tree"]
-    )
-    if errors:
-        raise GroundingError("; ".join(errors))
-    tree = inputs["pinned_source_tree"].path
     files = [
         {
             "path": path.relative_to(tree).as_posix(),
@@ -341,16 +301,7 @@ def build_index(ctx: HandlerContext) -> str:
         for path in sorted(tree.rglob("*"))
         if path.is_file()
     ]
-    out = _stage_dir(ctx, "G3")
-    out.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(
-        out / "file_index.json",
-        {"kind": "file_index", "deferred": DEFERRED_INDEXES, "files": files},
-    )
-    return "always"
-
-
-# ── G4 ───────────────────────────────────────────────────────────────────────
+    return {"kind": "file_index", "deferred": DEFERRED_INDEXES, "files": files}
 
 
 def _canonical(document: Mapping[str, Any]) -> bytes:
@@ -363,20 +314,41 @@ def context_hash(document: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(_canonical(body)).hexdigest()
 
 
-def write_context(ctx: HandlerContext) -> str:
-    """Write the hashed, immutable context manifest and seal it."""
+def ground(ctx: HandlerContext) -> str:
+    """G: pin the snapshot, classify, index, and seal the hashed context manifest."""
     snap = _policy(ctx)
-    if _published(ctx, "G4", ("pinned_context_manifest",)):
+    if _published(ctx, GROUND_STAGE, GROUND_ARTIFACTS):
         return "always"
-    inputs, errors = resolve_sealed_inputs(
-        ctx.run_root, ctx.run_id, ctx.registry, ["requirements", *G1_ARTIFACTS]
-    )
+    sealed, errors = resolve_sealed_inputs(ctx.run_root, ctx.run_id, ctx.registry, ["requirements"])
     if errors:
         raise GroundingError("; ".join(errors))
-    if not (_stage_dir(ctx, "G3") / "file_index.json").is_file():
-        raise GroundingError("G3 file index is missing")
-    snapshot = json.loads((inputs["pinned_snapshot"].path / SNAPSHOT_FILE).read_bytes())
-    classes = {artifact: item.data_class for artifact, item in inputs.items()}
+    spec = json.loads((sealed["requirements"].path / ENTRY_SPEC_FILE).read_bytes())
+    declared = spec["data"]["declared_classification"]
+
+    # Pin: everything below reads this commit's objects, never the working tree.
+    sha = _git(ctx.root, "rev-parse", "--verify", "HEAD^{commit}").strip()
+    base = _fresh(_stage_dir(ctx, GROUND_STAGE))
+    for artifact, subdir in PINNED_SOURCES.items():
+        _extract(ctx.root, sha, subdir, base / artifact)
+    snapshot = {"commit_sha": sha, "contract_versions": _contract_versions(ctx.root, sha)}
+    (base / "pinned_snapshot").mkdir()
+    atomic_write_json(base / "pinned_snapshot" / SNAPSHOT_FILE, snapshot)
+
+    # Classify by role; a declared label can only raise `requirements`.
+    classes = {
+        artifact: classify_artifact(
+            artifact, snap, declared if artifact == "requirements" else None
+        )
+        for artifact in ("requirements", *PINNED_ARTIFACTS)
+    }
+    atomic_write_json(
+        base / "classification.json",
+        {"rules": "artifact_defaults", "declared_classification": declared, "classes": classes},
+    )
+    atomic_write_json(base / "file_index.json", _file_index(base / "pinned_source_tree"))
+
+    # The manifest cannot carry the source tree's content (its schema fixes its fields), so
+    # it is classified by role, not inherited from what it was computed from.
     document: dict[str, Any] = {
         "run_id": ctx.run_id,
         "parent_run_id": None,
@@ -393,20 +365,25 @@ def write_context(ctx: HandlerContext) -> str:
         validate("context_manifest", document)
     except ValidationError as exc:
         raise GroundingError(f"context manifest invalid: {exc.message}") from exc
-    out = _fresh(_stage_dir(ctx, "G4")) / "pinned_context_manifest"
-    out.mkdir()
-    atomic_write_json(out / "context_manifest.json", document)
-    # Classified by role, not inherited: the schema fixes the manifest's fields (see
-    # policy/data_classes.yaml), so it cannot carry the source tree's content.
-    label = classify_artifact("pinned_context_manifest", snap)
-    _publish(ctx, "G4", {"pinned_context_manifest": out}, {"pinned_context_manifest": label})
+    manifest_dir = base / "pinned_context_manifest"
+    manifest_dir.mkdir()
+    atomic_write_json(manifest_dir / "context_manifest.json", document)
+
+    # Idempotent, and before the commit point: a retry after a crash here repeats it harmlessly.
+    _classify_requirements(ctx, classes)
+    _publish(
+        ctx,
+        GROUND_STAGE,
+        {artifact: base / artifact for artifact in GROUND_ARTIFACTS},
+        {
+            **{a: classes[a] for a in PINNED_ARTIFACTS},
+            "pinned_context_manifest": classify_artifact("pinned_context_manifest", snap),
+        },
+    )
     return "always"
 
 
 GROUNDING_HANDLERS: dict[str, Callable[[Any], str]] = {
     "START": start,
-    "G1": pin_snapshot,
-    "G2": classify,
-    "G3": build_index,
-    "G4": write_context,
+    GROUND_STAGE: ground,
 }

@@ -84,13 +84,13 @@ Before requesting creation, validate all of the following:
 
 - The human explicitly authorized the child-run purpose and proposed scope/constraint changes.
 - The parent run ID, parent manifest ID/digest, and parent failure-history reference are present.
-- The child receives a **new run ID**, a fresh G1 repository snapshot, a newly generated Context Manifest, and a newly allocated budget under policy.
+- The child receives a **new run ID**, a fresh `G` repository snapshot, a newly generated Context Manifest, and a newly allocated budget under policy.
 - The complete relevant parent failure history is carried forward by immutable references, including failure signatures, attempted remediations, exhausted budgets, and lessons that must not be repeated.
 - Parent approvals are not inherited as valid approvals for the child. The child must obtain fresh approvals for its own artifact identities.
 - The one-child-per-task rule is enforced atomically by `[CODE]` using a stable task/parent idempotency key. A duplicate request must return the existing child reference or a conflict; it must not create an unintended second child.
 - The reason for spawning the child and the exact authorized change are recorded in the append-only lineage ledger.
 
-Route to `G1` only after `[CODE]` confirms that the child run was created with a fresh snapshot and budget. If child creation partially fails, report the partial state and reconcile it idempotently; do not claim successful creation prematurely.
+Route to `G` only after `[CODE]` confirms that the child run was created with a fresh snapshot and budget. If child creation partially fails, report the partial state and reconcile it idempotently; do not claim successful creation prematurely.
 
 ## Immutability and Audit Requirements
 
@@ -188,7 +188,7 @@ Before emitting a routing payload, verify:
 - [ ] A security veto cannot be bypassed; unknown status fails closed.
 - [ ] The design decision is bound to the exact reviewed artifacts.
 - [ ] BENCH experiments are sandboxed and hard vetoes are rechecked before scoring.
-- [ ] CHILD runs use a fresh G1 snapshot, manifest, and budget, while preserving immutable parent failure lineage.
+- [ ] CHILD runs use a fresh `G` snapshot, manifest, and budget, while preserving immutable parent failure lineage.
 - [ ] Duplicate decisions/child requests are handled idempotently.
 - [ ] The decision is durably recorded and the JSON payload validates.
 - [ ] The payload distinguishes a requested transition from a transition confirmed by `[CODE]`.

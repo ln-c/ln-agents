@@ -45,7 +45,7 @@ ISOLATION = (
     "sealed_input_verification",
     "broker_mediated_inference",
 )
-UPSTREAM = ("START", "G1", "G4", "DR", "A1", "A2", "A3", "C1", "D1")
+UPSTREAM = ("START", "G", "DR", "A1", "A2", "A3", "C1", "D1")
 
 
 def seed(
@@ -187,7 +187,7 @@ def test_a1_happy_path_runs_both_operations_with_role_backends(
 
 
 def test_grant_carries_only_declared_scope(tmp_path: Path, adapters: dict) -> None:
-    make(tmp_path, adapters).dispatch_stage("G4", "always", "A1", {})
+    make(tmp_path, adapters).dispatch_stage("G", "always", "A1", {})
     grant = adapters["claude_cli_default"].grants[0]
     assert grant.allowed_reads == (
         "pinned_context_manifest",
@@ -208,20 +208,20 @@ def test_ineligible_stage_blocked_before_anything(tmp_path: Path, adapters: dict
 def test_credential_env_blocks_dispatch(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, reports=iter([report(credential=Status.FAILED)]))
     with pytest.raises(DispatchBlocked, match="credential_env_absent"):
-        d.dispatch_stage("G4", "always", "A1", {})
+        d.dispatch_stage("G", "always", "A1", {})
 
 
 def test_deny_all_guards_by_default(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, guards=None)
     with pytest.raises(DispatchBlocked, match="not satisfied"):
-        d.dispatch_stage("G4", "always", "A1", {})
+        d.dispatch_stage("G", "always", "A1", {})
     assert events(d) == []
 
 
 def test_missing_adapter_blocks(tmp_path: Path, adapters: dict) -> None:
     del adapters["gemini_3_8_flash_high"]
     with pytest.raises(DispatchBlocked, match="no adapter"):
-        make(tmp_path, adapters).dispatch_stage("G4", "always", "A1", {})
+        make(tmp_path, adapters).dispatch_stage("G", "always", "A1", {})
 
 
 def test_exhausted_budget_blocks(tmp_path: Path, adapters: dict) -> None:
@@ -251,7 +251,7 @@ def test_adapter_exception_logged_and_pauses(tmp_path: Path, adapters: dict) -> 
     adapters["claude_cli_default"].raise_on_invoke = True
     d = make(tmp_path, adapters)
     with pytest.raises(RunPaused, match="adapter failed"):
-        d.dispatch_stage("G4", "always", "A1", {})
+        d.dispatch_stage("G", "always", "A1", {})
     assert events(d) == ["model_call", "exception"]
     assert verify_provenance_chain(d.log.path).ok
     assert adapters["gemini_3_8_flash_high"].grants == []  # second operation never starts
@@ -296,7 +296,7 @@ def test_ordered_any_of_uses_first_ready_backend(tmp_path: Path, adapters: dict)
 
 def test_manifest_seals_operation_outputs(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters)
-    outcome = d.dispatch_stage("G4", "always", "A1", {})
+    outcome = d.dispatch_stage("G", "always", "A1", {})
     manifest = load_manifest(d.run_root, "A1", "run-1")
     assert manifest is not None and outcome.manifest == d.run_root / "manifests" / "A1.json"
     assert set(manifest["artifacts"]) == {"proposal_a_sealed", "proposal_b_sealed"}
@@ -309,8 +309,8 @@ def test_manifest_seals_operation_outputs(tmp_path: Path, adapters: dict) -> Non
 
 
 def test_downstream_stage_reads_what_upstream_sealed(tmp_path: Path, adapters: dict) -> None:
-    d = make(tmp_path, adapters, upstream=("START", "G1", "G4"))
-    d.dispatch_stage("G4", "always", "A1", {})
+    d = make(tmp_path, adapters, upstream=("START", "G"))
+    d.dispatch_stage("G", "always", "A1", {})
     outcome = d.dispatch_stage("A1", "always", "A2", {})
     assert not outcome.provisional
 
@@ -323,7 +323,7 @@ def test_unsealed_output_recorded_for_e1(tmp_path: Path, adapters: dict) -> None
 
 
 def test_missing_upstream_manifest_blocks(tmp_path: Path, adapters: dict) -> None:
-    d = make(tmp_path, adapters, upstream=("START", "G1"))
+    d = make(tmp_path, adapters, upstream=("START",))
     with pytest.raises(DispatchBlocked, match="pinned_context_manifest: no published manifest"):
         d.dispatch_stage("A2", "blocking_flaw", "A1", {})
     assert events(d) == [] and d.ledger.reserved == {} and d.ledger.consumed == {}
@@ -333,7 +333,7 @@ def test_tampered_sealed_input_blocks(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters)
     (d.run_root / "seed" / "requirements" / "content.txt").write_text("edited after sealing\n")
     with pytest.raises(DispatchBlocked, match="requirements: content changed since START"):
-        d.dispatch_stage("G4", "always", "A1", {})
+        d.dispatch_stage("G", "always", "A1", {})
     assert not (d.run_root / "attempts").exists()
 
 
@@ -342,7 +342,7 @@ def test_input_changed_between_operations_pauses(tmp_path: Path, adapters: dict)
     target = d.run_root / "seed" / "requirements" / "content.txt"
     adapters["claude_cli_default"].side_effect = lambda: target.write_text("swapped mid-stage\n")
     with pytest.raises(RunPaused, match="sealed input changed"):
-        d.dispatch_stage("G4", "always", "A1", {})
+        d.dispatch_stage("G", "always", "A1", {})
     assert events(d) == ["model_call", "model_result", "exception"]
     assert adapters["gemini_3_8_flash_high"].grants == []
 
@@ -365,7 +365,7 @@ def test_manifest_publish_failure_leaves_outputs_provisional(
 
 def test_each_attempt_gets_a_fresh_write_root(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters)
-    d.dispatch_stage("G4", "always", "A1", {})
+    d.dispatch_stage("G", "always", "A1", {})
     d.dispatch_stage("A2", "blocking_flaw", "A1", {})
     first, second = (g.write_path for g in adapters["claude_cli_default"].grants)
     assert first != second and first.is_dir() and second.is_dir()
@@ -404,7 +404,7 @@ def test_cloud_backend_blocked_for_non_cloud_data(
     d = make(tmp_path, adapters, data_class=data_class)
     expected = data_class or "unknown"  # unclassified inputs count as unknown
     with pytest.raises(DispatchBlocked, match=f"data class '{expected}' may not be sent"):
-        d.dispatch_stage("G4", "always", "A1", {})
+        d.dispatch_stage("G", "always", "A1", {})
     assert (
         events(d) == [] and d.ledger.reserved == {} and adapters["claude_cli_default"].grants == []
     )
@@ -446,7 +446,7 @@ def test_local_backend_accepts_confidential_data(tmp_path: Path, adapters: dict)
 
 def test_outputs_inherit_most_restrictive_input_class(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, data_class="public")
-    manifest_file = d.run_root / "manifests" / "G1.json"
+    manifest_file = d.run_root / "manifests" / "G.json"
     doc = json.loads(manifest_file.read_text())
     doc["artifacts"]["protected_tests"]["data_class"] = "restricted"
     manifest_file.write_text(json.dumps(doc))
@@ -470,4 +470,4 @@ def test_missing_adapter_reason_is_surfaced(tmp_path: Path, adapters: dict) -> N
 
     explained = Explained({k: v for k, v in adapters.items() if k != "gemini_3_8_flash_high"})
     with pytest.raises(DispatchBlocked, match="gemini_3_8_flash_high: LookupError: not signed in"):
-        make(tmp_path, explained).dispatch_stage("G4", "always", "A1", {})
+        make(tmp_path, explained).dispatch_stage("G", "always", "A1", {})

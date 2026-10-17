@@ -89,14 +89,13 @@ def critique(
 
 
 class Design:
-    """Grounding walked to G4, then A1/A3 outputs sealed by hand."""
+    """Grounding walked to G, then A1/A3 outputs sealed by hand."""
 
     def __init__(self, repo: Path, tmp_path: Path, **spec_patch: Any) -> None:  # noqa: F811
         self.rig = Rig(repo, tmp_path, write_spec(tmp_path, **spec_patch) if spec_patch else None)
         self.runner: Runner = self.rig.runner()
-        for _ in range(4):
-            assert self.runner.step().outcome is Outcome.ADVANCED
-        GROUNDING_HANDLERS["G4"](self.rig.ctx(self.runner, "G4"))
+        assert self.runner.step().outcome is Outcome.ADVANCED  # START
+        GROUNDING_HANDLERS["G"](self.rig.ctx(self.runner, "G"))
         inputs, errors = resolve_sealed_inputs(
             self.rig.run_dir, "demo", self.runner.registry, ["pinned_context_manifest"]
         )
@@ -601,7 +600,7 @@ def test_b3_stays_on_the_human_path_even_if_the_class_is_allowlisted(
 
 def test_b3_notices_tampered_grounding(design: Design) -> None:
     design.seal_valid()
-    (design.rig.run_dir / "grounding" / "G1" / "protected_tests" / "test_x.py").write_text("evil")
+    (design.rig.run_dir / "grounding" / "G" / "protected_tests" / "test_x.py").write_text("evil")
     assert design.guard("B3") == "otherwise"
     assert (
         design.records("B3")[0]["require_all"]["contracts_and_protected_tests_intact"] == "failed"

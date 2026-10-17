@@ -81,18 +81,18 @@ def test_digest_missing_path(tmp_path: Path) -> None:
 
 
 def test_publish_is_atomic_and_leaves_no_temp_files(tmp_path: Path) -> None:
-    path = _publish(tmp_path, "G4", {"pinned_context_manifest": (_artifact(tmp_path, "m"), True)})
-    assert path == manifest_path(tmp_path, "G4")
-    assert [p.name for p in path.parent.iterdir()] == ["G4.json"]
-    assert load_manifest(tmp_path, "G4", "run-1")["artifacts"]["pinned_context_manifest"][
+    path = _publish(tmp_path, "G", {"pinned_context_manifest": (_artifact(tmp_path, "m"), True)})
+    assert path == manifest_path(tmp_path, "G")
+    assert [p.name for p in path.parent.iterdir()] == ["G.json"]
+    assert load_manifest(tmp_path, "G", "run-1")["artifacts"]["pinned_context_manifest"][
         "path"
     ] == ("store/m")
 
 
 def test_republish_replaces_previous_manifest(tmp_path: Path) -> None:
-    _publish(tmp_path, "G4", {"pinned_context_manifest": (_artifact(tmp_path, "m1"), True)})
-    _publish(tmp_path, "G4", {"pinned_context_manifest": (_artifact(tmp_path, "m2"), True)})
-    doc = load_manifest(tmp_path, "G4", "run-1")
+    _publish(tmp_path, "G", {"pinned_context_manifest": (_artifact(tmp_path, "m1"), True)})
+    _publish(tmp_path, "G", {"pinned_context_manifest": (_artifact(tmp_path, "m2"), True)})
+    doc = load_manifest(tmp_path, "G", "run-1")
     assert doc["artifacts"]["pinned_context_manifest"]["path"] == "store/m2"
 
 
@@ -100,16 +100,16 @@ def test_artifact_outside_run_root_rejected(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     with pytest.raises(ManifestError, match="outside the run root"):
-        _publish(tmp_path / "run", "G4", {"pinned_context_manifest": (outside, True)})
+        _publish(tmp_path / "run", "G", {"pinned_context_manifest": (outside, True)})
 
 
 def test_invalid_manifest_not_published(tmp_path: Path) -> None:
     with pytest.raises(ManifestError, match="invalid stage manifest"):
-        publish_stage_manifest(tmp_path, {"stage": "G4"})
-    assert not manifest_path(tmp_path, "G4").exists()
+        publish_stage_manifest(tmp_path, {"stage": "G"})
+    assert not manifest_path(tmp_path, "G").exists()
 
 
-@pytest.mark.parametrize("stage", ["../G4", "g4", ""])
+@pytest.mark.parametrize("stage", ["../G", "g", ""])
 def test_manifest_path_rejects_bad_stage(tmp_path: Path, stage: str) -> None:
     with pytest.raises(ValueError):
         manifest_path(tmp_path, stage)
@@ -125,35 +125,35 @@ def _write_raw(tmp_path: Path, stage: str, doc: Any) -> None:
 
 
 def test_unpublished_manifest_is_none(tmp_path: Path) -> None:
-    assert load_manifest(tmp_path, "G4", "run-1") is None
+    assert load_manifest(tmp_path, "G", "run-1") is None
 
 
 def test_corrupt_manifest_raises(tmp_path: Path) -> None:
-    _write_raw(tmp_path, "G4", '{"partial":')
+    _write_raw(tmp_path, "G", '{"partial":')
     with pytest.raises(ManifestError, match="unreadable"):
-        load_manifest(tmp_path, "G4", "run-1")
+        load_manifest(tmp_path, "G", "run-1")
 
 
 def test_manifest_from_other_run_rejected(tmp_path: Path) -> None:
-    _publish(tmp_path, "G4", {"pinned_context_manifest": (_artifact(tmp_path, "m"), True)})
+    _publish(tmp_path, "G", {"pinned_context_manifest": (_artifact(tmp_path, "m"), True)})
     with pytest.raises(ManifestError, match="belongs to run-1"):
-        load_manifest(tmp_path, "G4", "run-2")
+        load_manifest(tmp_path, "G", "run-2")
 
 
 def test_path_traversal_in_manifest_rejected(tmp_path: Path) -> None:
-    _publish(tmp_path, "G4", {"pinned_context_manifest": (_artifact(tmp_path, "m"), True)})
-    doc = json.loads(manifest_path(tmp_path, "G4").read_text())
+    _publish(tmp_path, "G", {"pinned_context_manifest": (_artifact(tmp_path, "m"), True)})
+    doc = json.loads(manifest_path(tmp_path, "G").read_text())
     doc["artifacts"]["pinned_context_manifest"]["path"] = "../../etc"
-    _write_raw(tmp_path, "G4", doc)
+    _write_raw(tmp_path, "G", doc)
     with pytest.raises(ManifestError, match="invalid manifest"):
-        load_manifest(tmp_path, "G4", "run-1")
+        load_manifest(tmp_path, "G", "run-1")
 
 
 # ── Sealed-input verification ────────────────────────────────────────────────
 
 
 def test_verified_input_passes(tmp_path: Path) -> None:
-    _publish(tmp_path, "G4", {"pinned_context_manifest": (_artifact(tmp_path, "m"), True)})
+    _publish(tmp_path, "G", {"pinned_context_manifest": (_artifact(tmp_path, "m"), True)})
     assert verify_sealed_inputs(tmp_path, "run-1", REGISTRY, ["pinned_context_manifest"]) == []
 
 
@@ -164,8 +164,8 @@ def test_unsealed_own_scratch_not_checked(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("setup", "message"),
     [
-        ("none", "no published manifest from ['G4']"),
-        ("modified", "content changed since G4 sealed it"),
+        ("none", "no published manifest from ['G']"),
+        ("modified", "content changed since G sealed it"),
         ("deleted", "does not exist"),
         ("not_sealed", "does not mark it sealed"),
     ],
@@ -173,7 +173,7 @@ def test_unsealed_own_scratch_not_checked(tmp_path: Path) -> None:
 def test_verification_failures(tmp_path: Path, setup: str, message: str) -> None:
     if setup != "none":
         path = _artifact(tmp_path, "m")
-        _publish(tmp_path, "G4", {"pinned_context_manifest": (path, setup != "not_sealed")})
+        _publish(tmp_path, "G", {"pinned_context_manifest": (path, setup != "not_sealed")})
         if setup == "modified":
             (path / "a.txt").write_text("changed\n")
         if setup == "deleted":

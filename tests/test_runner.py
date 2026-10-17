@@ -30,10 +30,10 @@ from agentic_pipeline.transition import BudgetLedger
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ID = "run-1"
-PRE_MODEL = ("START", "G1", "G4")  # stages whose sealed outputs the model stages read
+PRE_MODEL = ("START", "G")  # stages whose sealed outputs the model stages read
 ALWAYS: StateHandler = lambda ctx: "always"  # noqa: E731
 GROUNDING: dict[str, StateHandler] = {
-    **dict.fromkeys(("G1", "G2", "G3", "G4"), ALWAYS),
+    "G": ALWAYS,
     "START": lambda ctx: "task_class_valid",  # START's only edge is guarded, not `always`
 }
 
@@ -144,9 +144,9 @@ def test_walks_grounding_into_model_stages(rig: Rig) -> None:
     assert (result.outcome, result.node) == (Outcome.BLOCKED, "A4")  # A4 has no handler yet
     assert "no handler registered for A4" in result.detail
     assert [e["state"] for e in rig.events() if e["event"] == "enter"] == [
-        "START", "G1", "G2", "G3", "G4", "A1", "A2", "A3", "A4",
+        "START", "G", "A1", "A2", "A3", "A4",
     ]  # fmt: skip
-    assert stored(rig).steps == 8
+    assert stored(rig).steps == 5
     assert verify_provenance_chain(rig.log.path).ok
     assert {g.operation_id for g in rig.adapters["claude_cli_default"].grants} >= {"proposal_a"}
 
@@ -215,8 +215,8 @@ def test_budgeted_non_model_edge_is_charged(rig: Rig) -> None:
 
 def test_max_steps_bounds_a_run(rig: Rig) -> None:
     runner = rig.open(GROUNDING)
-    result = runner.run(max_steps=2)
-    assert (result.outcome, result.node) == (Outcome.ADVANCED, "G2")
+    result = runner.run(max_steps=1)
+    assert (result.outcome, result.node) == (Outcome.ADVANCED, "G")
 
 
 # ── Dispatch gates ───────────────────────────────────────────────────────────
@@ -224,11 +224,11 @@ def test_max_steps_bounds_a_run(rig: Rig) -> None:
 
 def test_unready_backend_blocks_without_pausing(rig: Rig) -> None:
     rig.unready = ("gemini_3_8_flash_high",)
-    runner = rig.at("G4", GROUNDING)
+    runner = rig.at("G", GROUNDING)
     result = runner.step()
     assert result.outcome is Outcome.BLOCKED and "gemini_3_8_flash_high.executable" in result.detail
     state = stored(rig)
-    assert (state.status, state.current, state.entering) == (Status.RUNNING, "G4", None)
+    assert (state.status, state.current, state.entering) == (Status.RUNNING, "G", None)
     assert state.ledger == {"consumed": {}, "reserved": {}}
     assert not rig.adapters["claude_cli_default"].grants
 
@@ -509,9 +509,9 @@ def test_save_failure_after_a_finished_stage_pauses_then_recovers_forward(rig: R
 
 
 def test_crash_after_enter_event_recovers_forward(rig: Rig) -> None:
-    runner = rig.at("G4")
+    runner = rig.at("G")
     runner.state.entering = {
-        "from": "G4",
+        "from": "G",
         "guard": "always",
         "to": "A1",
         "after_seq": rig.log.count(),
@@ -526,9 +526,9 @@ def test_crash_after_enter_event_recovers_forward(rig: Rig) -> None:
 
 def test_older_enter_for_the_same_target_does_not_count(rig: Rig) -> None:
     rig.log.append({"state": "A1", "event": "enter"})  # an earlier visit
-    runner = rig.at("G4")
+    runner = rig.at("G")
     runner.state.entering = {
-        "from": "G4",
+        "from": "G",
         "guard": "always",
         "to": "A1",
         "after_seq": rig.log.count(),
@@ -621,9 +621,9 @@ def test_pauses_record_their_cause(rig: Rig) -> None:
 
 
 def test_stale_marker_is_cleared_without_pausing(rig: Rig) -> None:
-    runner = rig.at("G4")
+    runner = rig.at("G")
     runner.state.entering = {
-        "from": "G4",
+        "from": "G",
         "guard": "always",
         "to": "A1",
         "after_seq": rig.log.count(),
@@ -632,7 +632,7 @@ def test_stale_marker_is_cleared_without_pausing(rig: Rig) -> None:
     runner.store.save(runner.state)
     runner.close()
     state = rig.open().state
-    assert (state.status, state.current, state.entering) == (Status.RUNNING, "G4", None)
+    assert (state.status, state.current, state.entering) == (Status.RUNNING, "G", None)
 
 
 def test_policy_edit_mid_session_blocks_the_next_step(tmp_path: Path) -> None:
@@ -644,7 +644,7 @@ def test_policy_edit_mid_session_blocks_the_next_step(tmp_path: Path) -> None:
     weights.write_text(weights.read_text() + "\n# edited mid-run\n")
     result = runner.step()
     assert result.outcome is Outcome.BLOCKED and "changed during this session" in result.detail
-    assert stored(rig).current == "G1"
+    assert stored(rig).current == "G"
 
 
 @pytest.mark.parametrize(
@@ -669,7 +669,7 @@ def test_malformed_policy_is_a_clean_error(tmp_path: Path, relative: str, conten
 
 
 def test_error_before_anything_is_spent_blocks_instead_of_pausing(rig: Rig) -> None:
-    runner = rig.at("G4", GROUNDING)
+    runner = rig.at("G", GROUNDING)
 
     def broken_preflight() -> Any:
         raise OSError("probe failed")
@@ -678,7 +678,7 @@ def test_error_before_anything_is_spent_blocks_instead_of_pausing(rig: Rig) -> N
     result = runner.step()
     assert result.outcome is Outcome.BLOCKED and "unexpected_error: OSError" in result.detail
     state = stored(rig)
-    assert (state.status, state.current, state.entering) == (Status.RUNNING, "G4", None)
+    assert (state.status, state.current, state.entering) == (Status.RUNNING, "G", None)
 
 
 def test_error_after_spending_still_pauses(rig: Rig) -> None:

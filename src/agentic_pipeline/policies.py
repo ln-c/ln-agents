@@ -16,7 +16,7 @@ from agentic_pipeline import advisories, approvals, ci
 MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
 # Code artifacts must stay off cloud backends; weakening one is a policy-review event.
 CODE_ARTIFACTS = ("pinned_source_tree", "protected_tests")
-GROUNDING_PRODUCERS = ("START", "G1", "G4")
+GROUNDING_PRODUCERS = ("START", "G")
 # Checks conformance.py implements; policy/model_test_profiles.yaml may name only these.
 CHECK_NAMES = ("identity", "json_reply", "file_output")
 POLICY_FILES = (
