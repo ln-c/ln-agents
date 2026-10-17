@@ -20,31 +20,17 @@ states:
     executor: code+human
     doc: Task spec and task class submitted (human submits, code validates class).
     edges:
-      - {to: G1, guard: task_class_valid}
+      - {to: G, guard: task_class_valid}
 
   # ── GROUNDING ────────────────────────────────────────────────────────────
-  G1:
+  G:
     kind: code
     executor: code
-    doc: Pin snapshot (commit SHA, contract versions, accepted tests).
-    edges:
-      - {to: G2, guard: always}
-  G2:
-    kind: code
-    executor: code
-    doc: Classify every artifact; unknown or unclassified artifacts are blocked from cloud.
-    edges:
-      - {to: G3, guard: always}
-  G3:
-    kind: code
-    executor: code
-    doc: Build hybrid index at pinned SHA (SCIP/LSIF, Tree-sitter, vector + graph).
-    edges:
-      - {to: G4, guard: always}
-  G4:
-    kind: code
-    executor: code
-    doc: Write hashed, immutable context manifest for this run.
+    doc: >-
+      Pin the snapshot (commit SHA, contract versions, accepted tests), classify every
+      artifact (unknown or unclassified artifacts are blocked from cloud), index the source
+      tree, and write the hashed, immutable context manifest for this run. One handler; the
+      stage manifest is its commit point.
     produces: context_manifest
     edges:
       - {to: A1, guard: always}
@@ -144,7 +130,7 @@ states:
     executor: code
     doc: Human-authorized child run (new snapshot, manifest, own budget, parent link).
     edges:
-      - {to: G1, guard: always}
+      - {to: G, guard: always}
 
   # ── BUILD ────────────────────────────────────────────────────────────────
   C1:

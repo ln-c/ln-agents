@@ -124,7 +124,7 @@ def test_status_previews_recovery(tmp_path: Path, capsys: pytest.CaptureFixture[
     state.entering = {
         "from": "START",
         "guard": "task_class_valid",
-        "to": "G1",
+        "to": "G",
         "after_seq": 1,
         "consumed_before": {},
     }
@@ -176,7 +176,7 @@ def test_resume_refuses_a_crash_it_just_discovered(
     state.entering = {
         "from": "START",
         "guard": "task_class_valid",
-        "to": "G1",
+        "to": "G",
         "after_seq": 1,
         "consumed_before": {},
     }
@@ -348,7 +348,7 @@ def test_status_does_not_report_a_live_runner_as_a_crash(
     state.entering = {
         "from": "START",
         "guard": "task_class_valid",
-        "to": "G1",
+        "to": "G",
         "after_seq": 1,
         "consumed_before": {},
     }

@@ -32,12 +32,12 @@ def test_existing_edge_allowed_by_guard() -> None:
 
 def test_deny_all_is_default_behaviour() -> None:
     with pytest.raises(TransitionDenied, match="not satisfied"):
-        check_transition(GRAPH, "G4", "always", "A1", deny_all_guards, {})
+        check_transition(GRAPH, "G", "always", "A1", deny_all_guards, {})
 
 
 @pytest.mark.parametrize(
     ("src", "guard", "to"),
-    [("G4", "always", "C1"), ("A2", "always", "A1"), ("A1", "always", "B1")],
+    [("G", "always", "C1"), ("A2", "always", "A1"), ("A1", "always", "B1")],
 )
 def test_missing_edge_denied(src: str, guard: str, to: str) -> None:
     with pytest.raises(TransitionDenied, match="no edge"):
@@ -54,7 +54,7 @@ def _edge(src: str, guard: str, to: str) -> Edge:
 
 
 def test_unbudgeted_edge_needs_no_reservation() -> None:
-    assert BudgetLedger.from_policy(BUDGETS).reserve(_edge("G4", "always", "A1")) is None
+    assert BudgetLedger.from_policy(BUDGETS).reserve(_edge("G", "always", "A1")) is None
 
 
 def test_budget_consumed_per_edge_until_exhausted() -> None:

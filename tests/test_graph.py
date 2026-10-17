@@ -43,7 +43,7 @@ def test_detects_unknown_edge_target() -> None:
     routing = load_yaml(ROOT / "policy" / "routing.yaml")
 
     mutated = copy.deepcopy(graph_dict)
-    mutated["states"]["G1"]["edges"].append({"to": "NONEXISTENT", "guard": "foo"})
+    mutated["states"]["G"]["edges"].append({"to": "NONEXISTENT", "guard": "foo"})
     bad_graph = Graph.from_mapping(mutated)
     errors = validate(bad_graph, budgets, routing)
     assert any("NONEXISTENT" in err and "does not exist" in err for err in errors)

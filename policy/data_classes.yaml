@@ -1,4 +1,4 @@
-# G2 classification. Unknown blocks cloud; derived artifacts inherit the most
+# Grounding (G) classification. Unknown blocks cloud; derived artifacts inherit the most
 # restrictive class of their inputs.
 version: 1
 inherit: most_restrictive
@@ -10,11 +10,11 @@ classes:
   restricted:   {cloud_allowed: false}
   unknown:      {cloud_allowed: false}
 
-# G2/G4 classification by artifact role. Production code stays confidential and never
+# Grounding (G) classification by artifact role. Production code stays confidential and never
 # leaves the host; specs, contracts, and the context manifest may reach cloud design
 # stages. An artifact missing here is `unknown` (cloud blocked). An entry spec's declared
 # classification can only RAISE `requirements`.
-# Derived artifacts (the G3 index) inherit the most restrictive class of their inputs.
+# Derived artifacts (the file index) inherit the most restrictive class of their inputs.
 # The one exception is pinned_context_manifest: schemas/context_manifest.schema.json fixes
 # its fields (ids, hashes, versions, paths, statuses), so it cannot carry file contents
 # and is classified by this map, not by the source tree it was computed from.

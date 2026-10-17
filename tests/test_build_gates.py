@@ -55,7 +55,7 @@ checks:
 
 
 class Build:
-    """Grounding walked to G4, then an E1 patch published by hand.
+    """Grounding walked to G, then an E1 patch published by hand.
 
     The run's CI policy is a small one that needs no uv environment: acceptance_tests and
     mcdc and integration pass, and mutation is unset and required, as in the shipped policy.
@@ -65,9 +65,8 @@ class Build:
         (repo / "policy" / "ci.yaml").write_text(ci)
         self.rig = Rig(repo, tmp_path)
         self.runner: Runner = self.rig.runner()
-        for _ in range(4):
-            assert self.runner.step().outcome is Outcome.ADVANCED
-        GROUNDING_HANDLERS["G4"](self.rig.ctx(self.runner, "G4"))
+        assert self.runner.step().outcome is Outcome.ADVANCED  # START
+        GROUNDING_HANDLERS["G"](self.rig.ctx(self.runner, "G"))
 
     def publish(self, files: dict[str, str], stage: str = "E1") -> Path:
         root = self.rig.run_dir / "attempts" / f"{stage}-t" / "build" / "implementation_patch"
@@ -187,7 +186,7 @@ def test_each_file_check_fails_on_its_violation(
 
 def test_tampered_protected_tests_fail_the_check(build: Build) -> None:
     build.publish(CLEAN)
-    (build.rig.run_dir / "grounding" / "G1" / "protected_tests" / "test_x.py").write_text("evil\n")
+    (build.rig.run_dir / "grounding" / "G" / "protected_tests" / "test_x.py").write_text("evil\n")
     assert statuses(build)["protected_tests_intact"] == "failed"
     assert BUILD_GATE_HANDLERS["X"](build.ctx("X")) == "security_or_scope"
 
@@ -200,7 +199,7 @@ def test_tampered_patch_or_missing_inputs_block(build: Build) -> None:
     with pytest.raises(BuildGateError, match="changed since"):
         run_checks(build.ctx("E2"))
     build.publish(CLEAN)
-    (build.rig.run_dir / "manifests" / "G1.json").unlink()
+    (build.rig.run_dir / "manifests" / "G.json").unlink()
     with pytest.raises(BuildGateError, match="no published manifest"):
         run_checks(build.ctx("E2"))
 

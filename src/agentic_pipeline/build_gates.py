@@ -56,7 +56,7 @@ from agentic_pipeline.gates import (
     _record,
     _sealed,
 )
-from agentic_pipeline.grounding import G1_SOURCES, GroundingError, _extract
+from agentic_pipeline.grounding import PINNED_SOURCES, GroundingError, _extract
 from agentic_pipeline.manifest import (
     ManifestError,
     digest_path,
@@ -72,10 +72,10 @@ PATCH_ARTIFACT = "implementation_patch"
 MAX_SCAN_BYTES = 1 << 20
 
 # Repo subtrees E1 may never write (graph X.forbidden_mutations, plus the human-owned
-# trees and CODEOWNERS). The tests and contracts subtrees come from the G1 artifact map.
+# trees and CODEOWNERS). The tests and contracts subtrees come from the pinned artifact map.
 FORBIDDEN_TREES = (
-    G1_SOURCES["protected_tests"],
-    G1_SOURCES["applicable_contracts"],
+    PINNED_SOURCES["protected_tests"],
+    PINNED_SOURCES["applicable_contracts"],
     "policy",
     "schemas",
     "pipeline",
@@ -183,7 +183,7 @@ def _dependencies(patch: Path) -> list[str]:
 
 
 def _sealed_intact(ctx: HandlerContext, artifact: str) -> list[str]:
-    """Problems with a G1 artifact: a tampered one is a failure, an absent one blocks."""
+    """Problems with a grounding artifact: a tampered one is a failure, an absent one blocks."""
     _, errors = resolve_sealed_inputs(ctx.run_root, ctx.run_id, ctx.registry, [artifact])
     if any("content changed" in e for e in errors):
         return errors

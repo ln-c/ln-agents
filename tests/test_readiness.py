@@ -472,7 +472,7 @@ def test_credential_env_blocks_every_stage() -> None:
 
 @pytest.mark.parametrize(
     ("stage", "reason"),
-    [("E4", "stage disabled"), ("BENCH", "stage disabled"), ("G1", "unknown or non-model")],
+    [("E4", "stage disabled"), ("BENCH", "stage disabled"), ("G", "unknown or non-model")],
 )
 def test_stage_not_dispatchable(stage: str, reason: str) -> None:
     verdict = evaluate_stage(stage, ready_report())

@@ -1,4 +1,4 @@
-"""Grounding handlers (START, G1-G4) against a throwaway git repository."""
+"""Grounding handlers (START and G) against a throwaway git repository."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from agentic_pipeline.grounding import GROUNDING_HANDLERS, context_hash
+from agentic_pipeline.grounding import GROUND_ARTIFACTS, GROUNDING_HANDLERS, context_hash
 from agentic_pipeline.manifest import load_manifest, resolve_sealed_inputs
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.run_state import RunStateError
@@ -125,10 +125,9 @@ def test_init_rejects_an_invalid_entry_spec(repo: Path, tmp_path: Path) -> None:
 def test_walk_through_grounding_seals_a_valid_context(repo: Path, tmp_path: Path) -> None:
     rig = Rig(repo, tmp_path)
     runner = rig.runner()
-    for expected in ("G1", "G2", "G3", "G4"):
-        result = runner.step()
-        assert result.outcome is Outcome.ADVANCED and runner.state.current == expected, result
-    assert GROUNDING_HANDLERS["G4"](rig.ctx(runner, "G4")) == "always"
+    result = runner.step()  # START
+    assert result.outcome is Outcome.ADVANCED and runner.state.current == "G", result
+    assert GROUNDING_HANDLERS["G"](rig.ctx(runner, "G")) == "always"
 
     head = git(repo, "rev-parse", "HEAD")
     sealed, errors = resolve_sealed_inputs(
@@ -168,9 +167,9 @@ def test_walk_through_grounding_seals_a_valid_context(repo: Path, tmp_path: Path
 def requirements_class(repo: Path, tmp_path: Path, declared: str | None) -> str:
     rig = Rig(repo, tmp_path, write_spec(tmp_path, data__declared_classification=declared))
     runner = rig.runner()
-    for _ in range(3):  # START, G1, G2 handlers
-        runner.step()
-    audit = json.loads((rig.run_dir / "grounding" / "G2" / "classification.json").read_text())
+    runner.step()  # START
+    GROUNDING_HANDLERS["G"](rig.ctx(runner, "G"))
+    audit = json.loads((rig.run_dir / "grounding" / "G" / "classification.json").read_text())
     assert audit["rules"] == "artifact_defaults"
     manifest = rig.manifest("START")
     assert manifest is not None
@@ -221,34 +220,34 @@ def test_start_blocks_without_an_entry_spec(repo: Path, tmp_path: Path) -> None:
     assert result.outcome is Outcome.BLOCKED and "no entry spec" in result.detail
 
 
-def test_g1_does_not_repin_when_head_moves(repo: Path, tmp_path: Path) -> None:
+def test_g_does_not_repin_when_head_moves(repo: Path, tmp_path: Path) -> None:
     rig = Rig(repo, tmp_path)
     runner = rig.runner()
     runner.step()  # START
-    runner.step()  # G1
-    pinned = rig.manifest("G1")
+    GROUNDING_HANDLERS["G"](rig.ctx(runner, "G"))
+    pinned = rig.manifest("G")
     (repo / "new.txt").write_text("later\n")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "later")
-    assert GROUNDING_HANDLERS["G1"](rig.ctx(runner, "G1")) == "always"
-    assert rig.manifest("G1") == pinned
+    assert GROUNDING_HANDLERS["G"](rig.ctx(runner, "G")) == "always"
+    assert rig.manifest("G") == pinned
     snapshot = json.loads(
-        (rig.run_dir / "grounding" / "G1" / "pinned_snapshot" / "snapshot.json").read_text()
+        (rig.run_dir / "grounding" / "G" / "pinned_snapshot" / "snapshot.json").read_text()
     )
     assert snapshot["commit_sha"] != git(repo, "rev-parse", "HEAD")
 
 
-def test_g1_refuses_to_redo_a_tampered_stage(repo: Path, tmp_path: Path) -> None:
+def test_g_refuses_to_redo_a_tampered_stage(repo: Path, tmp_path: Path) -> None:
     rig = Rig(repo, tmp_path)
     runner = rig.runner()
     runner.step()
-    runner.step()
-    (rig.run_dir / "grounding" / "G1" / "protected_tests" / "test_x.py").write_text("evil\n")
+    GROUNDING_HANDLERS["G"](rig.ctx(runner, "G"))
+    (rig.run_dir / "grounding" / "G" / "protected_tests" / "test_x.py").write_text("evil\n")
     with pytest.raises(Exception, match="changed since it was sealed"):
-        GROUNDING_HANDLERS["G1"](rig.ctx(runner, "G1"))
+        GROUNDING_HANDLERS["G"](rig.ctx(runner, "G"))
 
 
-def test_g1_blocks_a_symlink_in_the_pinned_tree(repo: Path, tmp_path: Path) -> None:
+def test_g_blocks_a_symlink_in_the_pinned_tree(repo: Path, tmp_path: Path) -> None:
     (repo / "link").symlink_to("tests")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "link")
@@ -257,19 +256,19 @@ def test_g1_blocks_a_symlink_in_the_pinned_tree(repo: Path, tmp_path: Path) -> N
     assert runner.step().outcome is Outcome.ADVANCED  # START
     result = runner.step()
     assert result.outcome is Outcome.BLOCKED and "regular files" in result.detail, result
-    assert rig.manifest("G1") is None
+    assert rig.manifest("G") is None
 
 
-def test_g1_reads_the_commit_not_the_working_tree(repo: Path, tmp_path: Path) -> None:
+def test_g_reads_the_commit_not_the_working_tree(repo: Path, tmp_path: Path) -> None:
     (repo / "tests" / "test_x.py").write_text("dirty = True\n")  # uncommitted
     (repo / "untracked.txt").write_text("x\n")
     rig = Rig(repo, tmp_path)
     runner = rig.runner()
     runner.step()
-    runner.step()
+    GROUNDING_HANDLERS["G"](rig.ctx(runner, "G"))
     sealed, _ = resolve_sealed_inputs(rig.run_dir, RUN_ID, runner.registry, ["protected_tests"])
     assert (sealed["protected_tests"].path / "test_x.py").read_text() == "def test_x(): ...\n"
-    assert not (rig.run_dir / "grounding" / "G1" / "pinned_source_tree" / "untracked.txt").exists()
+    assert not (rig.run_dir / "grounding" / "G" / "pinned_source_tree" / "untracked.txt").exists()
 
 
 def test_grounding_refuses_after_policy_drift(repo: Path, tmp_path: Path) -> None:
@@ -292,3 +291,67 @@ def test_provenance_tip_in_manifests_is_a_chain_hash(repo: Path, tmp_path: Path)
         r["event_hash"] for r in JsonlProvenanceLog(rig.run_dir / "provenance", RUN_ID).records()
     }
     assert doc["provenance_tip"] in hashes
+
+
+# ── G is one state, with one commit point ────────────────────────────────────
+
+
+def test_grounding_is_one_state_between_start_and_design(repo: Path, tmp_path: Path) -> None:
+    graph = Rig(repo, tmp_path).runner().graph
+    assert not {"G1", "G2", "G3", "G4"} & set(graph.states)
+    edges = {(e.src, e.guard, e.to) for e in graph.edges if "G" in (e.src, e.to)}
+    assert edges == {
+        ("START", "task_class_valid", "G"),
+        ("G", "always", "A1"),
+        ("CHILD", "always", "G"),
+    }
+
+
+def test_g_publishes_everything_in_one_manifest_with_every_class(
+    repo: Path, tmp_path: Path
+) -> None:
+    rig = Rig(repo, tmp_path)
+    runner = rig.runner()
+    runner.step()
+    GROUNDING_HANDLERS["G"](rig.ctx(runner, "G"))
+    manifest = rig.manifest("G")
+    assert manifest is not None
+    assert set(manifest["artifacts"]) == set(GROUND_ARTIFACTS)
+    assert all("data_class" in entry for entry in manifest["artifacts"].values())
+    index = json.loads((rig.run_dir / "grounding" / "G" / "file_index.json").read_text())
+    assert index["kind"] == "file_index" and any(
+        f["path"] == "tests/test_x.py" for f in index["files"]
+    )
+
+
+def test_a_crash_before_the_commit_point_leaves_nothing_published_and_a_retry_completes(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentic_pipeline import grounding
+
+    rig = Rig(repo, tmp_path)
+    runner = rig.runner()
+    runner.step()  # START
+    real_publish = grounding._publish
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(grounding, "_publish", crash)
+    with pytest.raises(OSError, match="disk went away"):
+        GROUNDING_HANDLERS["G"](rig.ctx(runner, "G"))
+    assert rig.manifest("G") is None  # nothing was committed
+    # START's requirements were classified before the crash; that step is idempotent.
+    start = rig.manifest("START")
+    assert start is not None and "data_class" in start["artifacts"]["requirements"]
+
+    git(repo, "commit", "-q", "--allow-empty", "-m", "moved while down")
+    monkeypatch.setattr(grounding, "_publish", real_publish)
+    assert GROUNDING_HANDLERS["G"](rig.ctx(runner, "G")) == "always"
+    snapshot = json.loads(
+        (rig.run_dir / "grounding" / "G" / "pinned_snapshot" / "snapshot.json").read_text()
+    )
+    assert snapshot["commit_sha"] == git(repo, "rev-parse", "HEAD")  # nothing was pinned yet
+    again = rig.manifest("G")
+    assert GROUNDING_HANDLERS["G"](rig.ctx(runner, "G")) == "always"
+    assert rig.manifest("G") == again  # and once published, a retry changes nothing

@@ -21,7 +21,7 @@ class Transition:
 
 
 class Grounding(Protocol):
-    """G1-G4: pin snapshot, classify, index, write immutable manifest."""
+    """G: pin snapshot, classify, index, write immutable manifest."""
 
     def run(self, task: Artifact) -> Transition: ...
 

@@ -291,11 +291,11 @@ budget:
 # or `STATE.operation`; only sealed artifacts may cross an isolation boundary.
 artifacts:
   requirements: {sealed: true, producer: [START]}
-  pinned_source_tree: {sealed: true, producer: [G1]}
-  applicable_contracts: {sealed: true, producer: [G1]}
-  pinned_snapshot: {sealed: true, producer: [G1]}
-  protected_tests: {sealed: true, producer: [G1]}
-  pinned_context_manifest: {sealed: true, producer: [G4]}
+  pinned_source_tree: {sealed: true, producer: [G]}
+  applicable_contracts: {sealed: true, producer: [G]}
+  pinned_snapshot: {sealed: true, producer: [G]}
+  protected_tests: {sealed: true, producer: [G]}
+  pinned_context_manifest: {sealed: true, producer: [G]}
   proposal_a_scratch: {sealed: false, producer: [A1.proposal_a]}
   proposal_a_sealed: {sealed: true, producer: [A1.proposal_a]}
   proposal_b_scratch: {sealed: false, producer: [A1.proposal_b]}

@@ -70,7 +70,7 @@ def _drop_bench(r: Registry) -> None:
 
 
 def _map_code_state(r: Registry) -> None:
-    r["stage_requirements"]["G1"] = {"mode": "disabled", "reason": "not a model state"}
+    r["stage_requirements"]["G"] = {"mode": "disabled", "reason": "not a model state"}
 
 
 def _escape_spec(r: Registry) -> None:
@@ -225,7 +225,7 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ("path missing", _missing_spec, "registry R2"),
     ("unknown provider", _unknown_provider, "registry R3"),
     ("model state unmapped", _drop_bench, "registry R4 BENCH"),
-    ("code state mapped", _map_code_state, "registry R4 G1"),
+    ("code state mapped", _map_code_state, "registry R4 G"),
     ("unknown agent", _unknown_agent, "registry R5 E1.implementation_patch"),
     ("non-model backend", _non_model_backend, "registry R6 A3.synthesis"),
     ("no backend resolved", _no_backend, "registry R6 C1.module_decomposition"),
