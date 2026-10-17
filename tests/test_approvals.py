@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from test_gates import Design, blocking, critique
+from test_grounding import repo  # noqa: F401  (a fixture)
 from test_runner import Rig, policy_copy, stored
 
 from agentic_pipeline import approvals
@@ -233,9 +235,7 @@ def test_malformed_approvers_policy_is_rejected(signer: Signer, mutate: Any) -> 
 # ── the runner at H1 ─────────────────────────────────────────────────────────
 
 
-def h1(tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch):
-    """A runner awaiting a human at H1 under a repo copy that lists the test signer."""
-    root = policy_copy(tmp_path)
+def list_signer(root: Path, signer: Signer) -> None:
     (root / "policy" / "approvers.yaml").write_text(
         "version: 1\n"
         f"namespace: {NAMESPACE}\n"
@@ -243,6 +243,12 @@ def h1(tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch):
         f'  - id: alice\n    public_key: "{signer.public}"\n'
         "    decisions: [design]\n"
     )
+
+
+def h1(tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch):
+    """A runner awaiting a human at H1 under a repo copy that lists the test signer."""
+    root = policy_copy(tmp_path)
+    list_signer(root, signer)
     rig = Rig(tmp_path, root)
     runner = rig.at("H1")
     assert runner.step().outcome is Outcome.AWAITING_HUMAN
@@ -314,6 +320,52 @@ def test_an_approval_issued_before_the_log_moved_is_stale(
     assert stored(rig).current == "H1"
 
 
+def h1_before_synthesis(repo: Path, tmp_path: Path, signer: Signer) -> Design:  # noqa: F811
+    """A real grounded run with A1 sealed and a blocking critique, as A2 leaves it at H1.
+
+    `design_spent` sends A2 to H1 before A3 runs (test_runner covers that edge), so no synthesis
+    exists. This rig has no model dispatcher, so the run is placed at H1 rather than walked there.
+    """
+    list_signer(repo, signer)
+    design = Design(repo, tmp_path)
+    design.seal_proposals()
+    flaw = [blocking("f1", "prop-b")]
+    design.seal_critiques(a_on_b=critique("c1", "prop-b", design.context_hash, flaw))
+    runner = design.runner
+    runner.state.current, runner.state.status = "H1", Status.AWAITING_HUMAN
+    runner._save()
+    return design
+
+
+@pytest.mark.parametrize(("guard", "terminal"), [("reject", "T-REJECTED"), ("halt", "T-HALTED")])
+def test_a_human_can_end_a_run_whose_design_budget_ran_out_before_synthesis(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+    signer: Signer,
+    guard: str,
+    terminal: str,
+) -> None:
+    """A2 reaches H1 before A3 has produced a synthesis; that must not strand the run."""
+    runner = h1_before_synthesis(repo, tmp_path, signer).runner
+    evidence = runner.approval_evidence()
+    assert evidence["incomplete"] == ["synthesis_sealed"] and evidence["survivors"] == []
+    doc, sig = signed(runner, signer, guard, None)
+    assert runner.decide(doc, sig).node == terminal
+
+
+def test_no_candidate_can_be_approved_before_b1_has_run(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+    signer: Signer,
+) -> None:
+    design = h1_before_synthesis(repo, tmp_path, signer)
+    runner = design.runner
+    doc, sig = signed(runner, signer, APPROVE_GUARD, "proposal_a_sealed")
+    with pytest.raises(ApprovalError, match="design is incomplete.*synthesis_sealed"):
+        runner.decide(doc, sig)
+    assert runner.state.current == "H1" and runner.state.status is Status.AWAITING_HUMAN
+
+
 def test_a_run_that_is_not_waiting_for_a_human_has_no_evidence(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
     runner = rig.open()
@@ -339,6 +391,36 @@ def test_leaving_a_human_state_without_a_decision_is_still_denied(
     runner.state.status = Status.RUNNING
     result = runner._take("H1", "reject", edge)
     assert result.outcome is Outcome.BLOCKED and "recorded human decision" in result.detail
+
+
+def test_the_approve_command_says_when_b1_has_not_run(
+    repo: Path,  # noqa: F811
+    tmp_path: Path,
+    signer: Signer,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import argparse
+
+    from agentic_pipeline import run_cli
+
+    design = h1_before_synthesis(repo, tmp_path, signer)
+    design.runner.close()
+    ns = argparse.Namespace(
+        root=repo,
+        runs_dir=design.rig.run_dir.parent,
+        run_id=design.rig.run_dir.name,
+        decision="reject",
+        approver="alice",
+        reason="the design never converged",
+        candidate=None,
+        remediation_cause=None,
+        out=tmp_path / "doc.json",
+        run_command="approve",
+    )
+    assert run_cli.run_command(ns) == 0
+    shown = capsys.readouterr().out
+    assert "design is incomplete (never produced: ['synthesis_sealed'])" in shown
+    assert "survived B1" not in shown
 
 
 def test_cli_approve_then_decide_round_trip(

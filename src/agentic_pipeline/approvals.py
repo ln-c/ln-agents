@@ -12,7 +12,9 @@ namespace from `policy/approvers.yaml`. The runner verifies it offline with
   edge appends to the log, which moves the tip);
 * for the design approval, the chosen candidate is a B1 survivor. A candidate with a fired
   veto can never be approved. Vetoes that were undetermined are listed in the evidence the
-  approver signs, so signing is the human attestation for them.
+  approver signs, so signing is the human attestation for them. A design that was never
+  finished (A2 spent its budget before A3 ran) has no B1 result: its evidence says
+  `incomplete`, and only decisions that name no candidate can be signed.
 
 Only H1 (design), R1 (merge) and R2 (deploy) are wired; no deployment environment exists
 yet, so R2 can only deny or decline. A model cannot make a decision: it holds no listed key,
@@ -210,6 +212,11 @@ def verify_approval(
         raise ApprovalError("the evidence changed since this was issued; issue a new approval")
     candidate = doc["candidate"]
     if node == "H1" and doc["decision"] == APPROVE_GUARD:
+        if evidence.get("incomplete"):
+            raise ApprovalError(
+                f"the design is incomplete (never produced: {evidence['incomplete']}), so B1 "
+                "has not run and no candidate can be approved; reject, halt or redirect instead"
+            )
         if candidate not in evidence["survivors"]:
             raise ApprovalError(
                 f"{candidate!r} is not a B1 survivor ({evidence['survivors']}); "

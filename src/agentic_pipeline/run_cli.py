@@ -209,7 +209,13 @@ def _approve(args: argparse.Namespace, run_dir: Path) -> int:
         print(f"  candidate tree {evidence['candidate_tree']} (patch {evidence['patch']})")
         print(f"  F1 for this patch and base: {evidence['f1_guard']}")
     else:
-        print(f"  candidates that survived B1: {evidence['survivors'] or 'none'}")
+        if evidence.get("incomplete"):
+            print(
+                f"  the design is incomplete (never produced: {evidence['incomplete']}); "
+                "B1 has not run, so no candidate can be approved"
+            )
+        else:
+            print(f"  candidates that survived B1: {evidence['survivors'] or 'none'}")
         for candidate, vetoes in evidence["fired"].items():
             pending = evidence["undetermined"][candidate]
             print(f"  {candidate}: fired {vetoes or '-'}; undetermined {pending or '-'}")

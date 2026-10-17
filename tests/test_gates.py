@@ -15,10 +15,12 @@ from agentic_pipeline.gates import (
     UNEVALUATED,
     VETO_EVALUATORS,
     GateError,
+    approval_evidence,
 )
 from agentic_pipeline.grounding import GROUNDING_HANDLERS
 from agentic_pipeline.manifest import build_manifest, publish_stage_manifest, resolve_sealed_inputs
 from agentic_pipeline.provenance import GENESIS_HASH
+from agentic_pipeline.run_state import load_policy
 from agentic_pipeline.runner import Outcome, Runner
 from agentic_pipeline.schemas import validate
 
@@ -131,7 +133,7 @@ class Design:
         )
         publish_stage_manifest(self.rig.run_dir, manifest)
 
-    def seal_valid(self) -> None:
+    def seal_proposals(self) -> None:
         h = self.context_hash
         self.seal(
             "A1",
@@ -140,6 +142,10 @@ class Design:
                 "proposal_b_sealed": ("proposal_b", proposal("prop-b", h)),
             },
         )
+
+    def seal_valid(self) -> None:
+        h = self.context_hash
+        self.seal_proposals()
         self.seal(
             "A3", {"synthesis_sealed": ("synthesis", proposal("prop-s", h, synthesized=True))}
         )
@@ -943,3 +949,98 @@ def seal_reviews(d: Design, a_findings: list, s_findings: list | None = None) ->
 def seal_clean_design(d: Design) -> None:
     """Every proposal declares no dependencies, data flows or contract changes."""
     seal_with_contracts(d, [], [], [])
+
+
+# ── H1 evidence ──────────────────────────────────────────────────────────────
+
+EVIDENCE_KEYS = {
+    "commit_sha",
+    "context_manifest",
+    "design_inputs",
+    "vetoes",
+    "scores",
+    "survivors",
+    "fired",
+    "undetermined",
+    "unevaluated",
+}
+
+
+def h1_evidence(design: Design) -> dict[str, Any]:
+    policy = load_policy(design.rig.repo)
+    return approval_evidence(design.rig.ctx(design.runner, "H1"), policy)
+
+
+def test_h1_evidence_for_a_design_that_never_got_a_synthesis(design: Design) -> None:
+    """A2 sends a spent budget to H1 before A3 runs: the human is still shown what exists."""
+    design.seal_proposals()
+    design.seal_critiques(
+        a_on_b=critique("c1", "prop-b", design.context_hash, [blocking("f", "prop-b")])
+    )
+    evidence = h1_evidence(design)
+    assert set(evidence) == EVIDENCE_KEYS | {"incomplete"}
+    assert evidence["incomplete"] == ["synthesis_sealed"]
+    assert evidence["context_manifest"] == design.context_hash
+    # B1 has not run, so nothing is a survivor, and nothing is called clear or vetoed.
+    assert evidence["survivors"] == [] and evidence["fired"] == {}
+    assert evidence["vetoes"] is None and evidence["scores"] is None
+
+
+def test_h1_evidence_is_bound_to_what_was_sealed(design: Design) -> None:
+    design.seal_proposals()
+    before = h1_evidence(design)
+    assert h1_evidence(design) == before
+    design.seal(
+        "A1",
+        {
+            "proposal_a_sealed": ("proposal_a", proposal("prop-a2", design.context_hash)),
+            "proposal_b_sealed": ("proposal_b", proposal("prop-b", design.context_hash)),
+        },
+    )
+    assert h1_evidence(design)["design_inputs"] != before["design_inputs"]
+
+
+def test_h1_evidence_for_a_complete_design_keeps_its_shape(design: Design) -> None:
+    design.seal_valid()
+    design.seal_reviews()
+    evidence = h1_evidence(design)
+    assert set(evidence) == EVIDENCE_KEYS
+    assert (
+        evidence["survivors"]
+        == sorted(evidence["survivors"])
+        == [
+            "proposal_a_sealed",
+            "proposal_b_sealed",
+            "synthesis_sealed",
+        ]
+    )
+    assert isinstance(evidence["vetoes"], str) and isinstance(evidence["scores"], str)
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_h1_evidence_refuses_a_candidate_changed_after_sealing(
+    design: Design, complete: bool
+) -> None:
+    """A missing candidate is reported; one that was produced and then altered is an error."""
+    design.seal_valid() if complete else design.seal_proposals()
+    root = design.rig.run_dir / "design" / "proposal_a"
+    doc = json.loads((root / "proposal_a.json").read_text())
+    (root / "proposal_a.json").write_text(json.dumps({**doc, "id": "forged"}))
+    with pytest.raises(GateError, match="proposal_a_sealed"):
+        h1_evidence(design)
+
+
+def test_h1_evidence_still_needs_the_pinned_context(design: Design) -> None:
+    design.seal_proposals()
+    manifest = design.rig.run_dir / "manifests" / "G.json"
+    manifest.unlink()
+    with pytest.raises(GateError, match="pinned_context_manifest"):
+        h1_evidence(design)
+
+
+def test_the_gates_still_need_the_whole_design(design: Design) -> None:
+    """Only the human's evidence tolerates a missing synthesis: B1 and A4 never do."""
+    design.seal_proposals()
+    for node in ("A4", "B1"):
+        with pytest.raises(GateError, match="synthesis_sealed"):
+            design.guard(node)

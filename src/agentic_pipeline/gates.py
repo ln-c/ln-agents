@@ -108,11 +108,35 @@ def _record(ctx: HandlerContext, node: str, key: str, document: Mapping[str, Any
     return path
 
 
-class Design:
-    """The sealed design artifacts as parsed JSON, plus what could not be parsed."""
+def _produced(ctx: HandlerContext, artifact: str) -> bool:
+    """True if a stage manifest lists the artifact, whether or not it still verifies.
 
-    def __init__(self, ctx: HandlerContext) -> None:
-        paths = _sealed(ctx, [CONTEXT_INPUT, *DESIGN_INPUTS])
+    Only "was it ever produced" is answered here; a produced artifact that was changed on disk
+    still fails in `_sealed`, so absence is never confused with tampering.
+    """
+    stages = {p.split(".")[0] for p in ctx.registry["artifacts"][artifact]["producer"]}
+    try:
+        for stage in sorted(stages):
+            doc = load_manifest(ctx.run_root, stage, ctx.run_id)
+            if doc is not None and artifact in doc["artifacts"]:
+                return True
+    except ManifestError as exc:
+        raise GateError(f"{artifact}: {exc}") from exc
+    return False
+
+
+class Design:
+    """The sealed design artifacts as parsed JSON, plus what could not be parsed.
+
+    Every gate needs all three candidates. Only `allow_missing` (the evidence shown to a human)
+    accepts a design that was never finished, such as one that A2 sent to H1 before A3 ran;
+    `missing` then lists the candidates no stage ever produced.
+    """
+
+    def __init__(self, ctx: HandlerContext, *, allow_missing: bool = False) -> None:
+        self.missing = [a for a in DESIGN_INPUTS if allow_missing and not _produced(ctx, a)]
+        present = [a for a in DESIGN_INPUTS if a not in self.missing]
+        paths = _sealed(ctx, [CONTEXT_INPUT, *present])
         context = json.loads((paths[CONTEXT_INPUT] / "context_manifest.json").read_text("utf-8"))
         self.context_hash: str = context["hash"]
         self.commit_sha: str = context["commit_sha"]
@@ -121,6 +145,8 @@ class Design:
         self.docs: dict[str, Any] = {}
         self.parse_errors: dict[str, str] = {}
         for artifact, operation in CANDIDATE_OPERATIONS.items():
+            if artifact in self.missing:
+                continue
             file = paths[artifact] / f"{operation}.json"
             try:
                 self.docs[artifact] = json.loads(file.read_text("utf-8"))
@@ -737,7 +763,23 @@ def approval_evidence(ctx: HandlerContext, policy: PolicySnapshot) -> dict[str, 
     A pure function of sealed state: an approval is valid only if the evidence it names equals
     this at decision time, so any change to the design, reviews, vetoes or scores voids it.
     """
-    design = Design(ctx)
+    design = Design(ctx, allow_missing=True)
+    if design.missing:
+        # An exhausted A2 budget reaches H1 before A3 has produced S, so B1 has not run: nothing
+        # is a survivor, nothing can be approved, and the human can still reject, halt or
+        # redirect. Vetoes and scores are not computed over a design that is not all there.
+        return {
+            "commit_sha": design.commit_sha,
+            "context_manifest": design.context_hash,
+            "design_inputs": design.input_digest,
+            "vetoes": None,
+            "scores": None,
+            "survivors": [],
+            "fired": {},
+            "undetermined": {},
+            "unevaluated": [],
+            "incomplete": design.missing,
+        }
     report = VetoReport(ctx)
     scores = build_scores(ctx, policy, report)
     return {
