@@ -379,36 +379,90 @@ def test_cli_approve_then_decide_round_trip(
     assert run_cli.run_command(decide) == 1
 
 
-def test_dr_seals_the_candidate_a_human_approved_for_the_build(
-    tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from agentic_pipeline.manifest import resolve_sealed_inputs
+def seal_candidate(rig: Rig, runner: Any, stage: str, artifact: str, operation: str) -> Path:
+    """Publish a sealed design candidate the way the design stages would."""
+    from agentic_pipeline.manifest import build_manifest, publish_stage_manifest
 
-    rig, runner = h1(tmp_path, signer, monkeypatch)
+    folder = rig.run_dir / "attempts" / f"{stage}-test" / operation
+    folder.mkdir(parents=True)
+    (folder / f"{operation}.json").write_text(json.dumps({"id": operation, "topology": "t"}))
+    manifest = build_manifest(
+        rig.run_dir,
+        run_id=runner.state.run_id,
+        stage=stage,
+        attempt=f"{stage}-test",
+        artifacts={artifact: (folder, True)},
+        operations={},
+        provenance_tip=runner.log.tip(),
+        data_classes={artifact: "internal"},
+    )
+    publish_stage_manifest(rig.run_dir, manifest)
+    return folder / f"{operation}.json"
+
+
+def approved_at_dr(rig: Rig, runner: Any, signer: Signer) -> bytes:
     runner.log.append({"state": "H1", "event": "enter"})  # `rig.at` skips the real entry
     doc, sig = signed(runner, signer, APPROVE_GUARD, "proposal_b_sealed")
     assert runner.decide(doc, sig).node == "DR"
+    return doc
+
+
+def test_dr_seals_the_approved_candidate_with_its_content_for_the_build(
+    tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentic_pipeline.manifest import resolve_sealed_inputs
+    from agentic_pipeline.schemas import validate
+
+    rig, runner = h1(tmp_path, signer, monkeypatch)
+    sealed_file = seal_candidate(rig, runner, "A1", "proposal_b_sealed", "proposal_b")
+    doc = approved_at_dr(rig, runner, signer)
     result = runner.step()  # DR runs; C1 then lacks only what this rig never sealed
     assert "design_decision_sealed" not in result.detail, result.detail
-    assert "synthesis_sealed" in result.detail  # the rig has no design stages behind it
+    assert "synthesis_sealed" in result.detail  # the rig has no synthesis behind it
     sealed, errors = resolve_sealed_inputs(
         rig.run_dir, runner.state.run_id, runner.registry, ["design_decision_sealed"]
     )
     assert not errors, errors
-    decision = json.loads((sealed["design_decision_sealed"].path / "decision.json").read_text())
-    assert decision["candidate"] == "proposal_b_sealed"
-    assert decision["approver"] == "alice" and decision["source"] == "human_approval"
-    assert decision["approval_digest"] == approvals.digest(doc)
+    folder = sealed["design_decision_sealed"].path
+    decision = json.loads((folder / "decision.json").read_text())
+    validate("design_decision", decision)
+    assert decision["candidate"] == "proposal_b_sealed" and decision["source"] == "human_approval"
+    assert decision["approver"] == "alice" and decision["approval_digest"] == approvals.digest(doc)
+    # the build gets the approved design itself, byte for byte
+    assert (folder / "candidate.json").read_bytes() == sealed_file.read_bytes()
+    assert decision["candidate_digest"] == approvals.digest(
+        (folder / "candidate.json").read_bytes()
+    )
     assert verify_provenance_chain(rig.log.path).ok
+
+
+def test_dr_blocks_when_the_approved_candidate_is_not_sealed(
+    tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig, runner = h1(tmp_path, signer, monkeypatch)
+    approved_at_dr(rig, runner, signer)  # nothing was ever sealed for proposal_b_sealed
+    result = runner.step()
+    assert result.outcome is Outcome.BLOCKED and "proposal_b_sealed" in result.detail
+    assert stored(rig).current == "DR"
+
+
+def test_dr_blocks_when_the_approved_candidate_changed_after_it_was_sealed(
+    tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig, runner = h1(tmp_path, signer, monkeypatch)
+    sealed_file = seal_candidate(rig, runner, "A1", "proposal_b_sealed", "proposal_b")
+    approved_at_dr(rig, runner, signer)
+    sealed_file.write_text("{}")
+    result = runner.step()
+    assert result.outcome is Outcome.BLOCKED and "content changed" in result.detail
 
 
 def test_dr_refuses_a_stored_approval_that_was_changed(
     tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig, runner = h1(tmp_path, signer, monkeypatch)
-    runner.log.append({"state": "H1", "event": "enter"})  # `rig.at` skips the real entry
-    doc, sig = signed(runner, signer, APPROVE_GUARD, "proposal_b_sealed")
-    assert runner.decide(doc, sig).node == "DR"
+    seal_candidate(rig, runner, "A1", "proposal_b_sealed", "proposal_b")
+    doc = approved_at_dr(rig, runner, signer)
     stored_doc = rig.run_dir / "approvals" / f"{approvals.digest(doc).removeprefix('sha256:')}.json"
     stored_doc.write_bytes(doc.replace(b"proposal_b_sealed", b"proposal_a_sealed"))
     result = runner.step()

@@ -64,6 +64,12 @@ if TYPE_CHECKING:
 GATES_DIR = "gates"
 DESIGN_INPUTS = ("proposal_a_sealed", "proposal_b_sealed", "synthesis_sealed")
 CONTEXT_INPUT = "pinned_context_manifest"
+# The operation whose output file each sealed design candidate holds.
+CANDIDATE_OPERATIONS = {
+    "proposal_a_sealed": "proposal_a",
+    "proposal_b_sealed": "proposal_b",
+    "synthesis_sealed": "synthesis",
+}
 UNEVALUATED = "not_evaluated"
 
 
@@ -114,12 +120,7 @@ class Design:
         self.input_digest = _digest({name: digest_path(path) for name, path in paths.items()})
         self.docs: dict[str, Any] = {}
         self.parse_errors: dict[str, str] = {}
-        operations = {
-            "proposal_a_sealed": "proposal_a",
-            "proposal_b_sealed": "proposal_b",
-            "synthesis_sealed": "synthesis",
-        }
-        for artifact, operation in operations.items():
+        for artifact, operation in CANDIDATE_OPERATIONS.items():
             file = paths[artifact] / f"{operation}.json"
             try:
                 self.docs[artifact] = json.loads(file.read_text("utf-8"))
@@ -673,16 +674,32 @@ def record_decision(ctx: HandlerContext) -> str:
         raise GateError(f"DR: cannot verify the stored design approval: {exc}") from exc
     if doc["run_id"] != ctx.run_id or doc["decision"] != APPROVE_GUARD or not doc["candidate"]:
         raise GateError("DR: the recorded approval is not a design approval naming a candidate")
+    candidate = doc["candidate"]
+    if candidate not in CANDIDATE_OPERATIONS:
+        raise GateError(f"DR: {candidate!r} is not a design candidate")
+    # The build needs the approved design itself, not just its name: copy it from the sealed
+    # artifact (re-hashed by `_sealed`) so the decision carries exactly what was approved.
+    approved = _sealed(ctx, [candidate])[candidate] / f"{CANDIDATE_OPERATIONS[candidate]}.json"
+    try:
+        content = approved.read_bytes()
+    except OSError as exc:
+        raise GateError(f"DR: the approved candidate {candidate} cannot be read: {exc}") from exc
     decision = {
         "source": "human_approval",
-        "candidate": doc["candidate"],
+        "candidate": candidate,
+        "candidate_digest": "sha256:" + hashlib.sha256(content).hexdigest(),
         "approver": doc["approver"],
         "reason": doc["reason"],
         "approval_digest": approval_digest,
         "survivors": doc["evidence"].get("survivors", []),
     }
+    try:
+        validate("design_decision", decision)
+    except ValidationError as exc:
+        raise GateError(f"DR: design decision invalid: {exc.message}") from exc
     out = ctx.run_root / GATES_DIR / "DR" / approval_digest.removeprefix("sha256:")[:32]
     out.mkdir(parents=True, exist_ok=True)
+    (out / "candidate.json").write_bytes(content)
     atomic_write_json(out / "decision.json", decision)
     try:
         manifest = build_manifest(

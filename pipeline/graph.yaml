@@ -117,7 +117,7 @@ states:
     kind: code
     executor: code
     doc: Design decision record. After H1 it seals the candidate the human approved (the signed approval stays the human decision); on the fast path it needs a scored winner and is auto-generated.
-    produces: decision_record
+    produces: design_decision
     edges:
       - {to: C1, guard: always}
 
