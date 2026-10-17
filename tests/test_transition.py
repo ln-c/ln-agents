@@ -26,7 +26,7 @@ def allow_all(edge: object, ctx: object) -> bool:
 
 
 def test_existing_edge_allowed_by_guard() -> None:
-    edge = check_transition(GRAPH, "A2", "blocking_flaw", "A1", allow_all, {})
+    edge = check_transition(GRAPH, "A4", "proposal_invalid", "A1", allow_all, {})
     assert edge.budget == "design"
 
 
@@ -59,7 +59,7 @@ def test_unbudgeted_edge_needs_no_reservation() -> None:
 
 def test_budget_consumed_per_edge_until_exhausted() -> None:
     ledger = BudgetLedger.from_policy(BUDGETS)
-    edge = _edge("A2", "blocking_flaw", "A1")
+    edge = _edge("A4", "proposal_invalid", "A1")
     for _ in range(BUDGETS["budgets"]["design"]["max_retries"]):
         ledger.reserve(edge).commit()
     with pytest.raises(BudgetExhausted):
@@ -68,7 +68,7 @@ def test_budget_consumed_per_edge_until_exhausted() -> None:
 
 def test_release_returns_budget() -> None:
     ledger = BudgetLedger({"design": 1})
-    edge = _edge("A2", "blocking_flaw", "A1")
+    edge = _edge("A4", "proposal_invalid", "A1")
     reservation = ledger.reserve(edge)
     with pytest.raises(BudgetExhausted):
         ledger.reserve(edge)  # outstanding reservation counts
@@ -78,7 +78,7 @@ def test_release_returns_budget() -> None:
 
 
 def test_reservation_settles_once() -> None:
-    reservation = BudgetLedger({"design": 2}).reserve(_edge("A2", "blocking_flaw", "A1"))
+    reservation = BudgetLedger({"design": 2}).reserve(_edge("A4", "proposal_invalid", "A1"))
     reservation.commit()
     with pytest.raises(RuntimeError):
         reservation.release()

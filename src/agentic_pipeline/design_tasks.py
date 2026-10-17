@@ -44,7 +44,14 @@ GUIDANCE: Mapping[str, str] = {
         "that omits it.\n"
         "- `synthesized`: false for an independent proposal; true only for a synthesis, "
         "which must also give `sources` mapping each component name to the id of the input "
-        "proposal it came from (use only ids that appear in the proposal inputs)."
+        "proposal it came from (use only ids that appear in the proposal inputs).\n"
+        "- `resolutions`: a synthesis only (leave it out of an independent proposal). One "
+        "entry for every `blocking` finding in the critique inputs, and none for any other "
+        "finding. `critique` is the `artifact` name of the input that holds the finding "
+        "(`critique_a_by_b_sealed` or `critique_b_by_a_sealed`), `finding_id` is that "
+        "finding's `id` copied exactly, and `disposition` is `resolved` (the synthesis fixes "
+        "it; say how in `note`) or `rejected` (it does not; a `note` with the reason is "
+        "required). Use an empty list if the critiques raise no blocking finding."
     ),
     "conformance_probe": (
         "Field rules:\n- `nonce`: copy the value of `nonce` from the `probe_input` input exactly."

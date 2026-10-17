@@ -10,7 +10,7 @@ from agentic_pipeline.graph import Edge, Graph
 from agentic_pipeline.transition import BudgetLedger, BudgetUnavailable
 
 ROOT = Path(__file__).resolve().parents[1]
-EDGE = Edge("A2", "A1", "blocking_flaw", "design")
+EDGE = Edge("A4", "A1", "proposal_invalid", "design")
 
 
 class Recorder:

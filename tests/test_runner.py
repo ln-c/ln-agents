@@ -139,7 +139,7 @@ def test_single_runner_per_run(rig: Rig) -> None:
 
 
 def test_walks_grounding_into_model_stages(rig: Rig) -> None:
-    runner = rig.open({**GROUNDING, "A2": lambda ctx: "no_blocking_flaw"})
+    runner = rig.open(GROUNDING)
     result = runner.run()
     assert (result.outcome, result.node) == (Outcome.BLOCKED, "A4")  # A4 has no handler yet
     assert "no handler registered for A4" in result.detail
@@ -151,11 +151,11 @@ def test_walks_grounding_into_model_stages(rig: Rig) -> None:
     assert {g.operation_id for g in rig.adapters["claude_cli_default"].grants} >= {"proposal_a"}
 
 
-def test_model_stage_with_several_edges_needs_a_handler(rig: Rig) -> None:
-    runner = rig.open(GROUNDING)
-    result = runner.run()
-    assert (result.outcome, result.node) == (Outcome.BLOCKED, "A2")
-    assert "no handler registered for A2" in result.detail
+def test_a_stage_with_several_edges_needs_a_handler(rig: Rig) -> None:
+    runner = rig.at("A4", GROUNDING)  # A4 can go to A1, A3, A3R or H1; A2 has one edge, no handler
+    result = runner.step()
+    assert (result.outcome, result.node) == (Outcome.BLOCKED, "A4")
+    assert "no handler registered for A4" in result.detail
 
 
 def test_blocked_step_changes_nothing(rig: Rig) -> None:
@@ -251,13 +251,13 @@ def test_marker_and_reservation_are_durable_before_any_model_call(rig: Rig) -> N
         seen.append({"entering": doc["entering"], "ledger": doc["ledger"]})
 
     rig.adapters["claude_cli_default"].side_effect = watch
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     assert runner.step().outcome is Outcome.ADVANCED
     # While the adapter was running: marker set, unit already spent on disk.
     assert seen[0] == {
         "entering": {
-            "from": "A2",
-            "guard": "blocking_flaw",
+            "from": "A4",
+            "guard": "proposal_invalid",
             "to": "A1",
             "after_seq": 1,
             "consumed_before": {},
@@ -269,7 +269,7 @@ def test_marker_and_reservation_are_durable_before_any_model_call(rig: Rig) -> N
 
 
 def test_reservation_is_written_before_the_commit(rig: Rig) -> None:
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     ledgers: list[dict[str, dict[str, int]]] = []
     real_save = runner.store.save
 
@@ -286,7 +286,7 @@ def test_reservation_is_written_before_the_commit(rig: Rig) -> None:
 
 
 def test_budget_survives_reopening(rig: Rig) -> None:
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     runner.step()
     runner.close()
     again = rig.open()
@@ -295,7 +295,7 @@ def test_budget_survives_reopening(rig: Rig) -> None:
 
 
 def test_unpersistable_ledger_blocks_dispatch_and_spends_nothing(rig: Rig) -> None:
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     real_save = runner.store.save
 
     def failing(state: RunState) -> None:
@@ -316,7 +316,7 @@ def test_unpersistable_ledger_blocks_dispatch_and_spends_nothing(rig: Rig) -> No
 
 def paused_rig(rig: Rig) -> Runner:
     rig.adapters["claude_cli_default"].status = "quota_exhausted"
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     assert runner.step().outcome is Outcome.PAUSED
     return runner
 
@@ -325,7 +325,7 @@ def test_quota_exhaustion_pauses_and_keeps_the_spent_budget(rig: Rig) -> None:
     paused_rig(rig)
     state = stored(rig)
     assert state.status is Status.PAUSED and "quota_exhausted" in state.paused_reason
-    assert (state.current, state.entering) == ("A2", None)
+    assert (state.current, state.entering) == ("A4", None)
     assert state.ledger["consumed"] == {"design": 1}
     assert not rig.adapters["gemini_3_8_flash_high"].grants  # no fallback to another provider
 
@@ -333,7 +333,7 @@ def test_quota_exhaustion_pauses_and_keeps_the_spent_budget(rig: Rig) -> None:
 def test_paused_run_refuses_to_step_even_after_reopening(rig: Rig) -> None:
     paused_rig(rig).close()
     calls = len(rig.adapters["claude_cli_default"].grants)
-    again = rig.open({"A2": lambda ctx: "blocking_flaw"})
+    again = rig.open({"A4": lambda ctx: "proposal_invalid"})
     result = again.step()
     assert result.outcome is Outcome.PAUSED and "quota_exhausted" in result.detail
     assert len(rig.adapters["claude_cli_default"].grants) == calls
@@ -354,7 +354,7 @@ def test_resume_is_recorded_and_the_edge_is_charged_again(rig: Rig) -> None:
     assert state.resumes[0]["provenance_tip"] == decisions[-1]["event_hash"]
 
     rig.adapters["claude_cli_default"].status = "ok"
-    again = rig.open({"A2": lambda ctx: "blocking_flaw"})
+    again = rig.open({"A4": lambda ctx: "proposal_invalid"})
     assert again.step().outcome is Outcome.ADVANCED
     assert again.ledger.consumed == {"design": 2}
 
@@ -374,10 +374,10 @@ def test_resume_needs_a_paused_run_and_a_named_human(rig: Rig) -> None:
 
 def crash_after_model_call(rig: Rig) -> None:
     """Leave the run as a process killed right after logging a model_call would."""
-    runner = rig.at("A2")
+    runner = rig.at("A4")
     runner.state.entering = {
-        "from": "A2",
-        "guard": "blocking_flaw",
+        "from": "A4",
+        "guard": "proposal_invalid",
         "to": "A1",
         "after_seq": rig.log.count(),
         "consumed_before": {},
@@ -487,7 +487,7 @@ def test_dispatcher_gets_the_policy_that_was_checked(rig: Rig) -> None:
 
 
 def test_save_failure_after_a_finished_stage_pauses_then_recovers_forward(rig: Rig) -> None:
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     real_save = runner.store.save
 
     def fail_final(state: RunState) -> None:
@@ -582,12 +582,12 @@ def test_terminal_event_is_not_duplicated_after_a_failed_save(rig: Rig) -> None:
 
 
 def test_spent_budget_takes_the_spent_route(rig: Rig) -> None:
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     runner.ledger.consumed = {"design": 2}  # max_retries for design is 2
     runner._save()
     result = runner.step()
     assert result.outcome is Outcome.ADVANCED
-    assert result.detail == "budget design spent: A2 --design_spent--> H1"
+    assert result.detail == "budget design spent: A4 --design_spent--> H1"
     state = stored(rig)
     assert (state.current, state.entering, state.status) == ("H1", None, Status.RUNNING)
     assert state.ledger["consumed"] == {"design": 2}  # nothing more spent
@@ -605,18 +605,18 @@ def test_spent_budget_on_a_non_model_edge_takes_its_route(rig: Rig) -> None:
 
 
 def test_spent_budget_without_a_route_pauses_with_a_typed_cause(rig: Rig) -> None:
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
-    runner.budgets["design"] = {**runner.budgets["design"], "on_exhausted": "B2"}  # no A2->B2
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
+    runner.budgets["design"] = {**runner.budgets["design"], "on_exhausted": "B2"}  # no A4->B2
     runner.ledger.consumed = {"design": 2}
     runner._save()
     result = runner.step()
-    assert result.outcome is Outcome.PAUSED and "no spent route from A2" in result.detail
+    assert result.outcome is Outcome.PAUSED and "no spent route from A4" in result.detail
     assert stored(rig).pause_cause is PauseCause.BUDGET_EXHAUSTED
 
 
 def test_pauses_record_their_cause(rig: Rig) -> None:
     rig.adapters["claude_cli_default"].status = "quota_exhausted"
-    rig.at("A2", {"A2": lambda ctx: "blocking_flaw"}).step()
+    rig.at("A4", {"A4": lambda ctx: "proposal_invalid"}).step()
     assert stored(rig).pause_cause is PauseCause.DISPATCH_PAUSED
 
 
@@ -686,7 +686,7 @@ def test_error_after_spending_still_pauses(rig: Rig) -> None:
         raise ValueError("adapter bug after the call was logged")
 
     rig.adapters["claude_cli_default"].side_effect = explode
-    runner = rig.at("A2", {"A2": lambda ctx: "blocking_flaw"})
+    runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     result = runner.step()
     assert result.outcome is Outcome.PAUSED
     assert stored(rig).ledger["consumed"] == {"design": 1}

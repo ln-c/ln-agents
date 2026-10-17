@@ -131,7 +131,7 @@ class Design:
         )
         publish_stage_manifest(self.rig.run_dir, manifest)
 
-    def seal_valid(self) -> None:
+    def seal_proposals(self) -> None:
         h = self.context_hash
         self.seal(
             "A1",
@@ -140,6 +140,10 @@ class Design:
                 "proposal_b_sealed": ("proposal_b", proposal("prop-b", h)),
             },
         )
+
+    def seal_valid(self) -> None:
+        h = self.context_hash
+        self.seal_proposals()
         self.seal(
             "A3", {"synthesis_sealed": ("synthesis", proposal("prop-s", h, synthesized=True))}
         )
@@ -212,6 +216,7 @@ def test_valid_design_walks_a4_to_human_review(design: Design) -> None:
 
 def test_a4_never_reports_a_conflict_it_cannot_define(design: Design) -> None:
     design.seal_valid()
+    design.seal_critiques()
     assert design.guard("A4") == "all_required_valid"
     assert design.records("A4")[0]["constraint_sources_conflict"] == UNEVALUATED
 
@@ -307,6 +312,7 @@ def test_a4_blocks_when_a_sealed_input_is_missing_or_tampered(design: Design) ->
 def test_a_rerun_after_a_retry_sees_the_new_inputs(design: Design) -> None:
     h = design.context_hash
     design.seal_valid()
+    design.seal_critiques()
     assert design.guard("A4") == "all_required_valid"
     bad = proposal("prop-a", h)
     del bad["topology"]
@@ -622,6 +628,7 @@ def test_gates_refuse_after_policy_drift(design: Design) -> None:
 
 def test_the_spent_route_is_never_chosen_by_a_gate(design: Design) -> None:
     design.seal_valid()
+    design.seal_critiques()
     for node in ("A4", "B1", "B3"):
         assert design.guard(node) not in {"design_spent", "constraint_sources_conflict"}
     assert copy.deepcopy(GATE_HANDLERS).keys() == {"A2", "A4", "B1", "B2", "B3", "DR"}
@@ -635,24 +642,24 @@ def a2_ready(design: Design, **kw: Any) -> None:
     design.seal_critiques(**kw)
 
 
-def test_clean_critiques_allow_synthesis(design: Design) -> None:
+def test_clean_critiques_are_accepted(design: Design) -> None:
     a2_ready(design)
-    assert design.guard("A2") == "no_blocking_flaw"
+    assert design.guard("A2") == "always"
     assert design.records("A2")[0]["blocking_findings"] == {
-        "critique_b_by_a": 0,
-        "critique_a_by_b": 0,
+        "critique_b_by_a": [],
+        "critique_a_by_b": [],
     }
 
 
-def test_non_blocking_findings_do_not_stop_synthesis(design: Design) -> None:
+def test_non_blocking_findings_are_accepted(design: Design) -> None:
     h = design.context_hash
     note = {"id": "f1", "severity": "non_blocking", "description": "verbose naming"}
     a2_ready(design, a_on_b=critique("c1", "prop-b", h, [note]))
-    assert design.guard("A2") == "no_blocking_flaw"
+    assert design.guard("A2") == "always"
 
 
 @pytest.mark.parametrize("side", ["a_on_b", "b_on_a", "both"])
-def test_a_blocking_finding_in_either_critique_is_a_flaw(design: Design, side: str) -> None:
+def test_blocking_findings_are_recorded_and_not_routed(design: Design, side: str) -> None:
     h = design.context_hash
     on_b = critique("c1", "prop-b", h, [blocking("f1", "prop-b")])
     on_a = critique("c2", "prop-a", h, [blocking("f2", "prop-a")])
@@ -664,7 +671,11 @@ def test_a_blocking_finding_in_either_critique_is_a_flaw(design: Design, side: s
         else {"a_on_b": on_b, "b_on_a": on_a}
     )
     a2_ready(design, **kw)
-    assert design.guard("A2") == "blocking_flaw"
+    assert design.guard("A2") == "always"
+    assert design.records("A2")[0]["blocking_findings"] == {
+        "critique_b_by_a": ["f1"] if side != "b_on_a" else [],
+        "critique_a_by_b": ["f2"] if side != "a_on_b" else [],
+    }
 
 
 def _drop_evidence(doc: dict) -> None:
@@ -752,20 +763,30 @@ def test_a_text_only_critique_blocks(design: Design) -> None:
         design.guard("A2")
 
 
-def test_a2_guards_are_real_edges_and_never_the_spent_route(design: Design) -> None:
-    edges = {e.guard for e in design.runner.graph.edges if e.src == "A2"}
-    assert {"blocking_flaw", "no_blocking_flaw"} <= edges
+def test_a2_names_a_real_edge(design: Design) -> None:
     a2_ready(design)
-    assert design.guard("A2") != "design_spent"
+    guard = design.guard("A2")
+    assert guard in {e.guard for e in design.runner.graph.edges if e.src == "A2"}
 
 
 def test_a2_rerun_sees_new_critiques(design: Design) -> None:
     h = design.context_hash
     a2_ready(design)
-    assert design.guard("A2") == "no_blocking_flaw"
+    assert design.guard("A2") == "always"
     design.seal_critiques(a_on_b=critique("c1", "prop-b", h, [blocking("f1", "prop-b")]))
-    assert design.guard("A2") == "blocking_flaw"
-    assert len(design.records("A2")) == 2
+    assert design.guard("A2") == "always"
+    assert [r["blocking_findings"]["critique_b_by_a"] for r in design.records("A2")] in (
+        [[], ["f1"]],
+        [["f1"], []],
+    )
+
+
+def test_a_critique_with_a_repeated_finding_id_is_not_usable(design: Design) -> None:
+    h = design.context_hash
+    note = {"id": "f1", "severity": "non_blocking", "description": "verbose naming"}
+    a2_ready(design, a_on_b=critique("c1", "prop-b", h, [note, {**note, "description": "again"}]))
+    with pytest.raises(GateError, match="finding ids are not unique"):
+        design.guard("A2")
 
 
 def test_critique_schema_requires_evidence_only_for_blocking() -> None:
@@ -943,3 +964,167 @@ def seal_reviews(d: Design, a_findings: list, s_findings: list | None = None) ->
 def seal_clean_design(d: Design) -> None:
     """Every proposal declares no dependencies, data flows or contract changes."""
     seal_with_contracts(d, [], [], [])
+
+
+# ── A4: the synthesis answers every blocking finding ─────────────────────────
+
+B_BY_A = "critique_b_by_a_sealed"  # A's critique of proposal B
+A_BY_B = "critique_a_by_b_sealed"  # B's critique of proposal A
+
+
+def resolution(critique_id: str, finding: str, disposition: str = "resolved") -> dict:
+    return {
+        "critique": critique_id,
+        "finding_id": finding,
+        "disposition": disposition,
+        "note": f"{disposition} in the synthesis",
+    }
+
+
+def seal_for_a4(design: Design, resolutions: list | None, **critiques: dict) -> None:
+    """Proposals, the given critiques (default: one blocking finding on each side), and S."""
+    h = design.context_hash
+    design.seal_proposals()
+    design.seal_critiques(
+        critiques.get("a_on_b", critique("c1", "prop-b", h, [blocking("f1", "prop-b")])),
+        critiques.get("b_on_a", critique("c2", "prop-a", h, [blocking("f2", "prop-a")])),
+    )
+    extra = {} if resolutions is None else {"resolutions": resolutions}
+    design.seal(
+        "A3", {"synthesis_sealed": ("synthesis", proposal("prop-s", h, synthesized=True, **extra))}
+    )
+
+
+def a4_problems(design: Design) -> list[str]:
+    (record,) = design.records("A4")
+    return record["problems"]["synthesis_sealed"]
+
+
+UNANSWERED_F1 = f"blocking finding f1 of {B_BY_A} has no resolution"
+UNANSWERED_F2 = f"blocking finding f2 of {A_BY_B} has no resolution"
+
+
+@pytest.mark.parametrize(
+    ("answers", "guard", "problems"),
+    [
+        (None, "synthesis_invalid", [UNANSWERED_F2, UNANSWERED_F1]),
+        ([("f1", B_BY_A, "resolved")], "synthesis_invalid", [UNANSWERED_F2]),
+        ([("f2", A_BY_B, "rejected")], "synthesis_invalid", [UNANSWERED_F1]),
+        (
+            [("f1", B_BY_A, "resolved"), ("f2", A_BY_B, "rejected")],
+            "all_required_valid",
+            [],
+        ),
+    ],
+    ids=["none", "one-side", "other-side", "both"],
+)
+def test_a4_needs_a_resolution_for_every_blocking_finding(
+    design: Design, answers: list | None, guard: str, problems: list[str]
+) -> None:
+    given = None if answers is None else [resolution(c, f, d) for f, c, d in answers]
+    seal_for_a4(design, given)
+    assert design.guard("A4") == guard
+    assert a4_problems(design) == problems
+
+
+def test_a4_asks_for_nothing_when_the_critiques_raise_no_blocking_finding(design: Design) -> None:
+    h = design.context_hash
+    clean = {"a_on_b": critique("c1", "prop-b", h), "b_on_a": critique("c2", "prop-a", h)}
+    seal_for_a4(design, None, **clean)
+    assert design.guard("A4") == "all_required_valid"
+    seal_for_a4(design, [], **clean)
+    assert design.guard("A4") == "all_required_valid"
+
+
+def test_a_resolution_must_name_a_blocking_finding_that_was_raised(design: Design) -> None:
+    h = design.context_hash
+    note = {"id": "n1", "severity": "non_blocking", "description": "verbose naming"}
+    seal_for_a4(
+        design,
+        [
+            resolution(B_BY_A, "f1"),
+            resolution(A_BY_B, "f2"),
+            resolution(A_BY_B, "nope"),
+            resolution(A_BY_B, "n1"),
+            resolution(B_BY_A, "f2"),  # f2 belongs to the other critique
+        ],
+        b_on_a=critique("c2", "prop-a", h, [blocking("f2", "prop-a"), note]),
+    )
+    assert design.guard("A4") == "synthesis_invalid"
+    assert a4_problems(design) == [
+        f"{A_BY_B} has no blocking finding 'nope'",
+        f"{A_BY_B} has no blocking finding 'n1'",
+        f"{B_BY_A} has no blocking finding 'f2'",
+    ]
+
+
+def test_a_blocking_finding_cannot_be_answered_twice(design: Design) -> None:
+    seal_for_a4(
+        design,
+        [resolution(B_BY_A, "f1"), resolution(B_BY_A, "f1", "rejected"), resolution(A_BY_B, "f2")],
+    )
+    assert design.guard("A4") == "synthesis_invalid"
+    assert a4_problems(design) == [f"finding f1 of {B_BY_A} is answered twice"]
+
+
+@pytest.mark.parametrize(
+    ("answers", "guard", "problems"),
+    [
+        ([B_BY_A], "synthesis_invalid", [f"blocking finding f1 of {A_BY_B} has no resolution"]),
+        ([B_BY_A, A_BY_B], "all_required_valid", []),
+    ],
+    ids=["one-answer", "two-answers"],
+)
+def test_the_same_finding_id_in_both_critiques_needs_two_answers(
+    design: Design, answers: list[str], guard: str, problems: list[str]
+) -> None:
+    h = design.context_hash
+    seal_for_a4(
+        design,
+        [resolution(c, "f1") for c in answers],
+        a_on_b=critique("c1", "prop-b", h, [blocking("f1", "prop-b")]),
+        b_on_a=critique("c2", "prop-a", h, [blocking("f1", "prop-a")]),
+    )
+    assert design.guard("A4") == guard
+    assert a4_problems(design) == problems
+
+
+def test_a_rejection_needs_a_reason(design: Design) -> None:
+    bare = {"critique": B_BY_A, "finding_id": "f1", "disposition": "rejected"}
+    seal_for_a4(design, [bare, resolution(A_BY_B, "f2")])
+    assert design.guard("A4") == "synthesis_invalid"
+    assert "note" in a4_problems(design)[0]
+
+
+def test_only_the_synthesis_may_carry_resolutions(design: Design) -> None:
+    h = design.context_hash
+    design.seal(
+        "A1",
+        {
+            "proposal_a_sealed": (
+                "proposal_a",
+                proposal("prop-a", h, resolutions=[resolution(B_BY_A, "f1")]),
+            ),
+            "proposal_b_sealed": ("proposal_b", proposal("prop-b", h)),
+        },
+    )
+    design.seal("A3", {"synthesis_sealed": ("synthesis", proposal("prop-s", h, synthesized=True))})
+    assert design.guard("A4") == "proposal_invalid"
+    assert "only the synthesis may carry resolutions" in json.dumps(design.records("A4")[0])
+
+
+def test_a4_blocks_on_an_unusable_critique(design: Design) -> None:
+    h = design.context_hash
+    seal_for_a4(design, [], a_on_b=critique("c1", "prop-b", h, review_complete=False))
+    with pytest.raises(GateError, match="critique not usable"):
+        design.guard("A4")
+
+
+def test_a4_verdict_follows_the_critiques_it_was_judged_against(design: Design) -> None:
+    h = design.context_hash
+    clean = {"a_on_b": critique("c1", "prop-b", h), "b_on_a": critique("c2", "prop-a", h)}
+    seal_for_a4(design, [], **clean)
+    assert design.guard("A4") == "all_required_valid"
+    seal_for_a4(design, [])  # the same S, now against critiques with blocking findings
+    assert design.guard("A4") == "synthesis_invalid"
+    assert len(design.records("A4")) == 2

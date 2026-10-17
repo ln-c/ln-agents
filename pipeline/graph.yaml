@@ -46,22 +46,24 @@ states:
   A2:
     kind: model
     executor: model
-    doc: Cross-critique (A critiques B, B critiques A); no self-critique.
+    doc: >-
+      Cross-critique, once (A critiques B, B critiques A); no self-critique. A blocking
+      finding is not routed back to A1: A3 must resolve or reject each one, and A4 checks.
     edges:
-      - {to: A1, guard: blocking_flaw, budget: design}
-      - {to: A3, guard: no_blocking_flaw}
-      - {to: H1, guard: design_spent}
+      - {to: A3, guard: always}
   A3:
     kind: model
     executor: model
-    doc: Synthesize candidate S (synthesized=true, sources listed per element).
+    doc: >-
+      Synthesize candidate S (synthesized=true, sources listed per element) and say what it
+      did with every blocking critique finding (resolutions).
     produces: proposal
     edges:
       - {to: A4, guard: always}
   A4:
     kind: decision
     executor: code
-    doc: Validation (schema, semantic, constraints).
+    doc: Validation (schema, semantic, constraints, and a resolution for every blocking critique finding).
     edges:
       - {to: A1, guard: proposal_invalid, budget: design}
       - {to: A3, guard: synthesis_invalid, budget: design}
