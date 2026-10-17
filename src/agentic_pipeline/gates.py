@@ -14,6 +14,9 @@ Critique format: `schemas/critique.schema.json`; a critic writes `<operation_id>
 Rules these gates keep:
 * A missing, tampered, or unreadable sealed artifact raises (BLOCKED); only a proposal's
   *content* can make it invalid.
+* A2 reviews once and always returns `always`. A blocking finding is not routed back to A1;
+  the synthesis must say what it did with it, and A4 refuses a synthesis that leaves one
+  unanswered. An unusable critique still blocks: it is never read as "no flaws".
 * A4 never returns `design_spent` (the runner substitutes the spent route itself) or
   `constraint_sources_conflict` (no deterministic definition exists; reported as not
   evaluated).
@@ -149,6 +152,8 @@ def design_problems(design: Design) -> dict[str, list[str]]:
             expect_synth = artifact == "synthesis_sealed"
             if doc["synthesized"] is not expect_synth:
                 errors.append(f"synthesized must be {str(expect_synth).lower()}")
+            if not expect_synth and "resolutions" in doc:
+                errors.append("only the synthesis may carry resolutions")
             if doc["manifest_hash"] != design.context_hash:
                 errors.append("manifest_hash does not match the pinned context manifest")
         problems[artifact] = errors
@@ -169,21 +174,58 @@ def design_problems(design: Design) -> dict[str, list[str]]:
 # ── A4 ───────────────────────────────────────────────────────────────────────
 
 
+def resolution_problems(synthesis: Mapping[str, Any], blocking: set[tuple[str, str]]) -> list[str]:
+    """Why S does not account for exactly the blocking findings of the A2 critiques.
+
+    `blocking` holds (sealed critique artifact, finding id). S must answer every one of them
+    once, and may answer nothing else, so a finding cannot be dropped without a trace and an
+    answer cannot refer to a finding that was never raised.
+    """
+    errors: list[str] = []
+    answered: set[tuple[str, str]] = set()
+    for item in synthesis.get("resolutions", []):
+        key = (item["critique"], item["finding_id"])
+        if key in answered:
+            errors.append(f"finding {key[1]} of {key[0]} is answered twice")
+        elif key not in blocking:
+            errors.append(f"{key[0]} has no blocking finding {key[1]!r}")
+        answered.add(key)
+    errors.extend(
+        f"blocking finding {finding} of {critique} has no resolution"
+        for critique, finding in sorted(blocking - answered)
+    )
+    return errors
+
+
 def validate_design(ctx: HandlerContext) -> str:
-    """A4: schema, `manifest_hash`, and traceability checks on proposals A, B and S."""
+    """A4: schema, `manifest_hash`, traceability, and a resolution for every blocking finding."""
     _policy(ctx)
     design = Design(ctx)
     problems = design_problems(design)
+    key = design.input_digest
     if problems["proposal_a_sealed"] or problems["proposal_b_sealed"]:
         guard = "proposal_invalid"
     elif problems["synthesis_sealed"]:
         guard = "synthesis_invalid"
     else:
-        guard = "all_required_valid"
+        # Only a valid design reaches the critiques, which then belong to what the verdict
+        # depends on (and so to the record's name).
+        digest, docs = usable_critiques(ctx)
+        key = _digest({"design": key, "critiques": digest})
+        blocking = {
+            (f"{op}_sealed", finding["id"])
+            for op, doc in docs.items()
+            for finding in doc["findings"]
+            if finding["severity"] == "blocking"
+        }
+        problems["synthesis_sealed"] = resolution_problems(
+            design.docs["synthesis_sealed"], blocking
+        )
+        guard = "synthesis_invalid" if problems["synthesis_sealed"] else "all_required_valid"
     _record(
         ctx,
         "A4",
-        design.input_digest,
+        key,
         {"guard": guard, "problems": problems, "constraint_sources_conflict": UNEVALUATED},
     )
     return guard
@@ -271,6 +313,9 @@ def _critique_errors(doc: Any) -> list[str]:
         derived[finding["severity"]] += 1
     if derived != doc["counts"]:
         errors.append(f"counts {doc['counts']} do not match the findings {derived}")
+    ids = [finding["id"] for finding in doc["findings"]]
+    if len(set(ids)) != len(ids):
+        errors.append("finding ids are not unique")
     if not doc["review_complete"]:
         errors.append("review_complete is false")
     return errors
@@ -298,22 +343,34 @@ def _critique_binding_errors(
     return errors
 
 
-def assess_critiques(ctx: HandlerContext) -> str:
-    """A2: any blocking finding means `blocking_flaw`; otherwise `no_blocking_flaw`.
+def usable_critiques(ctx: HandlerContext) -> tuple[str, dict[str, Any]]:
+    """(input digest, parsed critiques), or a block if any critique is not usable.
 
-    An invalid, incomplete, or unbound critique blocks the step: it is not a finding, and
-    it must not read as a clean review. `design_spent` is never chosen here; the runner
-    substitutes the spent route when the budgeted `blocking_flaw` edge is exhausted.
+    An invalid, incomplete, or unbound critique is not a finding, and it must not read as a
+    clean review.
     """
-    _policy(ctx)
     digest, docs, problems = critique_problems(ctx)
     bad = {op: errs for op, errs in problems.items() if errs}
     if bad:
         raise GateError(f"critique not usable: {bad}")
-    blocking = {op: doc["counts"]["blocking"] for op, doc in docs.items()}
-    guard = "blocking_flaw" if any(blocking.values()) else "no_blocking_flaw"
-    _record(ctx, "A2", digest, {"guard": guard, "blocking_findings": blocking})
-    return guard
+    return digest, docs
+
+
+def assess_critiques(ctx: HandlerContext) -> str:
+    """A2: accept the critiques and record their blocking findings; nothing is routed on them.
+
+    Two families rarely converge on one design, so a blocking finding does not send the run
+    back to A1. The synthesis must resolve or reject each one (A4 checks), and the reviewer
+    of S can still contest it. The blocking finding ids are recorded for the audit trail.
+    """
+    _policy(ctx)
+    digest, docs = usable_critiques(ctx)
+    blocking = {
+        op: [f["id"] for f in doc["findings"] if f["severity"] == "blocking"]
+        for op, doc in docs.items()
+    }
+    _record(ctx, "A2", digest, {"guard": "always", "blocking_findings": blocking})
+    return "always"
 
 
 # ── B1 ───────────────────────────────────────────────────────────────────────

@@ -18,8 +18,8 @@ The agent prepares a candidate; it does **not** authorize implementation. `ready
 4. **No self-critique:** Model A critiques only Proposal B; Model B critiques only Proposal A. Neither model may critique its own proposal during A2.
 5. **No conflict laundering:** Do not smooth over a genuine constraint violation or mutually exclusive design choice. If a material conflict cannot be resolved from the manifest and evidence, route it to Human Authority (`H1`).
 6. **Absolute traceability:** Every synthesized component, material decision, API contract, and data flow must identify whether its origin is Proposal A, Proposal B, both, or Emergent Synthesis. Preserve source IDs, proposal versions, critique references, applicable manifest constraints, rationale, and rejected alternatives where material.
-7. **Immutable evidence:** Manifest identities, proposal versions, critiques, repair records, and synthesis records must be versioned and auditable. Never overwrite prior artifacts in place.
-8. **Bounded execution:** Repair loops must have a configured finite limit. A persistent blocker or exhausted retry budget routes to H1; it must never be silently ignored.
+7. **Immutable evidence:** Manifest identities, proposal versions, critiques, and synthesis records must be versioned and auditable. Never overwrite prior artifacts in place.
+8. **Bounded execution:** The cross-critique runs once; there is no repair loop. Every blocking finding is answered in the synthesis and checked by A4, and an exhausted retry budget (A4's validation retries, or a human's revision request) routes to H1; it must never be silently ignored.
 
 ## Inputs and Preconditions
 
@@ -29,7 +29,6 @@ Required input:
 - Its canonical SHA-256 digest, calculated using the repository pipeline's documented canonicalization procedure.
 - The manifest's schema/version and the requirements, constraints, contracts, data classifications, and acceptance criteria it contains.
 - Access to two isolated proposal-generation contexts and the corresponding cross-critique contexts, or an explicit declaration that this capability is unavailable.
-- A configured `max_repair_rounds`. If the orchestrator configuration does not specify a value, use `2` repair rounds as the default and record that default in the execution metadata.
 
 Before A1:
 
@@ -42,11 +41,10 @@ Before A1:
 ## Workflow Overview
 
 - **A1 — Independent Proposal Generation**
-- **A2 — Cross-Critique and Finding Triage**
-- **A1-R — Bounded Repair and Re-Critique**, when needed
+- **A2 — Cross-Critique**, once
 - **A3 — Traceable Synthesis of Candidate S**
 - **A4 — Handoff Validation**
-- **H1 — Human Authority Routing**, for unresolved constraint conflicts or exhausted repair budgets
+- **H1 — Human Authority Routing**, for the approval decision, an unresolved constraint conflict, or an exhausted validation budget
 
 Do not skip, reorder, or infer successful completion of a phase from incomplete outputs.
 
@@ -123,8 +121,8 @@ Each critic must assess:
 > A critic writes `<operation_id>.json` (e.g. `critique_b_by_a.json`) conforming to
 > `schemas/critique.schema.json`: `id`, `author_model`, `target_proposal_id`, `manifest_hash`,
 > `review_complete`, `counts`, and `findings`. The A2 gate recomputes the counts from the
-> findings. Any `blocking` finding sends the run back to A1 (budgeted); an invalid or
-> incomplete critique blocks the step and is never read as "no flaws".
+> findings. A `blocking` finding is not routed back to A1: the synthesis must answer it and
+> A4 checks. An invalid or incomplete critique blocks the step and is never read as "no flaws".
 >
 > A critique may also carry `scores`: for each of security, reliability, scalability,
 > maintainability and cost, an integer `score` from 0 (fails the criterion) to 4 (no weakness
@@ -153,31 +151,20 @@ A finding marked `blocking` must contain:
 
 A severity label alone is not evidence. Triage findings against the frozen manifest and proposal artifacts. Do not dismiss a credible security finding solely because the other proposal disagrees. If material evidence is incomplete, treat the finding as unresolved and do not synthesize until it is resolved or H1 decides the matter.
 
-### Synthesis gate
+### Blocking findings do not stop synthesis
 
-Synthesis is permitted only when both critiques are complete and there are **zero unresolved blocking findings** against the exact proposal versions selected for synthesis.
+The critique runs once. Two model families rarely converge on one design, so a blocking finding is not sent back to A1 for repair; the synthesis answers it. Synthesis is permitted when both critiques are complete and valid.
 
-- If a substantiated blocking finding is repairable, enter A1-R.
-- If a constraint conflict is inherently incompatible, no compliant repair is identifiable, or findings cannot be resolved from available evidence, route to H1.
-- If a blocking finding is shown to be unsupported, record the evidence and disposition; do not simply delete the finding.
+- Every blocking finding of either critique must receive exactly one entry in the synthesis's `resolutions`: `resolved` (the synthesis fixes it; say how) or `rejected` (it does not; the reason is required). A4 refuses a synthesis that leaves one unanswered, answers one twice, or answers a finding that was never raised.
+- If a constraint conflict is inherently incompatible, or a finding cannot be resolved from available evidence, say so in a `rejected` resolution; the reviewer of S (A3R) can then contest S, which raises uncertainty and sends the run to a human decision at H1.
+- If a blocking finding is shown to be unsupported, record the evidence and disposition in the resolution; do not simply delete the finding.
 - Non-blocking and informational findings must be preserved for A3 and the final decision record.
 
 Record the critique ID, reviewer role, target proposal ID/version, manifest SHA-256, finding counts, and review completion status.
 
-## Phase A1-R: Bounded Repair and Re-Critique
-
-1. Repair only the affected proposal where feasible, while preserving the other proposal's immutable history.
-2. Create a new proposal version; never overwrite the previous version.
-3. Record each repair against the finding IDs it addresses, including changes made, rationale, and any findings that remain unresolved.
-4. Re-run the cross-critique cycle against the exact pair of proposal versions being considered for synthesis. Keep the no-self-critique rule: A reviews B; B reviews A.
-5. Do not count an unchanged critique against an older proposal version as a critique of the repaired proposal.
-6. Do not accept a repair merely because it asserts that the issue is fixed. The new critique must verify the repair against the manifest and relevant evidence.
-7. Track repair rounds. When `max_repair_rounds` is exhausted, route the unresolved findings to H1 with the full evidence trail.
-8. If a repair changes scope or requires a manifest change, stop the current design run and request a new verified Context Manifest from `G`. Do not edit or reinterpret the manifest inside this agent.
-
 ## Phase A3: Synthesis — Candidate S
 
-Begin only when the synthesis gate in A2 is satisfied.
+Begin when both critiques are complete and valid.
 
 ### Synthesis rules
 
@@ -190,7 +177,8 @@ Begin only when the synthesis gate in A2 is satisfied.
 7. Preserve all non-blocking critique findings and state whether each is addressed, accepted as a trade-off, or deferred with rationale.
 8. Trace every component, decision, API contract, and data flow in Candidate S. No material item may have missing provenance.
 9. Create a constraint-coverage record mapping each applicable manifest constraint/acceptance criterion to the candidate element(s) that satisfy it, or stating that it is unresolved. Mandatory unresolved requirements prevent A4 success.
-10. Set `candidate_s.synthesized` to `true` only after the synthesis record is complete. This indicates synthesis occurred, not that `[CODE]` approved the design.
+10. Answer every blocking critique finding in `resolutions` (`resolved` or `rejected`, with a note). A `rejected` finding without a reason is invalid.
+11. Set `candidate_s.synthesized` to `true` only after the synthesis record is complete. This indicates synthesis occurred, not that `[CODE]` approved the design.
 
 ### Conflict handling
 
@@ -199,7 +187,6 @@ Do not force a synthesis when:
 - The proposals prescribe mutually exclusive approaches and no evidence-based selection can be made from the manifest and authorized requirements.
 - Every available approach violates a mandatory constraint.
 - The proposed reconciliation changes scope, classification, security posture, or an architectural decision requiring human authority.
-- A material blocking finding remains unresolved after the retry budget.
 
 In these cases, emit the H1 constraint-conflict payload defined below, not a normal candidate marked `ready_for_validation`.
 
@@ -210,14 +197,14 @@ Validate Candidate S before formatting the handoff. All of the following are req
 - The input manifest SHA-256 is verified and matches the digest in the output.
 - All referenced proposals and critiques exist and their IDs, versions, and manifest digests match.
 - Both cross-critiques are complete for the exact proposal versions used in synthesis.
-- No unresolved blocking finding remains.
+- Every blocking critique finding has exactly one resolution, and every resolution names a blocking finding.
 - The constraint-coverage record includes every applicable mandatory constraint and acceptance criterion from the Context Manifest.
 - Every material architecture item, decision, contract, and data flow contains valid provenance.
 - API/contract and data-flow entries satisfy the output schema and include the required versioning/classification details.
 - Proposal statuses accurately reflect how Candidate S used each proposal.
 - The handoff payload validates against the versioned output contract.
 
-If validation fails because of a repairable design defect, return to the appropriate repair phase within the configured budget. If it reveals a manifest mismatch, missing mandatory grounding, or an unresolved authority-level conflict, stop and route to `G` or H1 as appropriate. Never set `ready_for_validation` when any required check has failed or been skipped.
+If validation fails because the synthesis is invalid, return to A3 within the configured budget; if a proposal is invalid, return to A1. If it reveals a manifest mismatch, missing mandatory grounding, or an unresolved authority-level conflict, stop and route to `G` or H1 as appropriate. Never set `ready_for_validation` when any required check has failed or been skipped.
 
 ## Output Contract — Design Spec 1.1
 
@@ -379,7 +366,7 @@ For every run, preserve:
 - Context Manifest SHA-256, canonicalization method, and schema/version.
 - Proposal IDs, versions, generation model/role identifiers, isolation evidence, and completion status.
 - Critique IDs, reviewer role, target proposal ID/version, findings, and dispositions.
-- Repair round number, changed proposal versions, addressed findings, and unresolved findings.
+- Each blocking finding and its resolution.
 - Synthesis decision IDs, source references, manifest references, rejected alternatives, and rationale.
 - Schema-validation and invariant-check results.
 - Final route: `ready_for_validation`, `route_to_h1`, or a specific blocked outcome.
@@ -391,7 +378,7 @@ Do not store private model scratchpads as provenance. The audit trail should con
 - Do not claim separate-model isolation when the runtime did not enforce it.
 - Do not let a proposal generator see the other proposal during A1.
 - Do not allow a model to critique its own proposal in A2.
-- Do not synthesize with unresolved blocking findings.
+- Do not leave a blocking finding without a resolution.
 - Do not hide, delete, or silently downgrade blocking findings.
 - Do not force synthesis across mutually exclusive constraints.
 - Do not overwrite prior proposal or critique versions.
@@ -403,7 +390,7 @@ Do not store private model scratchpads as provenance. The audit trail should con
 
 The run is complete only when one of these terminal outcomes is emitted:
 
-1. **`ready_for_validation`** — a schema-valid Candidate S with verified manifest identity, completed cross-critiques, zero unresolved blocking findings, complete provenance, and complete mandatory constraint coverage.
+1. **`ready_for_validation`** — a schema-valid Candidate S with verified manifest identity, completed cross-critiques, a resolution for every blocking finding, complete provenance, and complete mandatory constraint coverage.
 2. **`route_to_h1`** — a structured conflict payload for a decision that requires Human Authority.
 3. **Blocked outcome** — a machine-readable explanation of why the run cannot safely proceed and which phase or authority must resolve the blocker.
 

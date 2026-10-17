@@ -177,7 +177,7 @@ def test_a1_happy_path_runs_both_operations_with_role_backends(
     tmp_path: Path, adapters: dict[str, FakeAdapter]
 ) -> None:
     d = make(tmp_path, adapters)
-    outcome = d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+    outcome = d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     assert set(outcome.results) == {"proposal_a", "proposal_b"} and not outcome.provisional
     assert [g.operation_id for g in adapters["claude_cli_default"].grants] == ["proposal_a"]
     assert [g.operation_id for g in adapters["gemini_3_8_flash_high"].grants] == ["proposal_b"]
@@ -201,7 +201,7 @@ def test_grant_carries_only_declared_scope(tmp_path: Path, adapters: dict) -> No
 def test_ineligible_stage_blocked_before_anything(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, reports=iter([report(unready=("gemini_3_8_flash_high",))]))
     with pytest.raises(DispatchBlocked, match="gemini_3_8_flash_high.executable"):
-        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+        d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     assert events(d) == [] and d.ledger.consumed == {} and d.ledger.reserved == {}
 
 
@@ -227,14 +227,14 @@ def test_missing_adapter_blocks(tmp_path: Path, adapters: dict) -> None:
 def test_exhausted_budget_blocks(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, ledger=BudgetLedger({"design": 0}))
     with pytest.raises(DispatchBlocked, match="exhausted"):
-        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+        d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     assert events(d) == []
 
 
 def test_pre_call_log_failure_releases_budget(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, log=FailingLog(tmp_path, fail_at=0))
     with pytest.raises(DispatchBlocked, match="pre-call"):
-        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+        d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     assert d.ledger.consumed == {} and d.ledger.reserved == {"design": 0}
     assert adapters["claude_cli_default"].grants == []
 
@@ -242,7 +242,7 @@ def test_pre_call_log_failure_releases_budget(tmp_path: Path, adapters: dict) ->
 def test_post_call_log_failure_keeps_budget_consumed(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, log=FailingLog(tmp_path, fail_at=1))
     with pytest.raises(ProvenanceIncomplete):
-        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+        d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     assert d.ledger.consumed == {"design": 1}
     assert verify_provenance_chain(d.log.path).unresolved  # surfaces for reconciliation
 
@@ -262,7 +262,7 @@ def test_non_ok_result_pauses_without_fallback(tmp_path: Path, adapters: dict, s
     adapters["claude_cli_default"].status = status
     d = make(tmp_path, adapters)
     with pytest.raises(RunPaused, match=status):
-        d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
+        d.dispatch_stage("A2", "always", "A3", {})
     assert (
         adapters["gemini_3_8_flash_high"].grants == []
     )  # no in-flight fallback to the next backend
@@ -273,7 +273,7 @@ def test_readiness_lost_between_operations_pauses(tmp_path: Path, adapters: dict
     reports = iter([report(), report(unready=("gemini_3_8_flash_high",))])
     d = make(tmp_path, adapters, reports=reports)
     with pytest.raises(RunPaused, match="readiness lost"):
-        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+        d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     assert events(d) == ["model_call", "model_result", "exception"]
     assert adapters["gemini_3_8_flash_high"].grants == []
     assert d.ledger.consumed == {"design": 1}
@@ -283,7 +283,7 @@ def test_ordered_any_of_uses_first_ready_backend(tmp_path: Path, adapters: dict)
     d = make(
         tmp_path, adapters, reports=iter(lambda: report(unready=("claude_cli_default",)), None)
     )
-    outcome = d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
+    outcome = d.dispatch_stage("A2", "always", "A3", {})
     assert set(outcome.results) == {"synthesis"}
     assert (
         adapters["claude_cli_default"].grants == []
@@ -325,7 +325,7 @@ def test_unsealed_output_recorded_for_e1(tmp_path: Path, adapters: dict) -> None
 def test_missing_upstream_manifest_blocks(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, upstream=("START",))
     with pytest.raises(DispatchBlocked, match="pinned_context_manifest: no published manifest"):
-        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+        d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     assert events(d) == [] and d.ledger.reserved == {} and d.ledger.consumed == {}
 
 
@@ -357,7 +357,7 @@ def test_manifest_publish_failure_leaves_outputs_provisional(
 
     monkeypatch.setattr(dispatch, "publish_stage_manifest", fail)
     with pytest.raises(RunPaused, match="outputs provisional"):
-        d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+        d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     assert load_manifest(d.run_root, "A1", "run-1")["attempt"] == "A1-seed"  # old one untouched
     assert events(d)[-1] == "exception" and d.ledger.consumed == {"design": 1}
     assert verify_provenance_chain(d.log.path).ok
@@ -366,7 +366,7 @@ def test_manifest_publish_failure_leaves_outputs_provisional(
 def test_each_attempt_gets_a_fresh_write_root(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters)
     d.dispatch_stage("G", "always", "A1", {})
-    d.dispatch_stage("A2", "blocking_flaw", "A1", {})
+    d.dispatch_stage("A4", "proposal_invalid", "A1", {})
     first, second = (g.write_path for g in adapters["claude_cli_default"].grants)
     assert first != second and first.is_dir() and second.is_dir()
 
@@ -458,7 +458,7 @@ def test_outputs_inherit_most_restrictive_input_class(tmp_path: Path, adapters: 
 def test_resolved_model_recorded_in_provenance(tmp_path: Path, adapters: dict) -> None:
     adapters["claude_cli_default"].resolved_model = "claude-opus-5-5"
     d = make(tmp_path, adapters)
-    d.dispatch_stage("A2", "no_blocking_flaw", "A3", {})
+    d.dispatch_stage("A2", "always", "A3", {})
     results = [json.loads(line) for line in d.log.path.read_text().splitlines()]
     assert [r.get("model") for r in results if r["event"] == "model_result"] == ["claude-opus-5-5"]
 

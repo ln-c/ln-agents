@@ -66,6 +66,23 @@
       }
     },
     "constraints_addressed": {"type": "array", "items": {"type": "string"}},
+    "resolutions": {
+      "type": "array",
+      "description": "Synthesis only: what S did with each blocking finding of the A2 critiques. A4 requires exactly one entry for every blocking finding and none for any other.",
+      "items": {
+        "type": "object",
+        "required": ["critique", "finding_id", "disposition"],
+        "additionalProperties": false,
+        "properties": {
+          "critique": {"enum": ["critique_a_by_b_sealed", "critique_b_by_a_sealed"], "description": "The sealed critique that holds the finding."},
+          "finding_id": {"type": "string", "minLength": 1, "description": "The finding's id in that critique."},
+          "disposition": {"enum": ["resolved", "rejected"], "description": "resolved: S fixes it. rejected: S does not, and says why."},
+          "note": {"type": "string", "minLength": 1}
+        },
+        "if": {"properties": {"disposition": {"const": "rejected"}}},
+        "then": {"required": ["note"]}
+      }
+    },
     "manifest_hash": {"type": "string"}
   },
   "if": {"properties": {"synthesized": {"const": true}}},

@@ -123,13 +123,27 @@ def test_two_candidate_routes_need_exactly_one_spent_guard() -> None:
 
 def test_a_budgeted_edge_is_not_a_spent_route() -> None:
     def charge(states: dict) -> None:
-        for e in states["A2"]["edges"]:
-            if e["guard"] == "design_spent":
+        for e in states["A4"]["edges"]:  # both of its routes to H1
+            if e["to"] == "H1":
                 e["budget"] = "design"
 
     assert any(
-        e.startswith("A2: budget 'design' has no spent route to H1") for e in _rule9_errors(charge)
+        e.startswith("A4: budget 'design' has no spent route to H1") for e in _rule9_errors(charge)
     )
+
+
+def test_the_cross_critique_runs_once_and_always_goes_to_synthesis() -> None:
+    graph = Graph.from_mapping(load_yaml(ROOT / "pipeline" / "graph.yaml"))
+    assert [(e.guard, e.to, e.budget) for e in graph.edges if e.src == "A2"] == [
+        ("always", "A3", None)
+    ]
+
+
+def test_no_route_reaches_human_review_before_a_synthesis_exists() -> None:
+    """H1 shows a human the sealed design, so it must not be reachable before A3 has run."""
+    graph = Graph.from_mapping(load_yaml(ROOT / "pipeline" / "graph.yaml"))
+    before_synthesis = {"START", "G", "A1", "A2", "A3"}
+    assert {e.src for e in graph.edges if e.to == "H1"}.isdisjoint(before_synthesis)
 
 
 def test_spent_route_is_unique_for_every_budgeted_retry_in_the_real_graph() -> None:
