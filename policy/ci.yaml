@@ -1,5 +1,5 @@
 # Behavioral checks run by E2 (after every implementation attempt: tests, dead code, MC/DC)
-# and F1 (clean-room CI: integration, ADR fitness, mutation testing).
+# and F1 (clean-room CI: integration, mutation testing).
 # Human-owned. Frozen with the other policy for every run.
 #
 # Each check runs offline in the bwrap sandbox on a fresh tree: the pinned source tree with
@@ -65,11 +65,6 @@ checks:
       - [python, -m, ruff, check, .]
       - [python, -m, ruff, format, --check, .]
       - [python, -m, agentic_pipeline, validate]
-  adr_fitness:         # no ADR defines an executable fitness function yet
-    stage: F1
-    required: false
-    cause: unknown_or_spent
-    commands: []
   mutation:            # killed / run mutants of the patch's modules (mutmut)
     stage: F1
     required: true

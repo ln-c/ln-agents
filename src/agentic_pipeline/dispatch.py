@@ -66,7 +66,7 @@ class DispatchBlocked(Exception):
 
 
 class RunPaused(Exception):
-    """Stopped after budget was committed; resuming requires a human (ADR 0003)."""
+    """Stopped after budget was committed; resuming requires a human."""
 
 
 class ProvenanceIncomplete(RunPaused):

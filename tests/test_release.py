@@ -273,7 +273,7 @@ def test_rc_rebases_onto_unrelated_upstream_work_and_reruns_e2_and_f1(rel: Relea
 
 @pytest.mark.parametrize(
     "files",
-    [{"tests/test_new.py": "x\n"}, {"docs/adr/0002-new.md": "# n\n"}, {"contracts/a.md": "c\n"}],
+    [{"tests/test_new.py": "x\n"}, {"contracts/a.md": "c\n"}],
 )
 def test_a_change_to_a_constraint_sends_the_run_to_child(
     rel: Release, files: dict[str, str]
@@ -410,7 +410,7 @@ def test_merged_records_the_commit_a_human_merge_produced(rel: Release, how: str
     learning = json.loads(
         (rel.runner.store.run_root / "gates" / "L2" / f"{commit}.json").read_text()
     )
-    assert learning["merged_sha"] == commit and learning["marked_implemented"] is False
+    assert learning["merged_sha"] == commit
     (event,) = [e for e in rel.runner.log.records() if e["event"] == "learning"]
     learning_file = rel.runner.store.run_root / "gates" / "L2" / f"{commit}.json"
     assert event["state"] == "L2" and event["merged_sha"] == commit

@@ -142,7 +142,7 @@ def test_artifact_defaults_must_cover_every_grounding_artifact() -> None:
 
 
 def test_artifact_defaults_reject_unknown_class_and_foreign_artifact() -> None:
-    assert any("unknown class 'secret'" in e for e in _defaults(adr_snapshot="secret"))
+    assert any("unknown class 'secret'" in e for e in _defaults(pinned_snapshot="secret"))
     assert any("non-grounding artifact" in e for e in _defaults(proposal_a_sealed="internal"))
 
 
@@ -164,12 +164,10 @@ def test_context_manifest_schema_cannot_carry_free_form_content() -> None:
         "run_id",
         "parent_run_id",
         "commit_sha",
-        "adrs",
         "contract_versions",
         "data_classes",
         "policy_version",
         "scorer_version",
         "hash",
     }
-    assert schema["properties"]["adrs"]["items"]["additionalProperties"] is False
     assert schema["properties"]["contract_versions"]["additionalProperties"] == {"type": "string"}

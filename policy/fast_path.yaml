@@ -1,5 +1,5 @@
 # B3 authorization: the fast path skips design approval ONLY (E2 and F1 always run).
-# All requirements must hold. Items marked (proposed) are open in ADR 0002.
+# All requirements must hold. Which items belong here is a calibration question: change it here.
 version: 1
 task_class_allowlist: []   # empty = fast path disabled until a human adds classes
 require_all:

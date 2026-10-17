@@ -30,7 +30,7 @@ This repository's deterministic implementation remains authoritative. Agent spec
 | Exception Router | [`agents/pipeline-exception-router.md`](agents/pipeline-exception-router.md) | X; evidence-based exception classification and routing |
 | Release | [`agents/pipeline-release-agent.md`](agents/pipeline-release-agent.md) | F1–RB; CI, merge, deploy authorization, rollback (`D2`, `RB` not built) |
 | Learning | [`agents/pipeline-learning-agent.md`](agents/pipeline-learning-agent.md) | L1–L3, HR; provenance and gated evaluation |
-| Human Authority | [`agents/pipeline-human-authority-agent.md`](agents/pipeline-human-authority-agent.md) | H1, ADR, BENCH, CHILD; explicit human decisions |
+| Human Authority | [`agents/pipeline-human-authority-agent.md`](agents/pipeline-human-authority-agent.md) | H1, DR, BENCH, CHILD; explicit human decisions |
 
 ## Cross-cutting invariants
 
@@ -40,7 +40,7 @@ This repository's deterministic implementation remains authoritative. Agent spec
 4. Design A and Design B use two different model families, bound in `policy/model_registry.yaml` (currently A = Claude Pro, B = Google AI Pro), and receive separate sessions and separate write roots. Neither may read the other's proposal before its own proposal is sealed. If the runtime cannot enforce this, independence is unmet and the run pauses or records the unmet requirement.
 5. Model output is untrusted data. Validate schemas, artifact references, path allowlists, tool calls, and claims before use.
 6. Filesystem permissions, network access, secret access, protected paths, and sandboxing must be enforced outside the model.
-7. Build agents cannot modify protected tests, frozen contracts, ADRs, policy, budgets, approvals, or release state.
+7. Build agents cannot modify protected tests, frozen contracts, policy, budgets, approvals, or release state.
 8. Human approval is explicit, attributable, and bound to the exact artifact digest and target. Merge and deployment approvals are separate.
 9. Models may explain, draft, critique, or provide bounded classifications. They cannot authorize transitions, change policy, approve releases, or override security vetoes.
 10. Learning writes append-only provenance. `L2` runs only after a verified merge and records the exact merged SHA; an index refresh (not built yet) would require the same, and calibration changes require offline evaluation and human review.

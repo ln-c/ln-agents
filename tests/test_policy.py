@@ -46,10 +46,10 @@ def test_weights_sum_to_one() -> None:
 def test_vetoes_defined() -> None:
     data = load_yaml(POLICY_DIR / "vetoes.yaml")
     vetoes = data["vetoes"]
-    assert len(vetoes) >= 5
+    assert len(vetoes) >= 4
     ids = {v["id"] for v in vetoes}
     assert "schema_invalid" in ids
-    assert "violates_accepted_adr" in ids
+    assert "violates_accepted_adr" not in ids  # ADRs are gone
     assert "contract_break" in ids
 
 

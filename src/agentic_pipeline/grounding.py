@@ -4,10 +4,9 @@ Run directory layout (relative to the per-run root):
 
     inputs/entry_spec.json                       copied in by `run init`
     grounding/START/requirements/                sealed copy of the entry spec
-    grounding/G1/{pinned_source_tree,applicable_contracts,adr_snapshot,protected_tests}/
-                                                 extracted from git at the pinned SHA, sealed;
-                                                 adr_snapshot/snapshot.json records the SHA,
-                                                 ADR statuses, and contract versions
+    grounding/G1/{pinned_source_tree,applicable_contracts,protected_tests}/
+                                                 extracted from git at the pinned SHA, sealed
+    grounding/G1/pinned_snapshot/snapshot.json   the SHA and contract versions, sealed
     grounding/G2/classification.json             audit record of the classification pass
     grounding/G3/file_index.json                 minimal file-level index
     grounding/G4/pinned_context_manifest/        the hashed context manifest (sealed)
@@ -33,7 +32,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import shutil
 import subprocess
 import tarfile
@@ -62,15 +60,13 @@ INPUTS_DIR = "inputs"
 ENTRY_SPEC_FILE = "entry_spec.json"
 SNAPSHOT_FILE = "snapshot.json"
 MAX_ENTRY_SPEC_BYTES = 1 << 20
-ADR_STATUSES = ("proposed", "accepted", "superseded", "deprecated", "implemented")
 DEFERRED_INDEXES = ["scip", "tree_sitter", "vector", "graph"]
 
-G1_ARTIFACTS = ("pinned_source_tree", "applicable_contracts", "adr_snapshot", "protected_tests")
+G1_ARTIFACTS = ("pinned_source_tree", "applicable_contracts", "pinned_snapshot", "protected_tests")
 # Repo subtree each G1 artifact is taken from (None = the whole tree).
 G1_SOURCES: dict[str, str | None] = {
     "pinned_source_tree": None,
     "applicable_contracts": "contracts",
-    "adr_snapshot": "docs/adr",
     "protected_tests": "tests",
 }
 LANGUAGES = {
@@ -209,17 +205,6 @@ def _extract(root: Path, sha: str, subdir: str | None, dest: Path) -> None:
         tarball.unlink(missing_ok=True)
 
 
-def _adr_statuses(adr_dir: Path) -> list[dict[str, str]]:
-    adrs = []
-    for path in sorted(adr_dir.glob("[0-9][0-9][0-9][0-9]-*.md")):
-        found = re.search(r"^Status:\s*(\S+)", path.read_text(encoding="utf-8"), re.MULTILINE)
-        status = found.group(1).lower() if found else ""
-        if status not in ADR_STATUSES:
-            raise GroundingError(f"{path.name}: Status must be one of {list(ADR_STATUSES)}")
-        adrs.append({"id": path.stem, "status": status})
-    return adrs
-
-
 def _contract_versions(root: Path, sha: str) -> dict[str, str]:
     """Git blob id of each contract file at the SHA: a content-derived version pin."""
     versions = {}
@@ -268,7 +253,7 @@ def start(ctx: HandlerContext) -> str:
 
 
 def pin_snapshot(ctx: HandlerContext) -> str:
-    """Pin HEAD and seal the source tree, contracts, ADRs, and protected tests at it."""
+    """Pin HEAD and seal the source tree, contracts, and protected tests at it."""
     _policy(ctx)
     if _published(ctx, "G1", G1_ARTIFACTS):
         return "always"
@@ -278,10 +263,10 @@ def pin_snapshot(ctx: HandlerContext) -> str:
         _extract(ctx.root, sha, subdir, base / artifact)
     snapshot = {
         "commit_sha": sha,
-        "adrs": _adr_statuses(base / "adr_snapshot"),
         "contract_versions": _contract_versions(ctx.root, sha),
     }
-    atomic_write_json(base / "adr_snapshot" / SNAPSHOT_FILE, snapshot)
+    (base / "pinned_snapshot").mkdir()
+    atomic_write_json(base / "pinned_snapshot" / SNAPSHOT_FILE, snapshot)
     _publish(ctx, "G1", {artifact: base / artifact for artifact in G1_ARTIFACTS})
     return "always"
 
@@ -390,13 +375,12 @@ def write_context(ctx: HandlerContext) -> str:
         raise GroundingError("; ".join(errors))
     if not (_stage_dir(ctx, "G3") / "file_index.json").is_file():
         raise GroundingError("G3 file index is missing")
-    snapshot = json.loads((inputs["adr_snapshot"].path / SNAPSHOT_FILE).read_bytes())
+    snapshot = json.loads((inputs["pinned_snapshot"].path / SNAPSHOT_FILE).read_bytes())
     classes = {artifact: item.data_class for artifact, item in inputs.items()}
     document: dict[str, Any] = {
         "run_id": ctx.run_id,
         "parent_run_id": None,
         "commit_sha": snapshot["commit_sha"],
-        "adrs": snapshot["adrs"],
         "contract_versions": snapshot["contract_versions"],
         "data_classes": classes,
         "policy_version": "sha256:" + hashlib.sha256(_canonical(snap.digests)).hexdigest(),

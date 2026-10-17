@@ -22,9 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NO_EDGE_KINDS = frozenset({"terminal", "sink"})
 KINDS = frozenset({"code", "model", "human", "decision", "terminal", "sink"})
 ROUTER = "X"
-ROUTER_FORBIDDEN = frozenset(
-    {"contracts", "protected_tests", "adrs", "policy", "weights", "budgets"}
-)
+ROUTER_FORBIDDEN = frozenset({"contracts", "protected_tests", "policy", "weights", "budgets"})
 
 
 def load_yaml(path: Path) -> Any:

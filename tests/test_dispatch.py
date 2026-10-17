@@ -193,7 +193,6 @@ def test_grant_carries_only_declared_scope(tmp_path: Path, adapters: dict) -> No
         "pinned_context_manifest",
         "requirements",
         "applicable_contracts",
-        "adr_snapshot",
     )
     assert grant.write_root == "proposal_a" and grant.run_id == "run-1"
     assert grant.output_schema == "proposal"  # from the registry, not the adapter

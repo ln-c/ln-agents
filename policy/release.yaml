@@ -15,7 +15,6 @@ merge_branch_prefix: merge/
 separate_deploy_approver: false
 constraint_paths:
   - contracts
-  - docs/adr
   - tests
   - policy
   - schemas

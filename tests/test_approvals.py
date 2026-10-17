@@ -43,7 +43,7 @@ EVIDENCE: dict[str, Any] = {
     "scores": "sha256:" + "4" * 64,
     "survivors": ["proposal_b_sealed"],
     "fired": {"proposal_a_sealed": ["data_class_violation"], "proposal_b_sealed": []},
-    "undetermined": {"proposal_a_sealed": [], "proposal_b_sealed": ["violates_accepted_adr"]},
+    "undetermined": {"proposal_a_sealed": [], "proposal_b_sealed": ["known_vulnerable_dependency"]},
     "unevaluated": [],
     "provenance_tip": "sha256:" + "5" * 64,
     "policy": {"pipeline/graph.yaml": "sha256:" + "6" * 64},
@@ -265,14 +265,14 @@ def signed(runner: Any, signer: Signer, guard: str, candidate: str | None) -> tu
     return doc, signer.sign(doc)
 
 
-def test_a_signed_design_approval_moves_h1_to_adr_and_is_logged(
+def test_a_signed_design_approval_moves_h1_to_dr_and_is_logged(
     tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig, runner = h1(tmp_path, signer, monkeypatch)
     doc, sig = signed(runner, signer, APPROVE_GUARD, "proposal_b_sealed")
     result = runner.decide(doc, sig)
-    assert (result.outcome, result.node) == (Outcome.ADVANCED, "ADR")
-    assert stored(rig).current == "ADR" and stored(rig).status is Status.RUNNING
+    assert (result.outcome, result.node) == (Outcome.ADVANCED, "DR")
+    assert stored(rig).current == "DR" and stored(rig).status is Status.RUNNING
     events = rig.events()
     approval = next(e for e in events if e["event"] == "approval")
     assert approval["approver_id"] == "alice" and approval["approved_sha"] == SHA
@@ -377,3 +377,48 @@ def test_cli_approve_then_decide_round_trip(
     assert run_cli.run_command(decide) == 1
     out.with_name("doc.json.sig").unlink()
     assert run_cli.run_command(decide) == 1
+
+
+def test_dr_seals_the_candidate_a_human_approved_for_the_build(
+    tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentic_pipeline.manifest import resolve_sealed_inputs
+
+    rig, runner = h1(tmp_path, signer, monkeypatch)
+    runner.log.append({"state": "H1", "event": "enter"})  # `rig.at` skips the real entry
+    doc, sig = signed(runner, signer, APPROVE_GUARD, "proposal_b_sealed")
+    assert runner.decide(doc, sig).node == "DR"
+    result = runner.step()  # DR runs; C1 then lacks only what this rig never sealed
+    assert "design_decision_sealed" not in result.detail, result.detail
+    assert "synthesis_sealed" in result.detail  # the rig has no design stages behind it
+    sealed, errors = resolve_sealed_inputs(
+        rig.run_dir, runner.state.run_id, runner.registry, ["design_decision_sealed"]
+    )
+    assert not errors, errors
+    decision = json.loads((sealed["design_decision_sealed"].path / "decision.json").read_text())
+    assert decision["candidate"] == "proposal_b_sealed"
+    assert decision["approver"] == "alice" and decision["source"] == "human_approval"
+    assert decision["approval_digest"] == approvals.digest(doc)
+    assert verify_provenance_chain(rig.log.path).ok
+
+
+def test_dr_refuses_a_stored_approval_that_was_changed(
+    tmp_path: Path, signer: Signer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig, runner = h1(tmp_path, signer, monkeypatch)
+    runner.log.append({"state": "H1", "event": "enter"})  # `rig.at` skips the real entry
+    doc, sig = signed(runner, signer, APPROVE_GUARD, "proposal_b_sealed")
+    assert runner.decide(doc, sig).node == "DR"
+    stored_doc = rig.run_dir / "approvals" / f"{approvals.digest(doc).removeprefix('sha256:')}.json"
+    stored_doc.write_bytes(doc.replace(b"proposal_b_sealed", b"proposal_a_sealed"))
+    result = runner.step()
+    assert (
+        result.outcome is Outcome.BLOCKED and "does not match its recorded digest" in result.detail
+    )
+    assert stored(rig).current == "DR"
+
+
+def test_dr_on_the_fast_path_still_needs_a_scored_winner(tmp_path: Path) -> None:
+    runner = Rig(tmp_path).at("DR")  # not entered from H1
+    result = runner.step()
+    assert result.outcome is Outcome.BLOCKED and "none is ever invented" in result.detail

@@ -10,11 +10,11 @@ Build status of every graph state, checked against `DEFAULT_HANDLERS` in `src/ag
 
 | Phase | States | Status |
 |---|---|---|
-| Grounding | `START`, `G1`–`G4` | Built. Pins the commit, the context manifest and ADRs, and classifies data. |
+| Grounding | `START`, `G1`–`G4` | Built. Pins the commit, builds the context manifest, and classifies data. |
 | Design | `A1`–`A4`, `A3R` | Built. `A1`–`A3` and `A3R` dispatch to models; `A2` (blocking flaws) and `A4` (validation) gate on their output. |
-| Scoring | `B1`–`B3`, `DR` | Built. Deterministic vetoes, MCDA scoring and the fast-path check. The fast path stays closed: its allowlist is empty, so every run goes to `H1`. |
-| Human design approval | `H1` | Built. A signed approval (see below). |
-| ADR, BENCH, CHILD | `ADR`, `BENCH`, `CHILD` | **Not built.** A run blocks here. |
+| Scoring | `B1`–`B3` | Built. Deterministic vetoes, MCDA scoring and the fast-path check. The fast path stays closed: its allowlist is empty, so every run goes to `H1`. |
+| Human design approval | `H1`, `DR` | Built. `H1` is a signed approval (see below); `DR` then seals the approved candidate as the design decision the build reads. `DR` reached from the fast path needs a scored winner and blocks, because none is ever invented. |
+| BENCH, CHILD | `BENCH`, `CHILD` | **Not built.** A run blocks here. |
 | Build | `C1`, `D1`, `E1` | Model dispatch built. |
 | Build | `E0` | **Not built.** It has no handler, so a run blocks before `E1`. |
 | Build gates | `E2`, `E3`, `X` | Built. `E4` (cloud escalation) is **not built**. |
@@ -75,7 +75,7 @@ Only the keys listed in `policy/approvers.yaml` count. A model process has no wa
 
 ### CI checks
 
-`policy/ci.yaml` lists the checks that run at `E2` (acceptance, MC/DC, optional contract, performance and dead-code checks) and `F1` (integration, mutation, optional ADR fitness). Each runs offline in the bwrap sandbox on a copy of the pinned tree with the patch overlaid, with a toolchain built from that tree's `uv.lock`. A required check that is unset is `not_evaluated`, never passed.
+`policy/ci.yaml` lists the checks that run at `E2` (acceptance, MC/DC, optional contract, performance and dead-code checks) and `F1` (integration, mutation). Each runs offline in the bwrap sandbox on a copy of the pinned tree with the patch overlaid, with a toolchain built from that tree's `uv.lock`. A required check that is unset is `not_evaluated`, never passed.
 
 - **MC/DC** uses `pymcdc`, which measures only `unittest.TestCase` tests. Pytest-style tests do not count, so `E2` cannot pass on this repository's own code until it has `unittest` tests; such a run routes `E2` → `X` → `H1`.
 - **Mutation** uses `mutmut` with a minimum score of 80.
@@ -87,7 +87,7 @@ Only the keys listed in `policy/approvers.yaml` count. A model process has no wa
 
 ### Learning
 
-`L1` is a per-run JSONL file with a SHA-256 hash chain, appended before each model call and fsynced. `L2` appends one `learning` event per merged SHA holding the digest of `gates/L2/<merged_sha>.json`, which lists the accepted ADRs of the pinned manifest. It does not mark any ADR implemented and does not refresh an index: marking an ADR implemented is a human change to `docs/adr`, and no index exists yet.
+`L1` is a per-run JSONL file with a SHA-256 hash chain, appended before each model call and fsynced. `L2` appends one `learning` event per merged SHA holding the digest of `gates/L2/<merged_sha>.json`, which records the merged SHA and the patch. It does not refresh an index; none exists yet.
 
 The chain is tamper-evident, not tamper-proof; immutable storage is host configuration.
 
@@ -112,7 +112,6 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 │   └── release.yaml           # merge branch rules and protected paths
 ├── schemas/                   # JSON Schema (Draft-07) for artifacts and provenance events
 ├── agents/                    # role specifications (instructions, not a security boundary)
-├── docs/adr/                  # architecture decision records (human-owned)
 ├── scripts/                   # MC/DC and mutation wrappers run by the CI checks
 ├── src/agentic_pipeline/      # runner, gates, adapters, sandbox, approvals, release
 └── tests/                     # invariant, policy, schema and runner tests
@@ -122,10 +121,10 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 
 The graph has eight groups of states:
 
-1. **Grounding** (`START`, `G1`–`G4`): an immutable context manifest pinning the commit, active ADRs and data classes.
+1. **Grounding** (`START`, `G1`–`G4`): an immutable context manifest pinning the commit, contract versions and data classes.
 2. **Design** (`A1`–`A4`): independent proposals from two providers, cross-critique, synthesis, validation.
 3. **Scoring** (`B1`–`B3`, `DR`): hard vetoes, MCDA scoring, authorization.
-4. **Human authority** (`H1`, `ADR`, `BENCH`, `CHILD`): design approval, ADR acceptance, benchmarking, child runs.
+4. **Human authority** (`H1`, `DR`, `BENCH`, `CHILD`): design approval and its sealed record, benchmarking, child runs.
 5. **Build** (`C1`–`E4`): decomposition, frozen contract tests, sandboxed implementation, escalation.
 6. **Exception router** (`X`): reproduces, classifies and routes failures under budget limits.
 7. **Release** (`F1`–`RB`): independent CI, signed merge approval, reconciliation, deployment, rollback.

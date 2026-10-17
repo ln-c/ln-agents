@@ -51,7 +51,7 @@ from agentic_pipeline.build_gates import (
     _latest_patch,
     tested_base,
 )
-from agentic_pipeline.gates import GateError, _policy, _record, _sealed
+from agentic_pipeline.gates import GateError, _policy, _record
 
 if TYPE_CHECKING:
     from agentic_pipeline.run_state import PolicySnapshot
@@ -391,15 +391,12 @@ def merged(ctx: HandlerContext) -> str:
 def learn(ctx: HandlerContext) -> str:
     """L2 (a side effect of MERGED): the merged-only learning record. It edits nothing in the repo.
 
-    It lists the ADRs the pinned manifest holds as accepted; marking them implemented is a human
-    change to docs/adr. The record's digest goes into the run's hash-chained provenance log as
-    a `learning` event, once per merged SHA, so a retried step never appends it twice.
+    The record's digest goes into the run's hash-chained provenance log as a `learning` event,
+    once per merged SHA, so a retried step never appends it twice.
     """
     done = latest_merged(ctx.run_root)
     if done is None:
         raise ReleaseError("L2 runs only after a merge has been recorded")
-    manifest = _sealed(ctx, ["pinned_context_manifest"])["pinned_context_manifest"]
-    adrs = json.loads((manifest / "context_manifest.json").read_text("utf-8"))["adrs"]
     path = _record(
         ctx,
         "L2",
@@ -408,8 +405,6 @@ def learn(ctx: HandlerContext) -> str:
             "merged_sha": done["merged_sha"],
             "run_id": ctx.run_id,
             "patch": done["patch"],
-            "accepted_adrs": sorted(a["id"] for a in adrs if a["status"] == "accepted"),
-            "marked_implemented": False,
         },
     )
     digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()

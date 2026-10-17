@@ -26,7 +26,7 @@ states:
   G1:
     kind: code
     executor: code
-    doc: Pin snapshot (commit SHA, ADR set with status, contract versions, accepted tests).
+    doc: Pin snapshot (commit SHA, contract versions, accepted tests).
     edges:
       - {to: G2, guard: always}
   G2:
@@ -116,7 +116,7 @@ states:
   DR:
     kind: code
     executor: code
-    doc: Auto-generated decision record. Not an accepted ADR; never recorded as human approval.
+    doc: Design decision record. After H1 it seals the candidate the human approved (the signed approval stays the human decision); on the fast path it needs a scored winner and is auto-generated.
     produces: decision_record
     edges:
       - {to: C1, guard: always}
@@ -127,19 +127,12 @@ states:
     executor: human
     doc: Human decision with full evidence bundle and manifest.
     edges:
-      - {to: ADR, guard: approve_design_and_no_security_veto}
+      - {to: DR, guard: approve_design_and_no_security_veto}
       - {to: BENCH, guard: request_evidence, budget: evidence}
       - {to: A1, guard: revise_with_notes, budget: design}
       - {to: CHILD, guard: approve_remediation_or_constraint_change}
       - {to: T-REJECTED, guard: reject}
       - {to: T-HALTED, guard: halt}
-  ADR:
-    kind: code
-    executor: code+human
-    doc: Human accepts, code writes accepted ADR with approver ID and reason.
-    produces: adr
-    edges:
-      - {to: C1, guard: always}
   BENCH:
     kind: code
     executor: code+model
@@ -205,7 +198,7 @@ states:
     executor: code
     doc: Reproduce, classify, count against budget, route. See policy/routing.yaml.
     may_modify: []
-    forbidden_mutations: [contracts, protected_tests, adrs, policy, weights, budgets]
+    forbidden_mutations: [contracts, protected_tests, policy, weights, budgets]
     edges:
       - {to: E1, guard: implementation_violates_contract, budget: local}
       - {to: H1, guard: contract_inadequate}
@@ -222,7 +215,7 @@ states:
   F1:
     kind: decision
     executor: code
-    doc: Independent CI (integration, ADR fitness functions, incremental mutation testing).
+    doc: Independent CI (integration, incremental mutation testing).
     edges:
       - {to: X, guard: required_check_failed}
       - {to: R1, guard: all_required_pass}
@@ -299,7 +292,7 @@ states:
   L2:
     kind: code
     executor: code
-    doc: Merged-only learning (mark ADRs implemented, refresh index at merged SHA).
+    doc: Merged-only learning (record the merged SHA, refresh index at merged SHA).
     edges:
       - {to: L1, guard: always}
   L3:

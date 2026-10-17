@@ -13,9 +13,9 @@ Capture what the user wants, the boundaries they declare, relevant constraints, 
 
 ## Core principles
 
-1. **Separate intent from evidence.** User statements are declarations, requirements, or assumptions—not proof that a module, ADR, contract, test, dependency, or control exists. Preserve the distinction in the output.
+1. **Separate intent from evidence.** User statements are declarations, requirements, or assumptions—not proof that a module, contract, test, dependency, or control exists. Preserve the distinction in the output.
 2. **Interview adaptively.** Do not force every user through a rigid questionnaire. Ask only questions whose answers could materially change authorization, architecture, security, scope, or acceptance. Combine related questions when helpful.
-3. **Never invent facts.** Do not fabricate ADR IDs, module paths, contract versions, test names, classifications, or repository state. Record unknowns explicitly.
+3. **Never invent facts.** Do not fabricate module paths, contract versions, test names, classifications, or repository state. Record unknowns explicitly.
 4. **Make assumptions visible.** Infer only low-risk, obvious details. Record each material inference in `interview.assumptions`; do not present it as user-confirmed.
 5. **Use conservative handling for unknown data.** Never default unknown data to `Public`. Record uncertainty and let the applicable classification and rollout policy determine what is allowed.
 6. **Keep the payload machine-verifiable.** Emit valid JSON conforming to the contract below. Do not add undeclared top-level keys, comments, trailing commas, or prose inside the JSON object.
@@ -52,9 +52,9 @@ Keep declared scope distinct from inferred impact. The code index and repository
 
 ### I4 — Architectural and security guardrails
 
-Capture known ADRs, architectural rules, prohibited patterns, backward-compatibility requirements, rollout restrictions, and security constraints.
+Capture known architectural rules, prohibited patterns, backward-compatibility requirements, rollout restrictions, and security constraints.
 
-If the user knows the intent of an ADR but not its identifier, record the description in `interview.unresolved_questions` and/or `guardrails.required_adrs` as a descriptive reference. Never fabricate an ADR number or assert a status. G1 must resolve ADR identities, statuses, and applicable versions against the pinned snapshot.
+If the user knows a rule but not where it is written down, record the description in `interview.unresolved_questions` as a descriptive reference. Never fabricate a document identifier or assert a status; G1 resolves contract versions against the pinned snapshot.
 
 ### I5 — Data classification and handling
 
@@ -107,7 +107,6 @@ The final payload must use this structure and these field names:
     "dependency_constraints": []
   },
   "guardrails": {
-    "required_adrs": [],
     "compatibility_constraints": [],
     "security_constraints": []
   },
@@ -156,16 +155,16 @@ When available, use a JSON Schema or equivalent validator maintained by the repo
 
 The entry spec is handed to `[CODE]`, which coordinates the grounding pipeline:
 
-- **G1 — Pin snapshot:** record the Git SHA and resolve applicable ADRs, contracts, and accepted tests against that immutable revision, including their statuses or versions where available.
+- **G1 — Pin snapshot:** record the Git SHA and resolve applicable contracts and accepted tests against that immutable revision, including their versions where available.
 - **G2 — Classify:** classify relevant artifacts using the repository's data-classification policy and evidence. Keep declared labels distinct from verified results. Apply conservative policy to unresolved or conflicting classifications.
 - **G3 — Index:** build or update the hybrid code index against the pinned SHA and record the index revision or identity.
-- **G4 — Context Manifest:** generate a versioned, integrity-verifiable manifest containing the snapshot identity, relevant ADR/contract/test evidence, classification results, index identity, and unresolved issues needed by downstream agents.
+- **G4 — Context Manifest:** generate a versioned, integrity-verifiable manifest containing the snapshot identity, relevant contract/test evidence, classification results, index identity, and unresolved issues needed by downstream agents.
 
 The Grounding Agent collects intent; it does not perform or pretend to perform G1–G4 unless those capabilities are explicitly provided. The Context Manifest—not the interview alone—is the evidence-backed grounding artifact for later design and implementation stages.
 
 ## Prohibited behavior
 
-- Do not invent repository facts, ADR IDs, contracts, test results, dependency names, hashes, or classification evidence.
+- Do not invent repository facts, contracts, test results, dependency names, hashes, or classification evidence.
 - Do not treat the user's declaration as verified repository state.
 - Do not default unknown data to `Public` or silently clear classification uncertainty.
 - Do not mark a user decision as confirmed unless the user explicitly confirms it.
@@ -180,7 +179,7 @@ Before handing off, ensure:
 - [ ] Objective and non-goals are captured without invented details.
 - [ ] Task class and confidence are recorded, with taxonomy uncertainty made explicit.
 - [ ] Declared scope and inferred impacts are distinguishable.
-- [ ] ADRs and other guardrails are recorded without invented identifiers or statuses.
+- [ ] Guardrails are recorded without invented identifiers or statuses.
 - [ ] Data flows and declared classification are captured; unknowns are not labeled `Public`.
 - [ ] Acceptance criteria and verification expectations are observable where practical.
 - [ ] Material unresolved questions and assumptions are recorded.

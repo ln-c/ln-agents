@@ -3,7 +3,8 @@
 One `state.json` per run, written atomically (fsutil) and validated against
 schemas/run_state.schema.json. A `state.lock` flock keeps a single runner per run.
 
-Status is a run-level property, not a graph state (ADR 0003, decision 5):
+Status is a run-level property, not a graph state (a dispatch failure with no graph edge
+pauses the run; it never routes anywhere without a human):
 
     running         the runner may take steps
     paused          stopped after budget was spent or an outcome is uncertain;
