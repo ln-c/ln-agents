@@ -16,7 +16,7 @@ import pytest
 from agentic_pipeline.broker import BrokerPolicy, InferenceBroker, ovms_upstream
 from agentic_pipeline.sandbox_entry import MAX_FRAME_BYTES, read_frame, write_frame
 
-MODEL = "qwen3:8b"
+MODEL = "qwen3.5-9b"
 
 
 def test_frames_round_trip() -> None:
@@ -98,6 +98,36 @@ def test_valid_request_forwarded_and_streamed() -> None:
     assert broker.stats.rounds == 1 and len(broker.stats.request_hashes) == 1
 
 
+def test_the_models_template_defaults_win_and_are_what_is_hashed() -> None:
+    import hashlib
+
+    upstream = FakeUpstream()
+    policy = BrokerPolicy(MODEL, chat_template_kwargs={"enable_thinking": False})
+    broker = InferenceBroker(policy, upstream)
+    asked = {"model": MODEL, "chat_template_kwargs": {"enable_thinking": True, "other": 1}}
+    assert exchange(broker, [request(asked)])[0][0] == 200
+    sent = upstream.calls[0][1]
+    assert json.loads(sent)["chat_template_kwargs"] == {"enable_thinking": False, "other": 1}
+    assert broker.stats.request_hashes == ["sha256:" + hashlib.sha256(sent).hexdigest()]
+
+
+def test_the_defaults_are_added_when_the_request_names_none() -> None:
+    upstream = FakeUpstream()
+    policy = BrokerPolicy(MODEL, chat_template_kwargs={"enable_thinking": False})
+    exchange(InferenceBroker(policy, upstream), [request({"model": MODEL, "messages": []})])
+    assert json.loads(upstream.calls[0][1]) == {
+        "model": MODEL,
+        "messages": [],
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+def test_a_request_is_forwarded_as_sent_when_the_model_has_no_defaults() -> None:
+    upstream = FakeUpstream()
+    exchange(InferenceBroker(BrokerPolicy(MODEL), upstream), [request({"model": MODEL, "x": 1})])
+    assert json.loads(upstream.calls[0][1]) == {"model": MODEL, "x": 1}
+
+
 @pytest.mark.parametrize(
     ("frame", "status"),
     [
@@ -133,7 +163,7 @@ def test_round_limit_enforced() -> None:
 
 def test_upstream_failure_is_502() -> None:
     def down(path: str, body: bytes) -> Any:
-        raise ConnectionRefusedError("ollama stopped")
+        raise ConnectionRefusedError("server stopped")
 
     assert exchange(InferenceBroker(BrokerPolicy(MODEL), down), [request()])[0][0] == 502
 

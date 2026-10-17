@@ -35,7 +35,7 @@ Act only in the phase and role explicitly assigned by the orchestrator. Do not c
 ## Subscription and local execution policy
 
 - Use only provider-supported subscription-backed workflows for Claude Pro and Google AI Pro. Do not use paid API endpoints, API keys, or usage-credit fallback.
-- Use local Qwen3 8B for tasks explicitly assigned to the local backend and within its quality/safety limits.
+- Use the local model bound in `policy/model_registry.yaml` (currently Qwen3.5 9B on llama.cpp) for tasks explicitly assigned to the local backend and within its quality/safety limits.
 - Clef-flash is optional and allowed only while its free allowance is available. If unavailable or exhausted, use deterministic rules or pause.
 - Never silently substitute a provider/model or claim a specific version is available without runtime evidence.
 - On quota exhaustion, follow `policy/model_registry.yaml`: pause or take an explicitly configured local fallback. Do not broaden permissions to keep work moving.

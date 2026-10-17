@@ -24,7 +24,7 @@ from agentic_pipeline.sandbox import (
     sandbox_command,
 )
 
-MODEL = "qwen3:8b"
+MODEL = "qwen3.5-9b"
 
 
 def _bwrap_usable() -> bool:
@@ -66,7 +66,7 @@ attempt("work_write", lambda: write("/work/out.txt"))
 attempt("input_write", lambda: write("/inputs/spec/new.txt"))
 attempt("input_read", lambda: open("/inputs/spec/spec.md").read())
 attempt("host_home", lambda: os.listdir(HOST_HOME))
-attempt("host_ollama", lambda: socket.create_connection(("127.0.0.1", 11434), 2) and "open")
+attempt("host_llamacpp", lambda: socket.create_connection(("127.0.0.1", 8080), 2) and "open")
 attempt("dns", lambda: socket.getaddrinfo("example.com", 443) and "resolved")
 attempt("broker_fds", lambda: sorted(k for k in os.environ if k.startswith("AP_BROKER")))
 attempt("env_keys", lambda: sorted(os.environ))
@@ -102,7 +102,7 @@ def test_worker_reaches_model_only_through_broker(tmp_path: Path) -> None:
     assert out["brokered"] == [200, "hello worker"]
     assert out["foreign_model"][0] == 403
     assert out["other_path"][0] == 403
-    assert out["host_ollama"].startswith("denied")
+    assert out["host_llamacpp"].startswith("denied")
     assert out["dns"].startswith("denied")
     assert result.broker.rounds == 1 and len(result.broker.rejected) == 2
 

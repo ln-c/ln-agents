@@ -85,7 +85,7 @@ class Build:
             artifacts={"implementation_patch": (root, False)},
             operations={
                 "implementation_patch": {
-                    "backend": "qwen3_8b",
+                    "backend": "qwen3_5_9b",
                     "invocation_id": "i",
                     "status": "ok",
                 }
@@ -301,7 +301,7 @@ def seal_build_inputs(build: Build) -> None:
             stage=stage,
             attempt="t",
             artifacts={artifact: (root, True)},
-            operations={operation: {"backend": "qwen3_8b", "invocation_id": "i", "status": "ok"}},
+            operations={operation: {"backend": "qwen3_5_9b", "invocation_id": "i", "status": "ok"}},
             provenance_tip=GENESIS_HASH,
             data_classes={artifact: "internal"},
         )

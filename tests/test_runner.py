@@ -43,7 +43,7 @@ class Rig:
         self.root = root
         self.run_dir = tmp_path / RUN_ID  # state.run_id must match the directory
         self.adapters = {
-            b: FakeAdapter() for b in ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_8b")
+            b: FakeAdapter() for b in ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_5_9b")
         }
         self.unready: tuple[str, ...] = ()
         seed(self.run_dir, PRE_MODEL)

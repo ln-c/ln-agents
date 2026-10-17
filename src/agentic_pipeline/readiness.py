@@ -14,6 +14,7 @@ state. A call that fails on auth or quota is reported by the adapter at run time
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -150,21 +151,23 @@ def _local_get(spec: Mapping[str, Any], path: str) -> tuple[int, bytes]:
         conn.close()
 
 
-def _ollama_tags(spec: Mapping[str, Any]) -> tuple[int, bytes]:
-    return _local_get(spec, "/api/tags")
+LLAMACPP_HEALTH = "/health"  # 200 when ready, 503 while the model loads
+LLAMACPP_MODELS = "/v1/models"  # one entry: the model the server was started with (its --alias)
+LLAMACPP_PROPS = "/props"  # build_info and model_path
 
 
-def _tagged_models(body: bytes) -> dict[str, str]:
-    """name -> digest from an /api/tags body; raises on malformed input."""
-    return {m["name"]: m.get("digest", "") for m in json.loads(body)["models"]}
+def _llamacpp_served(body: bytes) -> set[str]:
+    """Served model ids from an OpenAI-style /v1/models body; raises on malformed input."""
+    return {str(m["id"]) for m in json.loads(body)["data"]}
 
 
-def probe_ollama(
+def probe_llamacpp(
     spec: Mapping[str, Any], model_ids: Mapping[str, str]
 ) -> tuple[list[Check], dict[str, Check]]:
-    """(provider checks, per-model inventory checks keyed by catalog id) from one /api/tags call.
+    """(provider checks, per-model inventory checks keyed by catalog id) for a llama-server.
 
-    `model_ids` maps each catalog model id served by this provider to its Ollama tag.
+    `model_ids` maps each catalog model id served by this provider to the alias the server was
+    started with. A server holds one model, so at most one catalog model can be verified.
     """
     host, port = spec["host"], spec["port"]
 
@@ -172,26 +175,80 @@ def probe_ollama(
         return {name: Check("model_inventory", status, detail) for name in model_ids}
 
     try:
-        status, body = _ollama_tags(spec)
+        status, _ = _local_get(spec, LLAMACPP_HEALTH)
     except OSError as exc:
         daemon = Check("daemon", Status.FAILED, f"{host}:{port} unreachable: {exc}")
-        return [daemon], all_models(Status.UNVERIFIED, "daemon unreachable")
+        return [daemon], all_models(Status.UNVERIFIED, "server unreachable")
     if status != 200:
-        daemon = Check("daemon", Status.FAILED, f"GET /api/tags returned HTTP {status}")
-        return [daemon], all_models(Status.UNVERIFIED, "daemon unhealthy")
-    daemon = Check("daemon", Status.VERIFIED, f"ollama responding on {host}:{port}")
+        detail = "still loading its model" if status == 503 else f"returned HTTP {status}"
+        daemon = Check("daemon", Status.FAILED, f"GET {LLAMACPP_HEALTH} {detail}")
+        return [daemon], all_models(Status.UNVERIFIED, "server not ready")
+    daemon = Check("daemon", Status.VERIFIED, f"llama-server ready on {host}:{port}")
     try:
-        names = _tagged_models(body)
+        status, body = _local_get(spec, LLAMACPP_MODELS)
+        if status != 200:
+            return [daemon], all_models(
+                Status.UNVERIFIED, f"GET {LLAMACPP_MODELS} returned {status}"
+            )
+        served = _llamacpp_served(body)
+    except OSError as exc:
+        return [daemon], all_models(Status.UNVERIFIED, f"GET {LLAMACPP_MODELS} failed: {exc}")
     except (ValueError, KeyError, TypeError):
-        return [daemon], all_models(Status.FAILED, "malformed /api/tags response")
+        return [daemon], all_models(Status.FAILED, f"malformed {LLAMACPP_MODELS} response")
     return [daemon], {
         name: (
-            Check("model_inventory", Status.VERIFIED, f"{tag} present")
-            if tag in names
-            else Check("model_inventory", Status.FAILED, f"{tag} not pulled")
+            Check("model_inventory", Status.VERIFIED, f"{alias} served")
+            if alias in served
+            else Check("model_inventory", Status.FAILED, f"{alias} not served")
         )
-        for name, tag in model_ids.items()
+        for name, alias in model_ids.items()
     }
+
+
+_GGUF_DIGESTS: dict[tuple[str, int, int], str] = {}
+
+
+def _file_sha256(path: Path) -> str:
+    """sha256 of a (large) file, remembered per process by path, size and modification time."""
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if key not in _GGUF_DIGESTS:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(16 * 1024 * 1024):
+                digest.update(chunk)
+        _GGUF_DIGESTS[key] = digest.hexdigest()
+    return _GGUF_DIGESTS[key]
+
+
+def llamacpp_model_version(spec: Mapping[str, Any], model_id: str) -> str:
+    """Provenance for the served model: its GGUF's sha256 and the llama.cpp build that runs it.
+
+    The server is on this host, so the file it reports is read and hashed here; if that is not
+    possible no version is claimed.
+    """
+    status, body = _local_get(spec, LLAMACPP_MODELS)
+    if status != 200:
+        raise LookupError(f"GET {LLAMACPP_MODELS} returned HTTP {status}")
+    try:
+        served = _llamacpp_served(body)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LookupError(f"malformed {LLAMACPP_MODELS} response") from exc
+    if model_id not in served:
+        raise LookupError(f"{model_id} is not served")
+    status, body = _local_get(spec, LLAMACPP_PROPS)
+    if status != 200:
+        raise LookupError(f"GET {LLAMACPP_PROPS} returned HTTP {status}")
+    try:
+        props = json.loads(body)
+        model_path, build = Path(props["model_path"]), str(props["build_info"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LookupError(f"malformed {LLAMACPP_PROPS} response") from exc
+    try:
+        digest = _file_sha256(model_path)
+    except OSError as exc:
+        raise LookupError(f"cannot read the model file {model_path}: {exc}") from exc
+    return f"{model_id}@sha256:{digest} (llama.cpp {build})"
 
 
 OVMS_READY = "/v2/health/ready"  # KServe health endpoint
@@ -257,20 +314,6 @@ def ovms_model_version(spec: Mapping[str, Any], model_id: str) -> str:
     if model_id not in served:
         raise LookupError(f"{model_id} is not served")
     return f"{model_id}@ovms (no build digest reported)"
-
-
-def ollama_model_digest(spec: Mapping[str, Any], model_id: str) -> str:
-    """Resolve the exact local model build, as runtime evidence for provenance."""
-    status, body = _ollama_tags(spec)
-    if status != 200:
-        raise LookupError(f"GET /api/tags returned HTTP {status}")
-    try:
-        digest = _tagged_models(body).get(model_id)
-    except (ValueError, KeyError, TypeError) as exc:
-        raise LookupError("malformed /api/tags response") from exc
-    if not digest:
-        raise LookupError(f"{model_id} not pulled or has no digest")
-    return f"{model_id}@sha256:{digest}"
 
 
 def _decode_proc_addr(hex_addr: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
@@ -472,7 +515,7 @@ def run_preflight(
             tags = {
                 m: v["model_id"] for m, v in registry["models"].items() if v["provider"] == name
             }
-            probe = probe_ovms if spec["protocol"] == "ovms" else probe_ollama
+            probe = {"llamacpp": probe_llamacpp, "ovms": probe_ovms}[spec["protocol"]]
             daemon, inventory = probe(spec, tags)
             report.providers[name] = [*daemon, probe_listeners(spec["port"], host.proc_root)]
             for model, check in inventory.items():

@@ -94,7 +94,7 @@ def test_required_checks_follow_the_bound_operations() -> None:
     need = conformance.required_checks
     assert need(REGISTRY, PROFILES, "claude_cli_default") == ["identity", "json_reply"]
     assert need(REGISTRY, PROFILES, "gemini_3_8_flash_high") == ["identity", "json_reply"]
-    assert need(REGISTRY, PROFILES, "qwen3_8b") == ["identity", "file_output"]
+    assert need(REGISTRY, PROFILES, "qwen3_5_9b") == ["identity", "file_output"]
     assert need(REGISTRY, PROFILES, "clef_flash") == []  # bound to nothing
 
 
@@ -104,7 +104,7 @@ def test_rebinding_changes_the_required_checks() -> None:
     registry["models"]["claude_cli_default"]["capabilities"].append("code_generation")
     checks = conformance.required_checks(registry, PROFILES, "claude_cli_default")
     assert checks == ["identity", "json_reply", "file_output"]
-    assert conformance.required_checks(registry, PROFILES, "qwen3_8b") == []
+    assert conformance.required_checks(registry, PROFILES, "qwen3_5_9b") == []
 
 
 def test_required_checks_for_an_explicit_set_of_capabilities() -> None:
@@ -114,9 +114,11 @@ def test_required_checks_for_an_explicit_set_of_capabilities() -> None:
         "identity",
         "json_reply",
     ]
-    both = need(REGISTRY, PROFILES, "qwen3_8b", requires=["design_reasoning", "code_generation"])
+    both = need(REGISTRY, PROFILES, "qwen3_5_9b", requires=["design_reasoning", "code_generation"])
     assert both == ["identity", "json_reply", "file_output"]
-    assert need(REGISTRY, PROFILES, "qwen3_8b", requires=[]) == []  # explicit, so not the bound set
+    assert (
+        need(REGISTRY, PROFILES, "qwen3_5_9b", requires=[]) == []
+    )  # explicit, so not the bound set
     assert need(REGISTRY, PROFILES, "clef_flash", requires=["classification"]) == [
         "identity",
         "json_reply",
@@ -132,7 +134,7 @@ def test_every_implemented_check_is_known_to_policy_and_the_schema() -> None:
 # ── Probes ───────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("model", ["claude_cli_default", "qwen3_8b"])
+@pytest.mark.parametrize("model", ["claude_cli_default", "qwen3_5_9b"])
 def test_a_compliant_adapter_passes(model: str, tmp_path: Path) -> None:
     record = run(model, FakeAdapter(), tmp_path)
     assert record["passed"] is True
@@ -154,9 +156,9 @@ def test_a_compliant_adapter_passes(model: str, tmp_path: Path) -> None:
         ("claude_cli_default", "bad_shape", "json_reply", "not a valid conformance_probe"),
         ("claude_cli_default", "quota", "json_reply", "quota_exhausted"),
         ("claude_cli_default", "raise", "json_reply", "adapter raised RuntimeError"),
-        ("qwen3_8b", "wrong_nonce", "file_output", "does not contain the nonce"),
-        ("qwen3_8b", "stray_file", "file_output", "expected only"),
-        ("qwen3_8b", "quota", "file_output", "quota_exhausted"),
+        ("qwen3_5_9b", "wrong_nonce", "file_output", "does not contain the nonce"),
+        ("qwen3_5_9b", "stray_file", "file_output", "expected only"),
+        ("qwen3_5_9b", "quota", "file_output", "quota_exhausted"),
     ],
 )
 def test_a_misbehaving_adapter_fails_the_check(
@@ -205,11 +207,11 @@ def status_of(root: Path, model: str, identity: Identity | None = IDENTITY) -> t
 
 def test_a_written_record_is_current_until_something_it_binds_to_changes(tmp_path: Path) -> None:
     root = tmp_path / "repo"
-    record = run("qwen3_8b", FakeAdapter(), tmp_path / "work")
+    record = run("qwen3_5_9b", FakeAdapter(), tmp_path / "work")
     path, digest = conformance.write_record(root, record)
-    assert path == root / ".conformance" / "qwen3_8b.json"
+    assert path == root / ".conformance" / "qwen3_5_9b.json"
     assert digest == "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-    status, detail = status_of(root, "qwen3_8b")
+    status, detail = status_of(root, "qwen3_5_9b")
     assert status == "ok" and digest in detail
 
 
@@ -225,48 +227,48 @@ def test_a_written_record_is_current_until_something_it_binds_to_changes(tmp_pat
 def test_a_record_goes_stale_when_identity_or_profiles_change(
     identity: Identity, profiles_digest: str, reason: str, tmp_path: Path
 ) -> None:
-    record = run("qwen3_8b", FakeAdapter(), tmp_path / "work")
+    record = run("qwen3_5_9b", FakeAdapter(), tmp_path / "work")
     reasons = conformance.stale_reasons(
-        record, REGISTRY, PROFILES, profiles_digest, "qwen3_8b", identity
+        record, REGISTRY, PROFILES, profiles_digest, "qwen3_5_9b", identity
     )
     assert any(reason in r for r in reasons), reasons
 
 
 def test_a_record_goes_stale_when_the_registry_entry_or_bindings_change(tmp_path: Path) -> None:
-    record = run("qwen3_8b", FakeAdapter(), tmp_path / "work")
+    record = run("qwen3_5_9b", FakeAdapter(), tmp_path / "work")
     changed = copy.deepcopy(REGISTRY)
-    changed["models"]["qwen3_8b"]["capabilities"] = ["code_generation"]
+    changed["models"]["qwen3_5_9b"]["capabilities"] = ["code_generation"]
     reasons = conformance.stale_reasons(
-        record, changed, PROFILES, PROFILES_DIGEST, "qwen3_8b", IDENTITY
+        record, changed, PROFILES, PROFILES_DIGEST, "qwen3_5_9b", IDENTITY
     )
     assert reasons == ["registry entry for the model or its provider changed"]
     rebound = copy.deepcopy(REGISTRY)
     rebound["agents"]["build"]["primary"] = "claude_cli_default"
     rebound["models"]["claude_cli_default"]["capabilities"].append("code_generation")
     reasons = conformance.stale_reasons(
-        record, rebound, PROFILES, PROFILES_DIGEST, "qwen3_8b", IDENTITY
+        record, rebound, PROFILES, PROFILES_DIGEST, "qwen3_5_9b", IDENTITY
     )
     assert any("required checks changed" in r for r in reasons)
 
 
 def test_status_is_never_ok_without_a_current_passing_record(tmp_path: Path) -> None:
     root = tmp_path / "repo"
-    assert status_of(root, "qwen3_8b")[0] == "missing"
-    failing = run("qwen3_8b", FakeAdapter("wrong_nonce"), tmp_path / "work")
+    assert status_of(root, "qwen3_5_9b")[0] == "missing"
+    failing = run("qwen3_5_9b", FakeAdapter("wrong_nonce"), tmp_path / "work")
     conformance.write_record(root, failing)
-    status, detail = status_of(root, "qwen3_8b")
+    status, detail = status_of(root, "qwen3_5_9b")
     assert status == "failed" and "file_output" in detail
-    assert status_of(root, "qwen3_8b", Identity("x", "y", "z"))[0] == "stale"
-    assert status_of(root, "qwen3_8b", None)[0] == "unverifiable"
+    assert status_of(root, "qwen3_5_9b", Identity("x", "y", "z"))[0] == "stale"
+    assert status_of(root, "qwen3_5_9b", None)[0] == "unverifiable"
 
 
 @pytest.mark.parametrize("damage", ["not json", '{"version": 1}', "[]"])
 def test_an_unusable_record_is_unverifiable_not_missing(damage: str, tmp_path: Path) -> None:
     root = tmp_path / "repo"
-    path = conformance.record_path(root, "qwen3_8b")
+    path = conformance.record_path(root, "qwen3_5_9b")
     path.parent.mkdir(parents=True)
     path.write_text(damage)
-    status, _ = status_of(root, "qwen3_8b")
+    status, _ = status_of(root, "qwen3_5_9b")
     assert status == "unverifiable"
 
 
@@ -274,13 +276,13 @@ def test_a_record_for_another_provider_is_refused(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     record = run("claude_cli_default", FakeAdapter(), tmp_path / "work")
     shutil.copy(
-        conformance.write_record(root, record)[0], conformance.record_path(root, "qwen3_8b")
+        conformance.write_record(root, record)[0], conformance.record_path(root, "qwen3_5_9b")
     )
-    assert status_of(root, "qwen3_8b")[0] == "unverifiable"
+    assert status_of(root, "qwen3_5_9b")[0] == "unverifiable"
 
 
 def test_writing_an_invalid_record_is_refused(tmp_path: Path) -> None:
-    record = run("qwen3_8b", FakeAdapter(), tmp_path / "work")
+    record = run("qwen3_5_9b", FakeAdapter(), tmp_path / "work")
     record["required_checks"] = []
     with pytest.raises(Exception, match="required_checks"):
         conformance.write_record(tmp_path / "repo", record)
@@ -326,8 +328,8 @@ def report(drop: str | None = None, **changes: Status) -> Report:
     return Report(
         static_errors=[],
         global_checks=[Check("credential_env_absent", changes.get("env", Status.VERIFIED), "d")],
-        providers={n: [ok] for n in ("claude_pro", "google_ai_pro", "qwen_local")},
-        models={"qwen3_8b": [Check("model_inventory", Status.VERIFIED, "")]},
+        providers={n: [ok] for n in ("claude_pro", "google_ai_pro", "llamacpp_local")},
+        models={"qwen3_5_9b": [Check("model_inventory", Status.VERIFIED, "")]},
         isolation={k: v for k, v in isolation.items() if k != drop},
         registry=REGISTRY,
     )
@@ -360,10 +362,12 @@ def args(command: str, **kw: Any) -> argparse.Namespace:
 def test_models_test_records_a_passing_result(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code = models_cli.models_command(args("test", root=repo, model="qwen3_8b"), deps(FakeAdapter()))
+    code = models_cli.models_command(
+        args("test", root=repo, model="qwen3_5_9b"), deps(FakeAdapter())
+    )
     out = capsys.readouterr().out
-    assert code == 0 and "PASSED" in out and ".conformance/qwen3_8b.json" in out
-    record, _ = conformance.load_record(repo, "qwen3_8b")
+    assert code == 0 and "PASSED" in out and ".conformance/qwen3_5_9b.json" in out
+    record, _ = conformance.load_record(repo, "qwen3_5_9b")
     assert record is not None and record["passed"] is True
 
 
@@ -371,21 +375,21 @@ def test_models_test_records_and_reports_a_failure(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = models_cli.models_command(
-        args("test", root=repo, model="qwen3_8b"), deps(FakeAdapter("wrong_nonce"))
+        args("test", root=repo, model="qwen3_5_9b"), deps(FakeAdapter("wrong_nonce"))
     )
     assert code == 1 and "FAILED" in capsys.readouterr().out
-    record, _ = conformance.load_record(repo, "qwen3_8b")
+    record, _ = conformance.load_record(repo, "qwen3_5_9b")
     assert record is not None and record["passed"] is False
 
 
 @pytest.mark.parametrize(
     ("model", "rep", "adapter", "why"),
     [
-        ("qwen3_8b", report(env=Status.FAILED), FakeAdapter(), "credential_env_absent"),
-        ("qwen3_8b", report(network_disabled=Status.UNVERIFIED), FakeAdapter(), "network_disabled"),
+        ("qwen3_5_9b", report(env=Status.FAILED), FakeAdapter(), "credential_env_absent"),
+        ("qwen3_5_9b", report(network_disabled=Status.UNVERIFIED), FakeAdapter(), "network_disabled"),
         ("claude_cli_default", report(session_separation=Status.FAILED), FakeAdapter(), "session_separation"),
-        ("qwen3_8b", report(drop="network_disabled"), FakeAdapter(), "network_disabled not reported"),
-        ("qwen3_8b", None, None, "no adapter for qwen3_8b"),
+        ("qwen3_5_9b", report(drop="network_disabled"), FakeAdapter(), "network_disabled not reported"),
+        ("qwen3_5_9b", None, None, "no adapter for qwen3_5_9b"),
         ("clef_flash", None, FakeAdapter(), "not bound"),
         ("gpt_paid", None, FakeAdapter(), "not a model in the catalog"),
     ],
@@ -408,10 +412,12 @@ def test_models_test_refuses_a_provider_with_a_failing_readiness_check(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     rep = report()
-    rep.providers["qwen_local"] = [Check("daemon", Status.FAILED, "down")]
+    rep.providers["llamacpp_local"] = [Check("daemon", Status.FAILED, "down")]
     adapter = FakeAdapter()
-    code = models_cli.models_command(args("test", root=repo, model="qwen3_8b"), deps(adapter, rep))
-    assert code == 1 and "qwen3_8b.daemon FAILED" in capsys.readouterr().err
+    code = models_cli.models_command(
+        args("test", root=repo, model="qwen3_5_9b"), deps(adapter, rep)
+    )
+    assert code == 1 and "qwen3_5_9b.daemon FAILED" in capsys.readouterr().err
     assert adapter.calls == 0
 
 
@@ -419,13 +425,13 @@ def test_models_discover_reports_each_provider_and_never_calls_a_model(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     adapter = FakeAdapter()
-    conformance.write_record(repo, run("qwen3_8b", adapter, repo / "w"))
+    conformance.write_record(repo, run("qwen3_5_9b", adapter, repo / "w"))
     adapter.calls = 0
     code = models_cli.models_command(args("discover", root=repo), deps(adapter))
     out = capsys.readouterr().out
     assert code == 0 and adapter.calls == 0
     assert "claude_cli_default" in out and "conformance:  missing" in out
-    # the fake's identity is the one recorded, so qwen3_8b is current
+    # the fake's identity is the one recorded, so qwen3_5_9b is current
     assert "conformance:  ok" in out
     assert "clef_flash  [clef_flash_free:clef-flash, clef] known, bindable" in out
     assert "gemini_4_argon_high" in out and "known, unclaimed" in out
@@ -434,7 +440,7 @@ def test_models_discover_reports_each_provider_and_never_calls_a_model(
 def test_models_discover_cannot_vouch_for_a_provider_whose_adapter_is_unavailable(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    conformance.write_record(repo, run("qwen3_8b", FakeAdapter(), repo / "w"))
+    conformance.write_record(repo, run("qwen3_5_9b", FakeAdapter(), repo / "w"))
     models_cli.models_command(args("discover", root=repo), deps(None))
     assert "conformance:  unverifiable" in capsys.readouterr().out
 
@@ -443,7 +449,7 @@ def test_static_errors_stop_both_commands(repo: Path, capsys: pytest.CaptureFixt
     broken = lambda _root: Report(static_errors=["registry R1: broken"])  # noqa: E731
     d = models_cli.Deps(preflight=broken)
     assert models_cli.models_command(args("discover", root=repo), d) == 1
-    assert models_cli.models_command(args("test", root=repo, model="qwen3_8b"), d) == 1
+    assert models_cli.models_command(args("test", root=repo, model="qwen3_5_9b"), d) == 1
     assert capsys.readouterr().err.count("registry R1: broken") == 2
 
 
@@ -452,6 +458,6 @@ def test_models_test_refuses_an_adapter_that_does_not_enforce_the_isolation_it_n
 ) -> None:
     adapter = FakeAdapter()
     adapter.enforced_isolation = frozenset({"sandbox_enforcement"})
-    code = models_cli.models_command(args("test", root=repo, model="qwen3_8b"), deps(adapter))
+    code = models_cli.models_command(args("test", root=repo, model="qwen3_5_9b"), deps(adapter))
     assert code == 1 and "does not enforce" in capsys.readouterr().err
     assert adapter.calls == 0

@@ -53,7 +53,7 @@ def _adapter_factories() -> dict[str, Callable[[Mapping[str, Any], str], Backend
     from agentic_pipeline.adapters import AgyAdapter, ClaudeAdapter, PiQwenAdapter
 
     return {
-        "qwen_local": PiQwenAdapter.from_registry,  # type: ignore[dict-item]
+        "llamacpp_local": PiQwenAdapter.from_registry,  # type: ignore[dict-item]
         "openvino_local": PiQwenAdapter.from_registry,  # type: ignore[dict-item]
         "claude_pro": ClaudeAdapter.from_registry,  # type: ignore[dict-item]
         "google_ai_pro": AgyAdapter.from_registry,  # type: ignore[dict-item]

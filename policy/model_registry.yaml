@@ -34,7 +34,7 @@ policy:
 # policy/data_classes.yaml to anything that is not `local`. Every model provider lists
 # `family_patterns`: ordered regexes over a model id, and every model of that provider must
 # declare the family its id matches (an id that matches none is an error). A provider that can
-# serve several families (agy, Ollama) cannot have a model catalogued under the wrong one.
+# serve several families (agy, a llama.cpp server) cannot have a model catalogued under the wrong one.
 providers:
   claude_pro:
     access_mode: subscription_tool
@@ -63,17 +63,22 @@ providers:
       executable: agy
       version_pattern: '^(\d+)\.(\d+)\.(\d+)$'
       min_version: [1, 3, 1]
-  qwen_local:
+  # llama.cpp's llama-server on loopback, one process per model (`model_id` is the server's
+  # --alias). Start it with `-dev Vulkan0`: when ggml-openvino is installed a bare llama-server
+  # picks the OpenVINO CPU backend instead. Example:
+  #   llama-server -m ~/models/gguf/Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b --host 127.0.0.1 \
+  #     --port 8080 -dev Vulkan0 -ngl 99 -c 16384 --jinja --parallel 1
+  llamacpp_local:
     access_mode: local_inference
     location: local
     family_patterns:
-      - {pattern: '^qwen3', family: qwen3}
+      - {pattern: '^qwen3\.5', family: qwen3_5}
     network_required: false
     api_billing_allowed: false
     readiness:
-      protocol: ollama
+      protocol: llamacpp
       host: 127.0.0.1
-      port: 11434
+      port: 8080
       timeout_seconds: 1.0
   # OpenVINO Model Server on loopback (Intel CPU/GPU/NPU). It serves an OpenAI-compatible API
   # under /v3, which the broker reaches by rewriting the sandbox's /v1 path on the host. OVMS
@@ -132,12 +137,17 @@ models:
     alias: Claude (CLI default)
     family: claude
     capabilities: [code_generation, design_reasoning]
-  qwen3_8b:
-    provider: qwen_local
-    model_id: "qwen3:8b"
-    alias: Qwen3 8B
-    family: qwen3
+  # Qwen3.5 thinks by default, which spends the token budget before any answer on this laptop
+  # (about 15 tokens/s); `chat_template_kwargs` are merged into every request the broker forwards
+  # and win over the sandbox's own values. Qwen3.5 is its own family here: a different
+  # architecture from Qwen3, though from the same lab.
+  qwen3_5_9b:
+    provider: llamacpp_local
+    model_id: qwen3.5-9b
+    alias: Qwen3.5 9B
+    family: qwen3_5
     capabilities: [classification, code_generation]
+    chat_template_kwargs: {enable_thinking: false}
   clef_flash:
     provider: clef_flash_free
     model_id: clef-flash
@@ -170,7 +180,7 @@ models:
 agents:
   grounding:
     spec: agents/pipeline-grounding-agent.md
-    primary: qwen3_8b
+    primary: qwen3_5_9b
     escalation: claude_cli_default
     escalation_trigger: unresolved_ambiguity_or_insufficient_local_quality
     allowed_writes: [grounding_artifacts]
@@ -208,8 +218,8 @@ agents:
 
   build:
     spec: agents/pipeline-build-agent.md
-    # graph E1: "Pi + Qwen3 8B". Cloud models reach build only through E3 -> E4.
-    primary: qwen3_8b
+    # graph E1: "Pi + the local build model". Cloud models reach build only through E3 -> E4.
+    primary: qwen3_5_9b
     cloud_escalation: graph_e3_e4_only
     allowed_writes: [assigned_implementation_paths]
     protected_paths_write_denied: [tests, contracts, policy, budgets, approvals, release_state, pipeline/graph.yaml, schemas]
@@ -229,7 +239,7 @@ agents:
   release:
     spec: agents/pipeline-release-agent.md
     primary: deterministic_ci_git_policy
-    explanation_fallback: qwen3_8b
+    explanation_fallback: qwen3_5_9b
     cloud_explanation_fallback: claude_cli_default
     merge_approval_required: true
     deploy_approval_separate: true
@@ -238,7 +248,7 @@ agents:
   learning:
     spec: agents/pipeline-learning-agent.md
     primary: local_ledger_and_deterministic_metrics
-    analysis_fallback: qwen3_8b
+    analysis_fallback: qwen3_5_9b
     subscription_analysis: claude_cli_default
     index_update_condition: successful_merge_and_exact_merged_sha
     calibration_requires_human_review: true
@@ -246,7 +256,7 @@ agents:
   human_authority:
     spec: agents/pipeline-human-authority-agent.md
     primary: human_approval_ui_and_deterministic_state_machine
-    model_assistance: [claude_cli_default, gemini_3_8_flash_high, qwen3_8b]
+    model_assistance: [claude_cli_default, gemini_3_8_flash_high, qwen3_5_9b]
     approval_decider: human_only
     security_veto_override_by_model: false
 
