@@ -184,7 +184,9 @@ def test_verification_failures(tmp_path: Path, setup: str, message: str) -> None
 
 
 def test_artifact_published_by_two_producers_rejected(tmp_path: Path) -> None:
-    for stage in ("DR", "ADR"):
+    registry = json.loads(json.dumps(REGISTRY))
+    registry["artifacts"]["design_decision_sealed"]["producer"] = ["DR", "B2"]
+    for stage in ("DR", "B2"):
         _publish(tmp_path, stage, {"design_decision_sealed": (_artifact(tmp_path, stage), True)})
-    errors = verify_sealed_inputs(tmp_path, "run-1", REGISTRY, ["design_decision_sealed"])
+    errors = verify_sealed_inputs(tmp_path, "run-1", registry, ["design_decision_sealed"])
     assert any("published by several stages" in e for e in errors)

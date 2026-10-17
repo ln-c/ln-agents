@@ -6,7 +6,7 @@ then the E2 checks of `policy/ci.yaml` in the offline sandbox (see ci.py). No be
 check runs unless every static check passed. Every check ends `passed`, `failed`,
 `not_evaluated`, `skipped` (optional and unset) or `infra_error`; a stage passes only if every
 check passed or was skipped, so a required check that is unset fails closed. F1 is the same
-gate with the F1 checks (independent CI: integration, ADR fitness, mutation testing). The E2
+gate with the F1 checks (independent CI: integration, mutation testing). The E2
 checks include dead code and MC/DC over the patch: code the protected tests cannot exercise is
 the implementation's fault, so it goes back to E1.
 
@@ -76,7 +76,6 @@ MAX_SCAN_BYTES = 1 << 20
 FORBIDDEN_TREES = (
     G1_SOURCES["protected_tests"],
     G1_SOURCES["applicable_contracts"],
-    G1_SOURCES["adr_snapshot"],
     "policy",
     "schemas",
     "pipeline",

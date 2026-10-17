@@ -35,13 +35,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agentic_pipeline.adrs import binding_hits
 from agentic_pipeline.advisories import candidate_verdict as dependency_verdict
+from agentic_pipeline.approvals import APPROVE_GUARD, ApprovalError, parse_signed
 from agentic_pipeline.contracts import candidate_verdict as contract_verdict
 from agentic_pipeline.dataflow import candidate_verdict as flow_verdict
 from agentic_pipeline.frozen import PolicyChanged, frozen_policy
@@ -64,6 +64,12 @@ if TYPE_CHECKING:
 GATES_DIR = "gates"
 DESIGN_INPUTS = ("proposal_a_sealed", "proposal_b_sealed", "synthesis_sealed")
 CONTEXT_INPUT = "pinned_context_manifest"
+# The operation whose output file each sealed design candidate holds.
+CANDIDATE_OPERATIONS = {
+    "proposal_a_sealed": "proposal_a",
+    "proposal_b_sealed": "proposal_b",
+    "synthesis_sealed": "synthesis",
+}
 UNEVALUATED = "not_evaluated"
 
 
@@ -111,16 +117,10 @@ class Design:
         self.context_hash: str = context["hash"]
         self.commit_sha: str = context["commit_sha"]
         self.contract_versions: dict[str, str] = context["contract_versions"]
-        self.adrs: list[dict[str, str]] = context["adrs"]
         self.input_digest = _digest({name: digest_path(path) for name, path in paths.items()})
         self.docs: dict[str, Any] = {}
         self.parse_errors: dict[str, str] = {}
-        operations = {
-            "proposal_a_sealed": "proposal_a",
-            "proposal_b_sealed": "proposal_b",
-            "synthesis_sealed": "synthesis",
-        }
-        for artifact, operation in operations.items():
+        for artifact, operation in CANDIDATE_OPERATIONS.items():
             file = paths[artifact] / f"{operation}.json"
             try:
                 self.docs[artifact] = json.loads(file.read_text("utf-8"))
@@ -330,7 +330,6 @@ class VetoFacts:
     policy: PolicySnapshot
     entry_data: Mapping[str, Any]
     contracts: Mapping[str, str]
-    adr_hits: Mapping[str, Sequence[str]]  # proposal id -> binding-ADR findings against it
 
 
 type VetoEvaluator = Callable[[Any, VetoFacts], bool | None]
@@ -342,29 +341,12 @@ VETO_EVALUATORS: dict[str, VetoEvaluator] = {
     "contract_break": lambda doc, facts: (
         contract_verdict(doc, facts.contracts) if not _schema_errors(doc) else None
     ),
-    "violates_accepted_adr": lambda doc, facts: (
-        True if not _schema_errors(doc) and facts.adr_hits.get(doc.get("id")) else None
-    ),
     "data_class_violation": lambda doc, facts: (
         flow_verdict(doc, facts.policy.data_classes, facts.entry_data)
         if not _schema_errors(doc)
         else None
     ),
 }
-
-
-def _adr_hits(ctx: HandlerContext, design: Design) -> dict[str, list[str]]:
-    """Binding-ADR findings per proposal id, from reviews that pass the same checks as B2's."""
-    paths, _ = _scorer_inputs(ctx, list(DESIGN_INPUTS))
-    hits: dict[str, list[str]] = {}
-    for candidate, path in paths.items():
-        proposal = design.docs.get(candidate)
-        critique, problems = _checked_review(ctx, candidate, path, proposal, design.context_hash)
-        if critique is not None and not problems and isinstance(proposal, dict):
-            found = binding_hits(critique, design.adrs)
-            if found:
-                hits[str(proposal.get("id"))] = found
-    return hits
 
 
 class VetoReport:
@@ -378,12 +360,7 @@ class VetoReport:
         entry = json.loads(
             (_sealed(ctx, ["requirements"])["requirements"] / "entry_spec.json").read_text("utf-8")
         )
-        facts = VetoFacts(
-            policy,
-            entry["data"],
-            design.contract_versions,
-            _adr_hits(ctx, design),
-        )
+        facts = VetoFacts(policy, entry["data"], design.contract_versions)
         self.input_digest = design.input_digest
         self.evaluated = sorted(set(VETO_EVALUATORS))
         self.unevaluated = sorted(known - set(VETO_EVALUATORS))
@@ -669,7 +646,76 @@ def authorize(ctx: HandlerContext) -> str:
 
 
 def record_decision(ctx: HandlerContext) -> str:
-    raise GateError("DR needs a scored winner; none exists, and none is ever invented")
+    """DR: seal the design decision that C1 builds from.
+
+    After H1 it records the candidate a human approved, read back from the signed approval the
+    runner stored and verified again here. Reached from B3 (the fast path) it still needs a
+    scored winner, and none exists, so none is ever invented.
+    """
+    if ctx.entered_from() != "H1":
+        raise GateError("DR needs a scored winner; none exists, and none is ever invented")
+    policy = _policy(ctx)
+    approvals = [e for e in ctx.events() if e["event"] == "approval" and e.get("state") == "H1"]
+    if not approvals:
+        raise GateError("DR: no design approval is recorded for this run")
+    approval_digest = approvals[-1]["approval_digest"]
+    path = ctx.run_root / "approvals" / f"{approval_digest.removeprefix('sha256:')}.json"
+    try:
+        document = path.read_bytes()
+        if "sha256:" + hashlib.sha256(document).hexdigest() != approval_digest:
+            raise GateError("DR: the stored approval does not match its recorded digest")
+        doc = parse_signed(
+            document,
+            path.with_name(path.name + ".sig").read_text(encoding="utf-8"),
+            approvers=policy.approvers,
+            node="H1",
+        )
+    except (OSError, ApprovalError) as exc:
+        raise GateError(f"DR: cannot verify the stored design approval: {exc}") from exc
+    if doc["run_id"] != ctx.run_id or doc["decision"] != APPROVE_GUARD or not doc["candidate"]:
+        raise GateError("DR: the recorded approval is not a design approval naming a candidate")
+    candidate = doc["candidate"]
+    if candidate not in CANDIDATE_OPERATIONS:
+        raise GateError(f"DR: {candidate!r} is not a design candidate")
+    # The build needs the approved design itself, not just its name: copy it from the sealed
+    # artifact (re-hashed by `_sealed`) so the decision carries exactly what was approved.
+    approved = _sealed(ctx, [candidate])[candidate] / f"{CANDIDATE_OPERATIONS[candidate]}.json"
+    try:
+        content = approved.read_bytes()
+    except OSError as exc:
+        raise GateError(f"DR: the approved candidate {candidate} cannot be read: {exc}") from exc
+    decision = {
+        "source": "human_approval",
+        "candidate": candidate,
+        "candidate_digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+        "approver": doc["approver"],
+        "reason": doc["reason"],
+        "approval_digest": approval_digest,
+        "survivors": doc["evidence"].get("survivors", []),
+    }
+    try:
+        validate("design_decision", decision)
+    except ValidationError as exc:
+        raise GateError(f"DR: design decision invalid: {exc.message}") from exc
+    out = ctx.run_root / GATES_DIR / "DR" / approval_digest.removeprefix("sha256:")[:32]
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "candidate.json").write_bytes(content)
+    atomic_write_json(out / "decision.json", decision)
+    try:
+        manifest = build_manifest(
+            ctx.run_root,
+            run_id=ctx.run_id,
+            stage="DR",
+            attempt=out.name,
+            artifacts={"design_decision_sealed": (out, True)},
+            operations={},
+            provenance_tip=ctx.provenance_tip(),
+            data_classes={"design_decision_sealed": _most_restrictive(ctx, policy)},
+        )
+        publish_stage_manifest(ctx.run_root, manifest)
+    except ManifestError as exc:
+        raise GateError(f"DR: manifest not published: {exc}") from exc
+    return "always"
 
 
 GATE_HANDLERS: dict[str, Callable[[Any], str]] = {

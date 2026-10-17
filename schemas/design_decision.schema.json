@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "design_decision",
+  "title": "Design decision (DR): the candidate a human approved at H1, sealed for the build",
+  "type": "object",
+  "required": ["source", "candidate", "candidate_digest", "approver", "reason", "approval_digest", "survivors"],
+  "additionalProperties": false,
+  "properties": {
+    "source": {"const": "human_approval"},
+    "candidate": {"enum": ["proposal_a_sealed", "proposal_b_sealed", "synthesis_sealed"]},
+    "candidate_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of candidate.json in the same directory: the approved design itself."},
+    "approver": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "approval_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the signed approval document."},
+    "survivors": {"type": "array", "items": {"type": "string"}}
+  }
+}

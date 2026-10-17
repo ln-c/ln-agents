@@ -32,7 +32,6 @@ SPEC: dict[str, Any] = {
         "dependency_constraints": [],
     },
     "guardrails": {
-        "required_adrs": [],
         "compatibility_constraints": [],
         "security_constraints": [],
     },
@@ -63,8 +62,6 @@ def repo(tmp_path: Path) -> Path:
     path.mkdir()
     for name in ("pipeline", "policy", "schemas", "agents"):
         shutil.copytree(ROOT / name, path / name)
-    (path / "docs" / "adr").mkdir(parents=True)
-    (path / "docs" / "adr" / "0001-first.md").write_text("# 1\n\nStatus: Accepted\n")
     (path / "tests").mkdir()
     (path / "tests" / "test_x.py").write_text("def test_x(): ...\n")
     git(path, "init", "-q")
@@ -142,7 +139,7 @@ def test_walk_through_grounding_seals_a_valid_context(repo: Path, tmp_path: Path
             "requirements",
             "pinned_source_tree",
             "applicable_contracts",
-            "adr_snapshot",
+            "pinned_snapshot",
             "protected_tests",
             "pinned_context_manifest",
         ],
@@ -152,7 +149,7 @@ def test_walk_through_grounding_seals_a_valid_context(repo: Path, tmp_path: Path
         "requirements": "internal",
         "pinned_source_tree": "confidential",
         "applicable_contracts": "internal",
-        "adr_snapshot": "internal",
+        "pinned_snapshot": "internal",
         "protected_tests": "confidential",
         "pinned_context_manifest": "internal",  # by role: its schema cannot carry code
     }
@@ -161,11 +158,11 @@ def test_walk_through_grounding_seals_a_valid_context(repo: Path, tmp_path: Path
     doc = json.loads(path.read_text())
     validate("context_manifest", doc)
     assert doc["commit_sha"] == head
-    assert doc["adrs"] == [{"id": "0001-first", "status": "accepted"}]
+    assert "adrs" not in doc
     assert doc["contract_versions"] == {}
     assert doc["hash"] == context_hash(doc)
     assert (sealed["protected_tests"].path / "test_x.py").is_file()
-    assert (sealed["pinned_source_tree"].path / "docs" / "adr" / "0001-first.md").is_file()
+    assert (sealed["pinned_source_tree"].path / "tests" / "test_x.py").is_file()
 
 
 def requirements_class(repo: Path, tmp_path: Path, declared: str | None) -> str:
@@ -236,7 +233,7 @@ def test_g1_does_not_repin_when_head_moves(repo: Path, tmp_path: Path) -> None:
     assert GROUNDING_HANDLERS["G1"](rig.ctx(runner, "G1")) == "always"
     assert rig.manifest("G1") == pinned
     snapshot = json.loads(
-        (rig.run_dir / "grounding" / "G1" / "adr_snapshot" / "snapshot.json").read_text()
+        (rig.run_dir / "grounding" / "G1" / "pinned_snapshot" / "snapshot.json").read_text()
     )
     assert snapshot["commit_sha"] != git(repo, "rev-parse", "HEAD")
 
@@ -273,17 +270,6 @@ def test_g1_reads_the_commit_not_the_working_tree(repo: Path, tmp_path: Path) ->
     sealed, _ = resolve_sealed_inputs(rig.run_dir, RUN_ID, runner.registry, ["protected_tests"])
     assert (sealed["protected_tests"].path / "test_x.py").read_text() == "def test_x(): ...\n"
     assert not (rig.run_dir / "grounding" / "G1" / "pinned_source_tree" / "untracked.txt").exists()
-
-
-def test_adr_with_an_unknown_status_blocks_g1(repo: Path, tmp_path: Path) -> None:
-    (repo / "docs" / "adr" / "0002-odd.md").write_text("# 2\n\nStatus: Maybe\n")
-    git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", "odd")
-    rig = Rig(repo, tmp_path)
-    runner = rig.runner()
-    runner.step()
-    result = runner.step()
-    assert result.outcome is Outcome.BLOCKED and "Status must be one of" in result.detail
 
 
 def test_grounding_refuses_after_policy_drift(repo: Path, tmp_path: Path) -> None:

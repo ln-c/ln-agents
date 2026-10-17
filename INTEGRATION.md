@@ -13,8 +13,7 @@ The overlay that added `AGENTS.md`, `CLAUDE.md`, `agents/`, the model registry a
 
 ## Open
 
-- ADR 0003 (model registry stage requirements) is still `Proposed`; accepting it is a human decision.
-- Not built: `E0`, `E4`, `ADR`, `BENCH`, `CHILD`, `D2`, `RB`, `L3`, `HR`. A run blocks at the first of them it reaches. See the status table in the README.
-- `L2` records the merged SHA and the accepted ADRs; it does not mark an ADR implemented or refresh an index.
+- Not built: `E0`, `E4`, `BENCH`, `CHILD`, `D2`, `RB`, `L3`, `HR`. A run blocks at the first of them it reaches. See the status table in the README.
+- `L2` records the merged SHA and the patch; it does not refresh an index.
 - The learning agent's `telemetry_version: "1.1"` envelope is a specification; the code appends `learning` events to the provenance log instead.
 - Number of phases: the graph has eight groups of states and the overlay's seven agent roles map onto them; the README now says eight.

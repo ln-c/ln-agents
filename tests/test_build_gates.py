@@ -50,7 +50,6 @@ checks:
     required: true
     cause: implementation_violates_contract
     commands: [[python3, -c, "import sys; sys.exit(0)"]]
-  adr_fitness: {stage: F1, required: false, cause: unknown_or_spent, commands: []}
   mutation: {stage: F1, required: true, cause: requirement_missing, commands: [], score: {}}
 """
 
@@ -169,7 +168,6 @@ def test_e2_records_an_audit_bound_to_the_patch(build: Build) -> None:
         ({"tests/test_x.py": "def test_x(): assert True\n"}, "write_scope"),
         ({"policy/budgets.yaml": "x: 1\n"}, "write_scope"),
         ({"scripts/ci_mcdc.py": "x = 1\n"}, "write_scope"),
-        ({"docs/adr/0009-new.md": "# adr\n"}, "write_scope"),
         ({"contracts/api.json": "{}\n"}, "write_scope"),
         ({".github/CODEOWNERS": "* @me\n"}, "write_scope"),
         ({"src/CODEOWNERS": "* @me\n"}, "write_scope"),
@@ -362,7 +360,6 @@ def test_f1_needs_every_required_check_and_the_unset_ones_never_pass(build: Buil
     (record,) = (build.rig.run_dir / "gates" / "F1").glob("*.json")
     checks = json.loads(record.read_text())["checks"]
     assert checks["integration"]["status"] == "passed"
-    assert checks["adr_fitness"]["status"] == "skipped"
     assert checks["mutation"]["status"] == UNEVALUATED
     assert "required but unset" in checks["mutation"]["problems"][0]
     # X reproduces it and sends a check that never ran to a human, not to a retry.

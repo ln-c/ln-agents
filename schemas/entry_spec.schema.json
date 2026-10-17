@@ -41,10 +41,9 @@
     },
     "guardrails": {
       "type": "object",
-      "required": ["required_adrs", "compatibility_constraints", "security_constraints"],
+      "required": ["compatibility_constraints", "security_constraints"],
       "additionalProperties": false,
       "properties": {
-        "required_adrs": {"type": "array"},
         "compatibility_constraints": {"type": "array"},
         "security_constraints": {"type": "array"}
       }

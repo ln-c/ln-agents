@@ -3,7 +3,6 @@
 # A model is bound only here: `agents.*.primary` then `model_assistance` (in preference order).
 # stage_requirements names none; its candidate backends are derived from the agent.
 # Resolve aliases to the exact supported tool/model version at runtime and record that resolution.
-# Decisions behind this layout: docs/adr/0003-model-registry-stage-requirements.md
 version: 1
 registry_name: agentic-pipeline-budget
 
@@ -213,7 +212,7 @@ agents:
     primary: qwen3_8b
     cloud_escalation: graph_e3_e4_only
     allowed_writes: [assigned_implementation_paths]
-    protected_paths_write_denied: [tests, contracts, adr, policy, budgets, approvals, release_state, pipeline/graph.yaml, schemas]
+    protected_paths_write_denied: [tests, contracts, policy, budgets, approvals, release_state, pipeline/graph.yaml, schemas]
     escalation_requires_explicit_authorization: true
 
   exception_router:
@@ -294,7 +293,7 @@ artifacts:
   requirements: {sealed: true, producer: [START]}
   pinned_source_tree: {sealed: true, producer: [G1]}
   applicable_contracts: {sealed: true, producer: [G1]}
-  adr_snapshot: {sealed: true, producer: [G1]}
+  pinned_snapshot: {sealed: true, producer: [G1]}
   protected_tests: {sealed: true, producer: [G1]}
   pinned_context_manifest: {sealed: true, producer: [G4]}
   proposal_a_scratch: {sealed: false, producer: [A1.proposal_a]}
@@ -305,7 +304,7 @@ artifacts:
   critique_a_by_b_sealed: {sealed: true, producer: [A2.critique_a_by_b]}
   synthesis_sealed: {sealed: true, producer: [A3.synthesis]}
   synthesis_review_sealed: {sealed: true, producer: [A3R.synthesis_review]}
-  design_decision_sealed: {sealed: true, producer: [DR, ADR]}
+  design_decision_sealed: {sealed: true, producer: [DR]}
   contracts_sealed: {sealed: true, producer: [C1.module_decomposition]}
   generated_tests_sealed: {sealed: true, producer: [D1.test_generation]}
   implementation_patch: {sealed: false, producer: [E1.implementation_patch]}
@@ -343,7 +342,7 @@ stage_requirements:
         agent: design.proposal_a
         role: proposal_author
         requires: [design_reasoning]
-        allowed_reads: [pinned_context_manifest, requirements, applicable_contracts, adr_snapshot]
+        allowed_reads: [pinned_context_manifest, requirements, applicable_contracts]
         denied_reads: [proposal_b_scratch, proposal_b_sealed]
         write_root: proposal_a
         isolation_profile: independent_proposals
@@ -352,7 +351,7 @@ stage_requirements:
         agent: design.proposal_b
         role: proposal_author
         requires: [design_reasoning]
-        allowed_reads: [pinned_context_manifest, requirements, applicable_contracts, adr_snapshot]
+        allowed_reads: [pinned_context_manifest, requirements, applicable_contracts]
         denied_reads: [proposal_a_scratch, proposal_a_sealed]
         write_root: proposal_b
         isolation_profile: independent_proposals
@@ -392,7 +391,6 @@ stage_requirements:
           - pinned_context_manifest
           - requirements
           - applicable_contracts
-          - adr_snapshot
           - proposal_a_sealed
           - proposal_b_sealed
           - critique_a_by_b_sealed

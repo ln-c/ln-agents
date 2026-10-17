@@ -13,7 +13,6 @@ def test_schema_names_discovery() -> None:
     assert "proposal" in names
     assert "scores" in names
     assert "decision_record" in names
-    assert "adr" in names
     assert "exception_payload" in names
     assert "provenance_event" in names
 
@@ -41,25 +40,6 @@ def test_decision_record_rejects_human_approver() -> None:
     # Reject if status=accepted
     with pytest.raises(ValidationError):
         validate("decision_record", {**valid_dr, "status": "accepted"})
-
-
-def test_adr_requires_human_approver() -> None:
-    valid_adr = {
-        "id": "0003",
-        "title": "Use SQLite for Local Storage",
-        "status": "accepted",
-        "approver_id": "human-alice",
-        "reason": "Lightweight embedded DB meets local latency budget",
-        "run_id": "run-123",
-        "approved_at": "2026-10-11T12:00:00Z",
-    }
-    validate("adr", valid_adr)
-
-    # Missing approver_id should fail
-    bad = dict(valid_adr)
-    bad.pop("approver_id")
-    with pytest.raises(ValidationError):
-        validate("adr", bad)
 
 
 def test_proposal_synthesized_requires_sources() -> None:

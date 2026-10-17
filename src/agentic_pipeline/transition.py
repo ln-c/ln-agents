@@ -3,7 +3,7 @@
 `check_transition` is non-mutating: it confirms the edge exists in the graph,
 that it does not leave a human state, and that its guard holds. Budgets follow
 graph.yaml: an edge's budget is consumed each time the edge is taken, no matter
-how many model invocations the target stage makes (ADR 0003, decision 4).
+how many model invocations the target stage makes (a stage costs one unit per entering edge).
 Production guard evaluation belongs to the orchestrator; the shipped default
 denies everything.
 """

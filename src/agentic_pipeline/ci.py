@@ -31,7 +31,6 @@ CHECK_NAMES = (
     "dead_code",
     "mcdc",
     "integration",
-    "adr_fitness",
     "mutation",
 )
 STAGES = ("E2", "F1")

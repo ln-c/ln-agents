@@ -1,11 +1,9 @@
 # B1 hard vetoes. Evaluated by deterministic code; model output cannot clear one.
-# Which checks are vetoes vs. scored criteria is open in ADR 0002.
+# Which checks are vetoes and which are scored criteria is a calibration question: change it here.
 version: 1
 vetoes:
   - id: schema_invalid
     description: Candidate fails its proposal schema.
-  - id: violates_accepted_adr
-    description: Candidate contradicts an accepted ADR in the manifest.
   - id: data_class_violation
     description: Candidate sends data to a destination its class forbids.
   - id: known_vulnerable_dependency

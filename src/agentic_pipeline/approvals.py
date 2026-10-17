@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 KEY_TYPES = frozenset({"ssh-ed25519", "sk-ssh-ed25519@openssh.com"})
-DECISION_TYPES = ("design", "merge", "deploy", "calibration", "adr")
+DECISION_TYPES = ("design", "merge", "deploy", "calibration")
 NODE_DECISION = {"H1": "design", "R1": "merge", "R2": "deploy"}  # human states wired
 REMEDIATION_CAUSES = ("code_defect", "test_defect", "design_issue")  # R1 deny -> RM routes
 MERGE_APPROVE_GUARD = "approve"

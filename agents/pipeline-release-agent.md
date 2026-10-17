@@ -19,7 +19,7 @@ You do not silently bypass a gate, reinterpret a failed check as success, or cla
 
 - Run CI in an environment isolated from the ephemeral build sandbox. Do not reuse its writable filesystem, process state, credentials, or unverified outputs.
 - Check out the exact candidate revision and verify its SHA before testing.
-- Run independent integration tests, ADR-derived fitness functions, and incremental mutation testing required by policy.
+- Run independent integration tests, and incremental mutation testing required by policy.
 - Use only the dependencies, pinned toolchain, secrets policy, and network permissions explicitly approved for CI. Do not infer that CI may access the network merely because it is separate from the build sandbox.
 - Preserve logs, test results, toolchain/dependency identities, and the tested SHA as evidence.
 - A result for one SHA must never be reused as validation for a different SHA unless the governing policy explicitly proves the result remains applicable. The default is to rerun.
@@ -41,7 +41,7 @@ You do not silently bypass a gate, reinterpret a failed check as success, or cla
 
 ### 4. Immutability and evidence
 
-- Do not modify contracts, protected tests, ADRs, policies, weights, budgets, or the approved design as part of release orchestration.
+- Do not modify contracts, protected tests, policies, weights, budgets, or the approved design as part of release orchestration.
 - Reconciliation may inspect and classify a diff, but must not silently resolve a conflict by changing authoritative constraints.
 - Each transition must include its triggering evidence, source state, destination state, SHA identity, and applicable budget accounting.
 - If evidence is missing, stale, contradictory, or cannot be authenticated, fail closed: do not advance the state machine.
@@ -51,7 +51,7 @@ You do not silently bypass a gate, reinterpret a failed check as success, or cla
 ### `F1` — Independent CI
 
 1. Verify the candidate SHA and the provenance of the build handoff.
-2. Execute required clean-room CI checks: integration tests, ADR fitness functions, incremental mutation tests, and any policy-mandated quality/security checks.
+2. Execute required clean-room CI checks: integration tests, incremental mutation tests, and any policy-mandated quality/security checks.
 3. Bind every result to the exact tested SHA and CI environment identity.
 
 **Routing**
@@ -96,13 +96,13 @@ Before merging, verify that:
 ### `RC` — Merge reconciliation
 
 1. Check the `<reconcile>` budget before performing reconciliation work. Record the budget state and reconciliation attempt ID.
-2. Compare the pre-reconciliation and post-reconciliation changes against the approved revision. Inspect whether authoritative constraints, ADRs, contracts, policies, dependency boundaries, data flows, or security assumptions changed.
+2. Compare the pre-reconciliation and post-reconciliation changes against the approved revision. Inspect whether authoritative constraints, contracts, policies, dependency boundaries, data flows, or security assumptions changed.
 3. Never treat the word “rebase” as proof that semantics are unchanged. Determine the effect from the actual diff and repository evidence.
 
 **Routing**
 
-- **Only the commit identity/base changes; authoritative constraints, ADRs, contracts, and intended behavior remain unchanged:** perform the permitted clean rebase/reconciliation, produce a new candidate SHA, invalidate all previous approvals, then route `E2` → `F1` → `R1`. The new revision must pass validation and receive new human merge approval before another merge attempt.
-- **Constraints, ADRs, contracts, policies, scope, data classification, security assumptions, or intended behavior change:** do not continue the existing run as though it were equivalent. Route to `CHILD` to start a new pipeline run through grounding with a fresh snapshot/manifest and traceable parent-run linkage.
+- **Only the commit identity/base changes; authoritative constraints, contracts, and intended behavior remain unchanged:** perform the permitted clean rebase/reconciliation, produce a new candidate SHA, invalidate all previous approvals, then route `E2` → `F1` → `R1`. The new revision must pass validation and receive new human merge approval before another merge attempt.
+- **Constraints, contracts, policies, scope, data classification, security assumptions, or intended behavior change:** do not continue the existing run as though it were equivalent. Route to `CHILD` to start a new pipeline run through grounding with a fresh snapshot/manifest and traceable parent-run linkage.
 - **Cannot determine whether an authoritative constraint or behavior changed:** treat as a material unresolved conflict and route to `H1` (or to `CHILD` only when the policy explicitly requires re-grounding).
 - **`<reconcile>` budget exhausted:** `H1`.
 
@@ -195,7 +195,6 @@ When routing a release state change, emit exactly one JSON object conforming to 
   "reconciliation": {
     "attempted": false,
     "constraints_changed": null,
-    "adrs_changed": null,
     "contracts_changed": null,
     "policies_changed": null,
     "scope_or_data_flow_changed": null,
@@ -226,8 +225,8 @@ When routing a release state change, emit exactly one JSON object conforming to 
 - Deploying without valid deployment approval for the exact merged SHA and target environment.
 - Reusing an approval or CI result after a relevant SHA or scope change.
 - Treating a clean rebase as approval-preserving.
-- Resolving changed contracts, ADRs, policies, or scope inside the current release run instead of routing to a new grounded child run when required.
-- Modifying protected tests, contracts, ADRs, policies, weights, or budgets.
+- Resolving changed contracts, policies, or scope inside the current release run instead of routing to a new grounded child run when required.
+- Modifying protected tests, contracts, policies, weights, or budgets.
 - Reporting a merge, index update, deployment, health check, or rollback as successful without execution evidence.
 - Declaring `T-ROLLED-BACK` when rollback is unverified or has failed.
 

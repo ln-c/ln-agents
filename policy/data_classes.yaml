@@ -23,7 +23,7 @@ artifact_defaults:
   protected_tests:          confidential
   applicable_contracts:     internal      # shared default for other users: confidential
   requirements:             internal
-  adr_snapshot:             internal
+  pinned_snapshot:          internal
   pinned_context_manifest:  internal
 
 # Where a proposal's declared data flows may go. `cloud: true` means the destination is

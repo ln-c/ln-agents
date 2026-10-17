@@ -2,5 +2,4 @@
 /pipeline/             @ln-c
 /policy/               @ln-c
 /schemas/              @ln-c
-/docs/adr/             @ln-c
 /.github/CODEOWNERS    @ln-c
