@@ -25,11 +25,13 @@ from agentic_pipeline.readiness import (
     Report,
     Status,
     evaluate_stage,
+    ovms_model_version,
     parse_sandbox_probe,
     probe_credential_env,
     probe_executable,
     probe_listeners,
     probe_ollama,
+    probe_ovms,
     probe_sandbox,
     run_preflight,
 )
@@ -128,6 +130,15 @@ def ollama() -> Iterator[dict[str, Any]]:
     server.server_close()
 
 
+def test_probe_ollama_reports_each_model_separately(ollama: dict[str, Any]) -> None:
+    ollama.update(status=200, body=_tags("qwen3:8b"))
+    _, models = probe_ollama(ollama["spec"], {"qwen3_8b": "qwen3:8b", "other": "llama3"})
+    assert {m: c.status for m, c in models.items()} == {
+        "qwen3_8b": Status.VERIFIED,
+        "other": Status.FAILED,
+    }
+
+
 def _tags(*names: str) -> bytes:
     return json.dumps({"models": [{"name": n} for n in names]}).encode()
 
@@ -146,16 +157,104 @@ def test_probe_ollama(
     ollama: dict[str, Any], status: int, body: bytes, daemon: Status, inventory: Status
 ) -> None:
     ollama.update(status=status, body=body)
-    checks = probe_ollama(ollama["spec"])
-    assert [c.status for c in checks] == [daemon, inventory], checks
+    provider, models = probe_ollama(ollama["spec"], {"qwen3_8b": "qwen3:8b"})
+    assert [c.status for c in provider] == [daemon]
+    assert [c.status for c in models.values()] == [inventory], models
 
 
 def test_probe_ollama_stopped() -> None:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    checks = probe_ollama({**QWEN, "port": port})
-    assert [c.status for c in checks] == [Status.FAILED, Status.UNVERIFIED]
+    provider, models = probe_ollama({**QWEN, "port": port}, {"qwen3_8b": "qwen3:8b"})
+    assert [c.status for c in provider] == [Status.FAILED]
+    assert [c.status for c in models.values()] == [Status.UNVERIFIED]
+
+
+# ── OpenVINO Model Server endpoint ───────────────────────────────────────────
+
+OPENVINO = REGISTRY["providers"]["openvino_local"]["readiness"]
+OV_MODEL = "OpenVINO/Qwen3-8B-int4-cw-ov"
+
+
+@pytest.fixture
+def ovms() -> Iterator[dict[str, Any]]:
+    state: dict[str, Any] = {"ready": 200, "models": (200, b'{"data": []}')}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            if self.path == "/v2/health/ready":
+                self.send_response(state["ready"])
+                self.end_headers()
+            elif self.path == "/v3/models":
+                code, body = state["models"]
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    state["spec"] = {**OPENVINO, "port": server.server_address[1]}
+    yield state
+    server.shutdown()
+    server.server_close()
+
+
+def _served(*names: str) -> tuple[int, bytes]:
+    return 200, json.dumps({"object": "list", "data": [{"id": n} for n in names]}).encode()
+
+
+def test_probe_ovms_reports_each_model_separately(ovms: dict[str, Any]) -> None:
+    ovms["models"] = _served(OV_MODEL)
+    provider, models = probe_ovms(ovms["spec"], {"a": OV_MODEL, "b": "OpenVINO/other"})
+    assert [c.status for c in provider] == [Status.VERIFIED]
+    assert {m: c.status for m, c in models.items()} == {"a": Status.VERIFIED, "b": Status.FAILED}
+
+
+@pytest.mark.parametrize(
+    ("ready", "models", "daemon", "inventory"),
+    [
+        (503, _served(OV_MODEL), Status.FAILED, Status.UNVERIFIED),
+        (200, (500, b""), Status.VERIFIED, Status.UNVERIFIED),
+        (200, (200, b"<html>"), Status.VERIFIED, Status.FAILED),
+        (200, (200, b'{"data": [{"name": "x"}]}'), Status.VERIFIED, Status.FAILED),
+    ],
+    ids=["not-ready", "models-error", "malformed", "wrong-shape"],
+)
+def test_probe_ovms_fails_closed(
+    ovms: dict[str, Any], ready: int, models: tuple[int, bytes], daemon: Status, inventory: Status
+) -> None:
+    ovms.update(ready=ready, models=models)
+    provider, per_model = probe_ovms(ovms["spec"], {"a": OV_MODEL})
+    assert [c.status for c in provider] == [daemon]
+    assert per_model["a"].status is inventory
+
+
+def test_probe_ovms_stopped() -> None:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    provider, models = probe_ovms({**OPENVINO, "port": port}, {"a": OV_MODEL})
+    assert [c.status for c in provider] == [Status.FAILED]
+    assert models["a"].status is Status.UNVERIFIED
+
+
+def test_ovms_model_version_requires_the_model_to_be_served(ovms: dict[str, Any]) -> None:
+    ovms["models"] = _served(OV_MODEL)
+    assert (
+        ovms_model_version(ovms["spec"], OV_MODEL) == f"{OV_MODEL}@ovms (no build digest reported)"
+    )
+    with pytest.raises(LookupError, match="not served"):
+        ovms_model_version(ovms["spec"], "OpenVINO/other")
+    ovms["models"] = (500, b"")
+    with pytest.raises(LookupError, match="HTTP 500"):
+        ovms_model_version(ovms["spec"], OV_MODEL)
 
 
 # ── Listener binding (/proc/net/tcp, /proc/net/tcp6) ─────────────────────────
@@ -308,6 +407,7 @@ def ready_report() -> Report:
             "google_ai_pro": [Check("executable", ok, "")],
             "qwen_local": [Check("daemon", ok, ""), Check("listener_binding", ok, "")],
         },
+        models={"qwen3_8b": [Check("model_inventory", ok, "")]},
         isolation={name: Check(name, ok, "") for name in ISOLATION},
         registry=REGISTRY,
     )
@@ -321,7 +421,10 @@ def _downgrade(checks: list[Check], name: str, status: Status = Status.UNVERIFIE
 def test_all_verified_a1_eligible_with_role_backends() -> None:
     verdict = evaluate_stage("A1", ready_report())
     assert verdict.eligible, verdict.reasons
-    assert verdict.backends == {"proposal_a": "claude_pro", "proposal_b": "google_ai_pro"}
+    assert verdict.backends == {
+        "proposal_a": "claude_cli_default",
+        "proposal_b": "gemini_3_8_flash_high",
+    }
 
 
 def test_a1_blocked_when_one_cloud_agent_unavailable() -> None:
@@ -329,14 +432,22 @@ def test_a1_blocked_when_one_cloud_agent_unavailable() -> None:
     _downgrade(report.providers["google_ai_pro"], "executable")
     verdict = evaluate_stage("A1", report)
     assert not verdict.eligible
-    assert "proposal_b: google_ai_pro.executable UNVERIFIED" in verdict.reasons
+    assert "proposal_b: gemini_3_8_flash_high.executable UNVERIFIED" in verdict.reasons
 
 
 def test_a3_falls_back_in_declared_order() -> None:
     report = ready_report()
     _downgrade(report.providers["claude_pro"], "executable")
     verdict = evaluate_stage("A3", report)
-    assert verdict.eligible and verdict.backends == {"synthesis": "google_ai_pro"}
+    assert verdict.eligible and verdict.backends == {"synthesis": "gemini_3_8_flash_high"}
+
+
+def test_a_model_missing_from_the_local_inventory_blocks_build() -> None:
+    report = ready_report()
+    _downgrade(report.models["qwen3_8b"], "model_inventory", Status.FAILED)
+    verdict = evaluate_stage("E1", report)
+    assert not verdict.eligible
+    assert "implementation_patch: qwen3_8b.model_inventory FAILED" in verdict.reasons
 
 
 def test_isolation_check_blocks_stage() -> None:

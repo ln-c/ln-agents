@@ -4,10 +4,10 @@ Every error is prefixed with its rule ID:
 
 R1   registry validates against schemas/model_registry.schema.json
 R2   referenced repo paths exist and stay inside the repo root
-R3   agent backend references name declared providers
+R3   agent backend references name a declared model, or a non-model provider
 R4   stage_requirements covers exactly the graph states executed by a model
 R5   each operation's dotted `agent` resolves to an agents entry
-R6   operation backends, derived from the agent's primary and model_assistance, are model providers
+R6   operation backends, derived from the agent's primary and model_assistance, are models
 R7   reads and targets resolve to the artifact catalog
 R8   allowed_reads and denied_reads are disjoint
 R9   target_artifact is sealed and readable
@@ -18,8 +18,9 @@ R13  isolation profiles are declared; artifact producers name real states/operat
 R14  isolated operations use distinct model families; no critic reviews its own agent's work
 R15  an operation's output_schema names a schema that exists in schemas/
 R16  every provider declares where its traffic goes, and it matches its access mode
-R17  every model provider resolves to exactly one model family
-R18  every backend an operation may run on declares the capabilities the operation requires
+R17  every model provider declares family patterns; every model names a model provider, its
+     model_id matches a pattern, and its declared family agrees; (provider, model_id) are unique
+R18  every model an operation may run on declares the capabilities the operation requires
 """
 
 from __future__ import annotations
@@ -77,25 +78,44 @@ def resolve_agent(agents: Mapping[str, Any], dotted: str) -> Mapping[str, Any] |
     return node if isinstance(node, Mapping) else None
 
 
-def resolve_family(provider: Mapping[str, Any]) -> str | None:
-    """The model family a provider serves, or None when it cannot be determined.
+def pattern_family(provider: Mapping[str, Any], model_id: str) -> str | None:
+    """The family a provider's `family_patterns` assign to a model id (first match), else None.
 
-    A fixed `family` wins. Otherwise the provider's pinned model id is matched against the
-    ordered `family_by_model_id` patterns (`re.match`, so a pattern is anchored at the start);
-    the first match decides. A bad pattern, a missing model id or no match is None.
+    Patterns use `re.match`, so each is anchored at the start of the id. A bad pattern is None.
     """
-    if "family" in provider:
-        return str(provider["family"])
-    model_id = provider.get("model_id") or (provider.get("readiness") or {}).get("model_id")
-    if not isinstance(model_id, str):
-        return None
-    for rule in provider.get("family_by_model_id") or ():
+    for rule in provider.get("family_patterns") or ():
         try:
             if re.match(rule["pattern"], model_id):
                 return str(rule["family"])
         except re.error:
             return None
     return None
+
+
+def backend_model(registry: Mapping[str, Any], backend: str) -> Mapping[str, Any] | None:
+    """The catalog entry a backend id names, or None (it may be a non-model provider)."""
+    return (registry.get("models") or {}).get(backend)
+
+
+def backend_provider(registry: Mapping[str, Any], backend: str) -> Mapping[str, Any] | None:
+    """The provider entry behind a backend: a model's provider, or the provider itself."""
+    model = backend_model(registry, backend)
+    return registry["providers"].get(model["provider"] if model else backend)
+
+
+def backend_location(registry: Mapping[str, Any], backend: str) -> str | None:
+    provider = backend_provider(registry, backend)
+    return provider.get("location") if provider else None
+
+
+def backend_family(registry: Mapping[str, Any], backend: str) -> str | None:
+    model = backend_model(registry, backend)
+    return str(model["family"]) if model else None
+
+
+def backend_capabilities(registry: Mapping[str, Any], backend: str) -> frozenset[str]:
+    model = backend_model(registry, backend)
+    return frozenset(model["capabilities"]) if model else frozenset()
 
 
 def operations(stage_reqs: Mapping[str, Any]) -> Iterator[tuple[str, Op]]:
@@ -105,19 +125,18 @@ def operations(stage_reqs: Mapping[str, Any]) -> Iterator[tuple[str, Op]]:
 
 
 def op_backends(registry: Mapping[str, Any], stage: str, op: Op) -> list[str]:
-    """Providers an operation may run on, in preference order.
+    """Models an operation may run on, in preference order.
 
     The agent's entry in `agents` is the only place a model is bound; stage_requirements names
     none. `all_of` runs on the agent's `primary`. `ordered_any_of` tries the `primary` (when it
-    is a model provider; synthesis, for one, is owned by the orchestrator) and then each
+    is a model; synthesis, for one, is owned by the orchestrator) and then each
     `model_assistance` entry, without repeats. A non-model entry is kept so R6 reports it.
     """
     agent = resolve_agent(registry["agents"], op["agent"]) or {}
     primary = agent.get("primary")
     if registry["stage_requirements"][stage]["mode"] != "ordered_any_of":
         return [primary] if primary else []
-    providers = registry["providers"]
-    first = [primary] if providers.get(primary, {}).get("access_mode") in MODEL_ACCESS_MODES else []
+    first = [primary] if backend_model(registry, primary) is not None else []
     return list(dict.fromkeys([*first, *(agent.get("model_assistance") or ())]))
 
 
@@ -173,24 +192,45 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
                 f"registry R16 providers.{name}: access mode {mode!r} is {expected}, "
                 f"declared {provider['location']!r}"
             )
-        if mode not in MODEL_ACCESS_MODES:
-            continue
-        if ("family" in provider) == ("family_by_model_id" in provider):
+
+    # R17. Models name a model provider, agree with its family patterns, and are unique.
+    served: dict[tuple[str, str], str] = {}
+    for name, provider in providers.items():
+        if provider["access_mode"] in MODEL_ACCESS_MODES and not provider.get("family_patterns"):
             errors.append(
-                f"registry R17 providers.{name}: declare exactly one of family, family_by_model_id"
+                f"registry R17 providers.{name}: a model provider declares family_patterns"
             )
-        else:
-            bad = False
-            for rule in provider.get("family_by_model_id") or ():
-                try:
-                    re.compile(rule["pattern"])
-                except re.error as exc:
-                    bad = True
-                    errors.append(
-                        f"registry R17 providers.{name}: bad pattern {rule['pattern']!r}: {exc}"
-                    )
-            if not bad and resolve_family(provider) is None:
-                errors.append(f"registry R17 providers.{name}: model id matches no family pattern")
+        for rule in provider.get("family_patterns") or ():
+            try:
+                re.compile(rule["pattern"])
+            except re.error as exc:
+                errors.append(
+                    f"registry R17 providers.{name}: bad pattern {rule['pattern']!r}: {exc}"
+                )
+    for name, model in registry["models"].items():
+        provider = providers.get(model["provider"])
+        if provider is None or provider["access_mode"] not in MODEL_ACCESS_MODES:
+            errors.append(
+                f"registry R17 models.{name}: {model['provider']!r} is not a model provider"
+            )
+            continue
+        key = (model["provider"], model["model_id"])
+        if key in served:
+            errors.append(
+                f"registry R17 models.{name}: same provider and model_id as {served[key]}"
+            )
+        served.setdefault(key, name)
+        matched = pattern_family(provider, model["model_id"])
+        if matched is None:
+            errors.append(
+                f"registry R17 models.{name}: model_id {model['model_id']!r} matches no "
+                f"family pattern of {model['provider']}"
+            )
+        elif matched != model["family"]:
+            errors.append(
+                f"registry R17 models.{name}: declares family {model['family']!r} but its "
+                f"model_id matches {matched!r}"
+            )
 
     # R2. Repo paths exist and do not escape the root.
     repo = root.resolve()
@@ -201,10 +241,15 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
         elif not path.is_file():
             errors.append(f"registry R2 {where}: {rel!r} does not exist")
 
-    # R3. Backend references name declared providers.
+    # R3. Backend references name a model, or a provider that is not a model provider.
+    models = registry["models"]
     for where, ref in _backend_refs(agents, "agents"):
+        if ref in models:
+            continue
         if ref not in providers:
-            errors.append(f"registry R3 {where}: unknown provider {ref!r}")
+            errors.append(f"registry R3 {where}: unknown model {ref!r}")
+        elif providers[ref]["access_mode"] in MODEL_ACCESS_MODES:
+            errors.append(f"registry R3 {where}: {ref!r} is a provider; bind one of its models")
 
     # R4. Coverage matches the graph's model-executed states.
     model_states = {s for s, spec in graph.states.items() if "model" in spec.get("executor", "")}
@@ -222,19 +267,17 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
             errors.append(f"registry R5 {tag}: unknown agent {op['agent']!r}")
             continue
 
-        # R6. Backends are model providers.
+        # R6. Backends are models.
         backends = op_backends(registry, stage, op)
         if not backends:
             errors.append(f"registry R6 {tag}: no backend resolved")
         for backend in backends:
-            mode = providers.get(backend, {}).get("access_mode")
-            if mode not in MODEL_ACCESS_MODES:
-                errors.append(f"registry R6 {tag}: {backend!r} is not a model provider")
+            if backend not in models:
+                errors.append(f"registry R6 {tag}: {backend!r} is not a model")
 
         # R18. Declared capabilities cover the operation's requirements.
         for backend in backends:
-            declared = set(providers.get(backend, {}).get("capabilities") or ())
-            if missing := sorted(set(op["requires"]) - declared):
+            if missing := sorted(set(op["requires"]) - backend_capabilities(registry, backend)):
                 errors.append(f"registry R18 {tag}: {backend!r} does not declare {missing}")
 
         # R7. Artifact references resolve.
@@ -306,7 +349,7 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
                 )
 
     # R14. Independence: distinct model families under session separation; no self-critique.
-    # A family that cannot be resolved is R17's error, not a second one here.
+    # A backend with no model entry is R3/R6's error, not a second one here.
     for stage, spec in stage_reqs.items():
         if spec["mode"] != "all_of":
             continue
@@ -315,7 +358,7 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
             if "session_separation" not in profiles.get(op["isolation_profile"], ()):
                 continue
             for backend in op_backends(registry, stage, op):
-                family = resolve_family(providers.get(backend, {}))
+                family = backend_family(registry, backend)
                 if family is None:
                     continue
                 if family in seen:

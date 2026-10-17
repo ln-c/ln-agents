@@ -54,7 +54,7 @@ from agentic_pipeline.manifest import (
     publish_stage_manifest,
     resolve_sealed_inputs,
 )
-from agentic_pipeline.registry import resolve_family
+from agentic_pipeline.registry import backend_family
 from agentic_pipeline.run_state import PolicySnapshot
 from agentic_pipeline.schemas import ValidationError, validate
 
@@ -217,7 +217,7 @@ def _backend(ctx: HandlerContext, stage: str, operation: str) -> str:
 
 def _family(ctx: HandlerContext, backend: str) -> str:
     """The model family behind a recorded backend, from the registry this run froze."""
-    family = resolve_family(ctx.registry["providers"].get(backend) or {})
+    family = backend_family(ctx.registry, backend)
     if family is None:
         raise GateError(f"backend {backend!r} has no resolvable model family")
     return family

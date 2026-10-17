@@ -1,15 +1,15 @@
 """Conformance results: evidence that a bound model follows the pipeline's output contract.
 
-`models test` runs a small probe per required check through the provider's real adapter and
-records the outcome in `.conformance/<provider>.json`. A probe is a smoke test: it shows the
+`models test` runs a small probe per required check through the model's real adapter and
+records the outcome in `.conformance/<model>.json`. A probe is a smoke test: it shows the
 model can read a sealed input and answer in the shape an operation needs, not that it is good
 at the role, and it never replaces the project's acceptance tests.
 
-Which checks a provider needs is derived from the operations it can be bound to: the union,
-over their `requires`, of the checks listed in policy/model_test_profiles.yaml. A record is
-current only while the provider's identity (model, version, access path), its registry entry,
-the profiles file and that derived list all still match what was recorded; any change makes it
-stale, and a stale or missing record is never read as a pass.
+Which checks a model needs is derived from the operations it can be bound to: the union, over
+their `requires`, of the checks listed in policy/model_test_profiles.yaml. A record is current
+only while the adapter's identity (model, version, access path), the model's and its provider's
+registry entries, the profiles file and that derived list all still match what was recorded; any
+change makes it stale, and a stale or missing record is never read as a pass.
 
 Limits: records are unsigned, so they are tamper-evident only through their digest, and the
 repository root is not writable from a sandboxed model. A provider that cannot report which
@@ -22,7 +22,7 @@ import hashlib
 import json
 import secrets
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,7 +44,7 @@ type Probe = Callable[["ProbeEnv"], tuple[bool, str]]
 
 @dataclass(frozen=True, slots=True)
 class ProbeEnv:
-    provider: str
+    backend: str  # catalog model id
     adapter: BackendAdapter
     work: Path  # scratch directory for this run, owned by the caller
     nonce: str
@@ -56,28 +56,44 @@ def digest_of(document: Any) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-def provider_digest(registry: Mapping[str, Any], provider: str) -> str:
-    return digest_of(registry["providers"][provider])
+def entry_digest(registry: Mapping[str, Any], model: str) -> str:
+    """Digest of a model's catalog entry together with its provider's entry."""
+    entry = registry["models"][model]
+    return digest_of({"model": entry, "provider": registry["providers"][entry["provider"]]})
 
 
-def bound_operations(registry: Mapping[str, Any], provider: str) -> list[tuple[str, str]]:
-    """(stage, operation id) for every operation this provider may run."""
+def bound_operations(registry: Mapping[str, Any], model: str) -> list[tuple[str, str]]:
+    """(stage, operation id) for every operation this model may run."""
     return [
         (stage, op["id"])
         for stage, op in operations(registry["stage_requirements"])
-        if provider in op_backends(registry, stage, op)
+        if model in op_backends(registry, stage, op)
     ]
 
 
 def required_checks(
-    registry: Mapping[str, Any], profiles: Mapping[str, Any], provider: str
+    registry: Mapping[str, Any],
+    profiles: Mapping[str, Any],
+    model: str,
+    requires: Iterable[str] | None = None,
 ) -> list[str]:
-    """Checks the provider must pass, from what its bound operations require of it."""
+    """Checks the model must pass, from what its bound operations require of it.
+
+    `requires` replaces the bound operations with an explicit set of capabilities, so a
+    candidate can be checked for a role before it is bound.
+    """
     wanted: set[str] = set()
-    for stage, op in operations(registry["stage_requirements"]):
-        if provider in op_backends(registry, stage, op):
-            for capability in op["requires"]:
-                wanted.update(profiles["profiles"][capability])
+    if requires is not None:
+        capabilities = set(requires)
+    else:
+        capabilities = {
+            capability
+            for stage, op in operations(registry["stage_requirements"])
+            if model in op_backends(registry, stage, op)
+            for capability in op["requires"]
+        }
+    for capability in capabilities:
+        wanted.update(profiles["profiles"][capability])
     return [name for name in CHECK_NAMES if name in wanted]
 
 
@@ -92,7 +108,7 @@ def _grant(env: ProbeEnv, operation: str, inputs: Mapping[str, Path], schema: st
         run_id="conformance",
         stage=STAGE,
         operation_id=operation,
-        backend=env.provider,
+        backend=env.backend,
         invocation_id=uuid.uuid4().hex,
         role="conformance_probe",
         allowed_reads=tuple(sorted(inputs)),
@@ -172,7 +188,7 @@ assert tuple(CHECKS) == CHECK_NAMES
 
 
 def run_conformance(
-    provider: str,
+    model: str,
     adapter: BackendAdapter,
     registry: Mapping[str, Any],
     profiles: Mapping[str, Any],
@@ -183,10 +199,10 @@ def run_conformance(
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> dict[str, Any]:
     """Run every required check and return the (schema-valid) record; never raises on a miss."""
-    required = required_checks(registry, profiles, provider)
+    required = required_checks(registry, profiles, model)
     if not required:
-        raise ValueError(f"{provider} is not bound to any operation; there is nothing to test")
-    env = ProbeEnv(provider, adapter, work, new_nonce())
+        raise ValueError(f"{model} is not bound to any operation; there is nothing to test")
+    env = ProbeEnv(model, adapter, work, new_nonce())
     results: list[dict[str, str]] = []
     for name in required:
         ok, detail = CHECKS[name](env)
@@ -201,9 +217,9 @@ def run_conformance(
     identity = {k: str(identity.get(k) or "").strip() or "(none)" for k in IDENTITY_FIELDS}
     record: dict[str, Any] = {
         "version": 1,
-        "provider": provider,
+        "model": model,
         "identity": identity,
-        "provider_digest": provider_digest(registry, provider),
+        "entry_digest": entry_digest(registry, model),
         "profiles_digest": profiles_digest,
         "required_checks": required,
         "checks": results,
@@ -217,21 +233,21 @@ def run_conformance(
 # ── Records ──────────────────────────────────────────────────────────────────
 
 
-def record_path(root: Path, provider: str) -> Path:
-    return root / RECORD_DIR / f"{provider}.json"
+def record_path(root: Path, model: str) -> Path:
+    return root / RECORD_DIR / f"{model}.json"
 
 
 def write_record(root: Path, record: Mapping[str, Any]) -> tuple[Path, str]:
     """Validate and atomically write a record; returns (path, sha256 of its bytes)."""
     validator("conformance_result")(record)
-    path = record_path(root, record["provider"])
+    path = record_path(root, record["model"])
     atomic_write_json(path, record)
     return path, "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def load_record(root: Path, provider: str) -> tuple[dict[str, Any] | None, str]:
+def load_record(root: Path, model: str) -> tuple[dict[str, Any] | None, str]:
     """(record, digest of its bytes), or (None, why) when it is absent or unusable."""
-    path = record_path(root, provider)
+    path = record_path(root, model)
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
@@ -243,8 +259,8 @@ def load_record(root: Path, provider: str) -> tuple[dict[str, Any] | None, str]:
         validator("conformance_result")(record)
     except (ValueError, ValidationError) as exc:
         return None, f"invalid record: {exc}"
-    if record["provider"] != provider:
-        return None, f"record is for {record['provider']!r}"
+    if record["model"] != model:
+        return None, f"record is for {record['model']!r}"
     return record, "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
@@ -253,19 +269,19 @@ def stale_reasons(
     registry: Mapping[str, Any],
     profiles: Mapping[str, Any],
     profiles_digest: str,
-    provider: str,
+    model: str,
     identity: Identity,
 ) -> list[str]:
-    """Why a record no longer describes the provider as it is now (empty means current)."""
+    """Why a record no longer describes the model as it is now (empty means current)."""
     reasons: list[str] = []
     for key, now in asdict(identity).items():
         if record["identity"][key] != now:
             reasons.append(f"identity.{key} changed")
-    if record["provider_digest"] != provider_digest(registry, provider):
-        reasons.append("registry entry for the provider changed")
+    if record["entry_digest"] != entry_digest(registry, model):
+        reasons.append("registry entry for the model or its provider changed")
     if record["profiles_digest"] != profiles_digest:
         reasons.append("policy/model_test_profiles.yaml changed")
-    if record["required_checks"] != required_checks(registry, profiles, provider):
+    if record["required_checks"] != required_checks(registry, profiles, model):
         reasons.append("required checks changed (the bound operations changed)")
     return reasons
 
@@ -275,16 +291,16 @@ def conformance_status(
     registry: Mapping[str, Any],
     profiles: Mapping[str, Any],
     profiles_digest: str,
-    provider: str,
+    model: str,
     identity: Identity | None,
 ) -> tuple[str, str]:
     """(status, detail): ok | failed | stale | missing | unverifiable. Only `ok` is a pass."""
-    record, digest_or_why = load_record(root, provider)
+    record, digest_or_why = load_record(root, model)
     if record is None:
         return ("missing" if digest_or_why == "no record" else "unverifiable"), digest_or_why
     if identity is None:
-        return "unverifiable", "the provider's current identity could not be resolved"
-    if reasons := stale_reasons(record, registry, profiles, profiles_digest, provider, identity):
+        return "unverifiable", "the model's current identity could not be resolved"
+    if reasons := stale_reasons(record, registry, profiles, profiles_digest, model, identity):
         return "stale", "; ".join(reasons)
     if not record["passed"]:
         failed = [c["name"] for c in record["checks"] if c["status"] == "fail"]

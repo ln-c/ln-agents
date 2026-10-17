@@ -26,7 +26,7 @@ Build status of every graph state, checked against `DEFAULT_HANDLERS` in `src/ag
 
 ## Getting started
 
-Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, `git`, and `ssh-keygen`.
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, `git`, and `ssh-keygen`. Local models run through Ollama or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`).
 
 ```bash
 uv sync --all-groups
@@ -44,10 +44,10 @@ uv run ruff check . && uv run ruff format --check .
 uv run python -m agentic_pipeline validate [--root R]
 uv run python -m agentic_pipeline preflight [--root R] [--stage S]
 uv run python -m agentic_pipeline models discover [--root R]
-uv run python -m agentic_pipeline models test --provider P [--root R]
+uv run python -m agentic_pipeline models test --model M [--root R]
 ```
 
-`models discover` is read-only: for each model provider it shows its family, location, capabilities, the operations it is bound to, its readiness and its conformance status (`ok`, `missing`, `stale`, `failed` or `unverifiable`). `models test` makes **live** model calls through that provider's adapter, so it uses the provider's subscription allowance (not pipeline budget). It refuses unless the dispatcher would also allow a call, and it records `.conformance/P.json` (host evidence, gitignored). A record binds to the adapter's reported model identity and the policy it was run under, and goes stale when either changes. Dispatch does not yet require a current record, and the checks are smoke tests of the output contract, not a measure of quality.
+`models discover` is read-only: it lists the model catalog (`models` in the registry). For each bound model it shows its provider and model id, family, location, capabilities, the operations it is bound to, its readiness and its conformance status (`ok`, `missing`, `stale`, `failed` or `unverifiable`). `models test` makes **live** model calls through that model's adapter, so it uses the provider's subscription allowance (not pipeline budget). It refuses unless the dispatcher would also allow a call, and it records `.conformance/M.json` (host evidence, gitignored). A record binds to the adapter's reported model identity and the policy it was run under, and goes stale when either changes. Dispatch does not yet require a current record, and the checks are smoke tests of the output contract, not a measure of quality.
 
 `run` drives one pipeline run. Run state lives under `.runs/<run_id>` (`--runs-dir` changes it).
 
@@ -96,7 +96,7 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 ```
 ├── pipeline/graph.yaml        # the state machine: states, guarded edges, side effects
 ├── policy/                    # human-owned policy (CODEOWNERS enforced)
-│   ├── model_registry.yaml    # providers, per-stage model operations, isolation
+│   ├── model_registry.yaml    # providers, the model catalog, bindings, per-stage operations, isolation
 │   ├── model_test_profiles.yaml  # conformance checks by capability
 │   ├── budgets.yaml           # retry budgets by route
 │   ├── vetoes.yaml            # deterministic hard vetoes

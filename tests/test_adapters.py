@@ -233,6 +233,7 @@ def test_live_pi_qwen_writes_file(tmp_path: Path) -> None:
     registry = load_yaml(ROOT / "policy" / "model_registry.yaml")
     a = PiQwenAdapter.from_registry(
         registry,
+        "qwen3_8b",
         prompt_builder=lambda g: "Create hello.txt in the current directory containing: hi",
         timeout=600,
     )
@@ -380,7 +381,10 @@ def test_fake_claude_inside_real_sandbox(tmp_path: Path) -> None:
 def test_live_claude_text_only(tmp_path: Path) -> None:
     registry = load_yaml(ROOT / "policy" / "model_registry.yaml")
     a = ClaudeAdapter.from_registry(
-        registry, task_builder=lambda g: "Reply with exactly the single word: sealed", timeout=300
+        registry,
+        "claude_cli_default",
+        task_builder=lambda g: "Reply with exactly the single word: sealed",
+        timeout=300,
     )
     (tmp_path / "req.md").write_text("placeholder requirements")
     g = grant(tmp_path, {"requirements": tmp_path / "req.md"})
@@ -540,7 +544,9 @@ def test_agy_json_operation_writes_json_and_text_otherwise(
     assert (g.write_path / name).is_file()
 
 
-def test_agy_from_registry_requires_a_token_and_a_pinned_model(tmp_path: Path) -> None:
+def test_agy_from_registry_requires_a_token_and_takes_its_model_from_the_catalog(
+    tmp_path: Path,
+) -> None:
     registry = load_yaml(ROOT / "policy" / "model_registry.yaml")
     from agentic_pipeline.readiness import Host
 
@@ -548,15 +554,15 @@ def test_agy_from_registry_requires_a_token_and_a_pinned_model(tmp_path: Path) -
         Host.real(), home=tmp_path, which=lambda n: "/x/agy", run=lambda a, e: (0, "1.3.3"),
     )  # fmt: skip
     with pytest.raises(LookupError, match="sign in"):
-        AgyAdapter.from_registry(registry, host)
+        AgyAdapter.from_registry(registry, "gemini_3_8_flash_high", host)
     token = tmp_path / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
     token.parent.mkdir(parents=True)
     token.write_text("t")
-    adapter = AgyAdapter.from_registry(registry, host)
-    assert adapter.model_id == registry["providers"]["google_ai_pro"]["model_id"]
-    del registry["providers"]["google_ai_pro"]["model_id"]
-    with pytest.raises(LookupError, match="model_id"):
-        AgyAdapter.from_registry(registry, host)
+    adapter = AgyAdapter.from_registry(registry, "gemini_3_8_flash_high", host)
+    assert adapter.model_id == "gemini-3.8-flash-high"
+    other = AgyAdapter.from_registry(registry, "gemini_4_argon_high", host)
+    assert other.model_id == "gemini-4-argon-high"  # same provider, another model, same time
+    assert other.identity().model == "google_ai_pro:gemini-4-argon-high"
 
 
 # ── find_sandbox_node ────────────────────────────────────────────────────────
@@ -610,3 +616,41 @@ def test_every_adapter_reports_the_identity_it_prepares_with(tmp_path: Path) -> 
             identity.model_version,
             identity.access_method,
         )
+
+
+def test_pi_adapter_builds_for_an_openvino_model_through_the_v3_upstream(tmp_path: Path) -> None:
+    """Built from the catalog against a stand-in OVMS; Pi itself is a stub package."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    model = "OpenVINO/Qwen3-8B-int4-cw-ov"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"data": [{"id": model}]}).encode())
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        registry = load_yaml(ROOT / "policy" / "model_registry.yaml")
+        registry["providers"]["openvino_local"]["readiness"]["port"] = server.server_address[1]
+        built = PiQwenAdapter.from_registry(
+            registry, "openvino_qwen3_8b_int4_cw", pi_package=fake_package(tmp_path)
+        )
+        identity = built.identity()
+        assert identity.model == model
+        assert identity.model_version == f"{model}@ovms (no build digest reported)"
+        assert "local_inference via pi 9.9.9" in identity.access_method
+        registry["models"]["openvino_qwen3_8b_int4_cw"]["model_id"] = "OpenVINO/not-served"
+        with pytest.raises(LookupError, match="not served"):
+            PiQwenAdapter.from_registry(
+                registry, "openvino_qwen3_8b_int4_cw", pi_package=fake_package(tmp_path / "b")
+            )
+    finally:
+        server.shutdown()
+        server.server_close()

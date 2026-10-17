@@ -2,9 +2,9 @@
 
 PiQwenAdapter runs the Pi coding agent inside the bwrap sandbox (sandbox.py).
 Pi's only model is a `broker` provider pointing at the in-sandbox shim, which
-relays to the host-side InferenceBroker, which alone talks to Ollama. Pi runs
-offline, ignores project-local config in its inputs, saves no session, loads
-no extensions/skills/MCP, and gets file tools only (no shell).
+relays to the host-side InferenceBroker, which alone talks to the local server (Ollama or an
+OpenVINO Model Server). Pi runs offline, ignores project-local config in its inputs, saves no
+session, loads no extensions/skills/MCP, and gets file tools only (no shell).
 
 ClaudeAdapter runs `claude -p` text-only inside bwrap with the host network
 (it must reach Anthropic). It has no tools, so it can read nothing but its
@@ -28,10 +28,21 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agentic_pipeline.broker import BrokerPolicy, InferenceBroker, Upstream, ollama_upstream
+from agentic_pipeline.broker import (
+    BrokerPolicy,
+    InferenceBroker,
+    Upstream,
+    ollama_upstream,
+    ovms_upstream,
+)
 from agentic_pipeline.design_tasks import extract_json_object, json_task
 from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, PreparedCall
-from agentic_pipeline.readiness import Host, ollama_model_digest, resolve_executable
+from agentic_pipeline.readiness import (
+    Host,
+    ollama_model_digest,
+    ovms_model_version,
+    resolve_executable,
+)
 from agentic_pipeline.sandbox import (
     HOME,
     INPUTS,
@@ -137,14 +148,23 @@ class PiQwenAdapter:
     )
 
     @classmethod
-    def from_registry(cls, registry: Mapping[str, Any], **overrides: Any) -> PiQwenAdapter:
-        """Build from the qwen_local readiness spec, resolving Pi and the model digest."""
-        spec = registry["providers"]["qwen_local"]["readiness"]
+    def from_registry(
+        cls, registry: Mapping[str, Any], backend: str, **overrides: Any
+    ) -> PiQwenAdapter:
+        """Build for a model on a local server (Ollama or OVMS), resolving Pi and the model."""
+        model = registry["models"][backend]
+        spec = registry["providers"][model["provider"]]["readiness"]
+        if spec["protocol"] == "ovms":
+            version = ovms_model_version(spec, model["model_id"])
+            upstream = ovms_upstream(spec["host"], spec["port"], timeout=600.0)
+        else:
+            version = ollama_model_digest(spec, model["model_id"])
+            upstream = ollama_upstream(spec["host"], spec["port"], timeout=600.0)
         return cls(
             pi_package=overrides.pop("pi_package", None) or find_pi_package(),
-            model_id=spec["model_id"],
-            model_version=ollama_model_digest(spec),
-            upstream=ollama_upstream(spec["host"], spec["port"], timeout=600.0),
+            model_id=model["model_id"],
+            model_version=version,
+            upstream=upstream,
             **overrides,
         )
 
@@ -316,10 +336,11 @@ class ClaudeAdapter:
 
     @classmethod
     def from_registry(
-        cls, registry: Mapping[str, Any], host: Host | None = None, **overrides: Any
+        cls, registry: Mapping[str, Any], backend: str, host: Host | None = None, **overrides: Any
     ) -> ClaudeAdapter:
         host = host or Host.real()
-        path, version = resolve_executable(registry["providers"]["claude_pro"]["readiness"], host)
+        provider = registry["providers"][registry["models"][backend]["provider"]]
+        path, version = resolve_executable(provider["readiness"], host)
         credentials = host.home / ".claude" / ".credentials.json"
         if not credentials.is_file():
             raise LookupError(f"{credentials} not found; sign in with `claude` first")
@@ -420,18 +441,16 @@ class AgyAdapter:
 
     @classmethod
     def from_registry(
-        cls, registry: Mapping[str, Any], host: Host | None = None, **overrides: Any
+        cls, registry: Mapping[str, Any], backend: str, host: Host | None = None, **overrides: Any
     ) -> AgyAdapter:
         host = host or Host.real()
-        provider = registry["providers"]["google_ai_pro"]
+        model = registry["models"][backend]
+        provider = registry["providers"][model["provider"]]
         path, version = resolve_executable(provider["readiness"], host)
         token = host.home / AGY_TOKEN_REL
         if not token.is_file():
             raise LookupError(f"{token} not found; sign in with `agy` first")
-        model_id = provider.get("model_id")
-        if not model_id:
-            raise LookupError("providers.google_ai_pro.model_id is not set; agy offers many models")
-        return cls(Path(path).resolve(), version, token, model_id, **overrides)
+        return cls(Path(path).resolve(), version, token, model["model_id"], **overrides)
 
     def identity(self) -> Identity:
         return Identity(
