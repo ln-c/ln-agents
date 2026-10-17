@@ -16,6 +16,7 @@ import http.client
 import json
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from agentic_pipeline.sandbox_entry import read_frame, write_frame
 
@@ -32,6 +33,9 @@ class BrokerPolicy:
     max_request_bytes: int = 4 * 1024 * 1024
     max_response_bytes: int = 16 * 1024 * 1024
     allowed_paths: frozenset[str] = frozenset({"/v1/chat/completions"})
+    # The model's registry defaults, merged into every forwarded request. They win over the
+    # sandbox's own values, and the recorded request hash covers the bytes actually sent.
+    chat_template_kwargs: Mapping[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -48,8 +52,8 @@ class Rejected(Exception):
         self.status = status
 
 
-def ollama_upstream(host: str, port: int, timeout: float) -> Upstream:
-    """Forward to an Ollama OpenAI-compatible endpoint on loopback."""
+def loopback_upstream(host: str, port: int, timeout: float) -> Upstream:
+    """Forward to an OpenAI-compatible server on loopback (llama-server, or OVMS under /v3)."""
 
     def call(path: str, body: bytes) -> tuple[int, Mapping[str, str], Iterator[bytes]]:
         conn = http.client.HTTPConnection(host, port, timeout=timeout)
@@ -75,7 +79,7 @@ def ovms_upstream(host: str, port: int, timeout: float) -> Upstream:
     The sandbox's shim speaks `/v1/...` and the broker's allowed paths stay `/v1/...`; OVMS
     serves its OpenAI-compatible API under `/v3`, so the path is rewritten here, on the host.
     """
-    forward = ollama_upstream(host, port, timeout)
+    forward = loopback_upstream(host, port, timeout)
 
     def call(path: str, body: bytes) -> tuple[int, Mapping[str, str], Iterator[bytes]]:
         return forward("/v3/" + path.removeprefix("/v1/"), body)
@@ -148,6 +152,13 @@ class InferenceBroker:
             raise Rejected(403, f"model {model!r} not permitted")
         if self.stats.rounds >= policy.max_rounds:
             raise Rejected(429, f"round limit {policy.max_rounds} reached")
+        if policy.chat_template_kwargs:
+            given = request.get("chat_template_kwargs")
+            request["chat_template_kwargs"] = {
+                **(given if isinstance(given, dict) else {}),
+                **policy.chat_template_kwargs,
+            }
+            body = json.dumps(request, separators=(",", ":")).encode()
         return path, body
 
     @staticmethod

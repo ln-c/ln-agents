@@ -86,7 +86,7 @@ def report(*, unready: tuple[str, ...] = (), credential: Status = Status.VERIFIE
     return Report(
         static_errors=[],
         global_checks=[Check("credential_env_absent", credential, "")],
-        providers={p: checks(p) for p in ("claude_pro", "google_ai_pro", "qwen_local")},
+        providers={p: checks(p) for p in ("claude_pro", "google_ai_pro", "llamacpp_local")},
         isolation={n: Check(n, Status.VERIFIED, "") for n in ISOLATION},
         registry=REGISTRY,
     )
@@ -135,7 +135,7 @@ def allow_all(edge: Edge, ctx: Mapping[str, Any]) -> bool:
 
 @pytest.fixture
 def adapters() -> dict[str, FakeAdapter]:
-    return {b: FakeAdapter() for b in ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_8b")}
+    return {b: FakeAdapter() for b in ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_5_9b")}
 
 
 def make(
@@ -372,9 +372,9 @@ def test_each_attempt_gets_a_fresh_write_root(tmp_path: Path, adapters: dict) ->
 
 
 def test_adapter_must_enforce_profile_checks(tmp_path: Path, adapters: dict) -> None:
-    adapters["qwen3_8b"].enforced_isolation = frozenset({"network_disabled"})
+    adapters["qwen3_5_9b"].enforced_isolation = frozenset({"network_disabled"})
     d = make(tmp_path, adapters)
-    with pytest.raises(DispatchBlocked, match="qwen3_8b adapter does not enforce"):
+    with pytest.raises(DispatchBlocked, match="qwen3_5_9b adapter does not enforce"):
         d.dispatch_stage("E0", "always", "E1", {})
     assert events(d) == [] and not (d.run_root / "attempts").exists()
 
@@ -382,7 +382,7 @@ def test_adapter_must_enforce_profile_checks(tmp_path: Path, adapters: dict) -> 
 def test_grant_carries_verified_input_paths(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters)
     d.dispatch_stage("E0", "always", "E1", {})
-    g = adapters["qwen3_8b"].grants[0]
+    g = adapters["qwen3_5_9b"].grants[0]
     assert g.role == "patch_author"
     assert set(g.inputs) == {
         "pinned_context_manifest",
@@ -414,13 +414,13 @@ def test_a_provider_declared_cloud_is_blocked_whatever_its_access_mode(
     tmp_path: Path, adapters: dict
 ) -> None:
     registry = copy.deepcopy(REGISTRY)
-    registry["providers"]["qwen_local"]["access_mode"] = "a_new_mode"
-    registry["providers"]["qwen_local"]["location"] = "cloud"
+    registry["providers"]["llamacpp_local"]["access_mode"] = "a_new_mode"
+    registry["providers"]["llamacpp_local"]["location"] = "cloud"
     d = make(tmp_path, adapters, data_class="confidential")
     d.registry = registry
-    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen3_8b"):
+    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen3_5_9b"):
         d.dispatch_stage("E0", "always", "E1", {})
-    assert adapters["qwen3_8b"].grants == []
+    assert adapters["qwen3_5_9b"].grants == []
 
 
 @pytest.mark.parametrize("location", [None, "elsewhere"])
@@ -429,19 +429,19 @@ def test_a_provider_without_a_declared_local_location_is_treated_as_cloud(
 ) -> None:
     registry = copy.deepcopy(REGISTRY)
     if location is None:
-        del registry["providers"]["qwen_local"]["location"]
+        del registry["providers"]["llamacpp_local"]["location"]
     else:
-        registry["providers"]["qwen_local"]["location"] = location
+        registry["providers"]["llamacpp_local"]["location"] = location
     d = make(tmp_path, adapters, data_class="confidential")
     d.registry = registry
-    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen3_8b"):
+    with pytest.raises(DispatchBlocked, match="may not be sent to cloud backend qwen3_5_9b"):
         d.dispatch_stage("E0", "always", "E1", {})
 
 
 def test_local_backend_accepts_confidential_data(tmp_path: Path, adapters: dict) -> None:
     d = make(tmp_path, adapters, data_class="confidential")
     d.dispatch_stage("E0", "always", "E1", {})
-    assert adapters["qwen3_8b"].grants[0].data_class == "confidential"
+    assert adapters["qwen3_5_9b"].grants[0].data_class == "confidential"
 
 
 def test_outputs_inherit_most_restrictive_input_class(tmp_path: Path, adapters: dict) -> None:

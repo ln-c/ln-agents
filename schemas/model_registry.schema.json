@@ -114,7 +114,7 @@
                   "type": "object",
                   "required": ["protocol", "host", "port", "timeout_seconds"],
                   "properties": {
-                    "protocol": {"enum": ["ollama", "ovms"]},
+                    "protocol": {"enum": ["llamacpp", "ovms"]},
                     "host": {"enum": ["127.0.0.1", "::1"]},
                     "port": {"type": "integer", "minimum": 1, "maximum": 65535},
                     "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 30}
@@ -140,7 +140,8 @@
           "model_id": {"type": "string", "minLength": 1},
           "alias": {"type": "string", "minLength": 1},
           "family": {"$ref": "#/definitions/id"},
-          "capabilities": {"$ref": "#/definitions/capability_list"}
+          "capabilities": {"$ref": "#/definitions/capability_list"},
+          "chat_template_kwargs": {"type": "object", "description": "Merged into every chat request the broker forwards for this model; they override the request's own values."}
         }
       }
     },

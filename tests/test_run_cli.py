@@ -144,7 +144,7 @@ def test_adapter_build_failures_are_explained(monkeypatch: pytest.MonkeyPatch) -
     def no_creds(registry: object, backend: str) -> object:
         raise LookupError("credentials.json not found")
 
-    def no_ollama(registry: object, backend: str) -> object:
+    def no_server(registry: object, backend: str) -> object:
         raise OSError("connection refused")
 
     monkeypatch.setattr(adapters.ClaudeAdapter, "from_registry", staticmethod(no_creds))
@@ -152,13 +152,13 @@ def test_adapter_build_failures_are_explained(monkeypatch: pytest.MonkeyPatch) -
     def no_token(registry: object, backend: str) -> object:
         raise LookupError("antigravity-oauth-token not found")
 
-    monkeypatch.setattr(adapters.PiQwenAdapter, "from_registry", staticmethod(no_ollama))
+    monkeypatch.setattr(adapters.PiQwenAdapter, "from_registry", staticmethod(no_server))
     monkeypatch.setattr(adapters.AgyAdapter, "from_registry", staticmethod(no_token))
     lazy = run_cli.LazyAdapters(REGISTRY)
-    models = ("claude_cli_default", "qwen3_8b", "gemini_3_8_flash_high")
+    models = ("claude_cli_default", "qwen3_5_9b", "gemini_3_8_flash_high")
     assert all(m not in lazy for m in models)
     assert lazy.unavailable("claude_cli_default") == "LookupError: credentials.json not found"
-    assert lazy.unavailable("qwen3_8b") == "OSError: connection refused"
+    assert lazy.unavailable("qwen3_5_9b") == "OSError: connection refused"
     assert (
         lazy.unavailable("gemini_3_8_flash_high")
         == "LookupError: antigravity-oauth-token not found"
@@ -249,7 +249,7 @@ def test_unexpected_adapter_errors_are_explained(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(adapters.ClaudeAdapter, "from_registry", staticmethod(broken))
     monkeypatch.setattr(adapters.PiQwenAdapter, "from_registry", staticmethod(broken))
     lazy = run_cli.LazyAdapters(REGISTRY)
-    assert "claude_cli_default" not in lazy and "qwen3_8b" not in lazy
+    assert "claude_cli_default" not in lazy and "qwen3_5_9b" not in lazy
     assert lazy.unavailable("claude_cli_default") == "TypeError: missing field 'readiness'"
 
 
@@ -380,11 +380,11 @@ def test_only_the_needed_adapter_is_built(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(
         run_cli,
         "_adapter_factories",
-        lambda: {"qwen_local": factory("qwen_local"), "claude_pro": factory("claude_pro")},
+        lambda: {"llamacpp_local": factory("llamacpp_local"), "claude_pro": factory("claude_pro")},
     )
     lazy = run_cli.LazyAdapters(REGISTRY)
-    assert "qwen3_8b" in lazy and lazy["qwen3_8b"] is not None
-    assert built == ["qwen3_8b"]  # the Claude adapter (and its auth probe) never ran
+    assert "qwen3_5_9b" in lazy and lazy["qwen3_5_9b"] is not None
+    assert built == ["qwen3_5_9b"]  # the Claude adapter (and its auth probe) never ran
 
 
 @pytest.mark.parametrize("value", ["0", "-3"])

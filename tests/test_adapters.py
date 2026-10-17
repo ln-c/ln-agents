@@ -39,7 +39,7 @@ from agentic_pipeline.sandbox import (
 from agentic_pipeline.sandbox_entry import SHIM_URL
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL = "qwen3:8b"
+MODEL = "qwen3.5-9b"
 
 
 def fake_package(root: Path, name: str = "@earendil-works/pi-coding-agent", js: str = "") -> Path:
@@ -57,7 +57,7 @@ def grant(tmp_path: Path, inputs: Mapping[str, Path] | None = None) -> DispatchG
         run_id="run-1",
         stage="E1",
         operation_id="implementation_patch",
-        backend="qwen_local",
+        backend="llamacpp_local",
         invocation_id="inv-1",
         role="patch_author",
         allowed_reads=("contracts_sealed",),
@@ -225,7 +225,7 @@ def test_fake_pi_reaches_model_through_broker(tmp_path: Path) -> None:
     assert "--offline" in seen["argv"]
 
 
-# ── Live: real Pi and real Ollama (opt-in) ───────────────────────────────────
+# ── Live: real Pi and a real llama-server (opt-in) ───────────────────────────────────
 
 
 @pytest.mark.skipif(os.environ.get("AP_LIVE_TESTS") != "1", reason="set AP_LIVE_TESTS=1")
@@ -233,7 +233,7 @@ def test_live_pi_qwen_writes_file(tmp_path: Path) -> None:
     registry = load_yaml(ROOT / "policy" / "model_registry.yaml")
     a = PiQwenAdapter.from_registry(
         registry,
-        "qwen3_8b",
+        "qwen3_5_9b",
         prompt_builder=lambda g: "Create hello.txt in the current directory containing: hi",
         timeout=600,
     )
@@ -650,6 +650,52 @@ def test_pi_adapter_builds_for_an_openvino_model_through_the_v3_upstream(tmp_pat
         with pytest.raises(LookupError, match="not served"):
             PiQwenAdapter.from_registry(
                 registry, "openvino_qwen3_8b_int4_cw", pi_package=fake_package(tmp_path / "b")
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_pi_adapter_builds_for_a_llamacpp_model_with_its_template_defaults(tmp_path: Path) -> None:
+    """Built from the catalog against a stand-in llama-server; Pi itself is a stub package."""
+    import hashlib
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF weights")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            body = {
+                "/v1/models": {"data": [{"id": "qwen3.5-9b"}]},
+                "/props": {"model_path": str(gguf), "build_info": "b1-abc"},
+            }.get(self.path)
+            self.send_response(200 if body else 404)
+            self.end_headers()
+            self.wfile.write(json.dumps(body or {}).encode())
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        registry = load_yaml(ROOT / "policy" / "model_registry.yaml")
+        registry["providers"]["llamacpp_local"]["readiness"]["port"] = server.server_address[1]
+        built = PiQwenAdapter.from_registry(
+            registry, "qwen3_5_9b", pi_package=fake_package(tmp_path / "pi")
+        )
+        identity = built.identity()
+        digest = hashlib.sha256(b"GGUF weights").hexdigest()
+        assert identity.model == "qwen3.5-9b"
+        assert identity.model_version == f"qwen3.5-9b@sha256:{digest} (llama.cpp b1-abc)"
+        policy = built.broker_policy("qwen3.5-9b")
+        assert policy.chat_template_kwargs == {"enable_thinking": False}
+        registry["models"]["qwen3_5_9b"]["model_id"] = "not-served"
+        with pytest.raises(LookupError, match="not served"):
+            PiQwenAdapter.from_registry(
+                registry, "qwen3_5_9b", pi_package=fake_package(tmp_path / "pi2")
             )
     finally:
         server.shutdown()

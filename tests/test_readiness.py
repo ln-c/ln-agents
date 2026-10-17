@@ -25,12 +25,13 @@ from agentic_pipeline.readiness import (
     Report,
     Status,
     evaluate_stage,
+    llamacpp_model_version,
     ovms_model_version,
     parse_sandbox_probe,
     probe_credential_env,
     probe_executable,
     probe_listeners,
-    probe_ollama,
+    probe_llamacpp,
     probe_ovms,
     probe_sandbox,
     run_preflight,
@@ -41,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = load_yaml(ROOT / "policy" / "model_registry.yaml")
 CLAUDE = REGISTRY["providers"]["claude_pro"]["readiness"]
 GOOGLE = REGISTRY["providers"]["google_ai_pro"]["readiness"]
-QWEN = REGISTRY["providers"]["qwen_local"]["readiness"]
+LLAMACPP = REGISTRY["providers"]["llamacpp_local"]["readiness"]
 
 
 def fake_host(tmp_path: Path, output: str = "", code: int = 0, found: bool = True) -> Host:
@@ -105,70 +106,158 @@ def test_probe_executable_passes_allowlisted_env(tmp_path: Path) -> None:
     assert set(seen) == {"HOME", "LANG", "PATH"}
 
 
-# ── Ollama endpoint ──────────────────────────────────────────────────────────
+# ── llama.cpp server endpoint ────────────────────────────────────────────────
+
+SERVED = "qwen3.5-9b"
 
 
 @pytest.fixture
-def ollama() -> Iterator[dict[str, Any]]:
-    state: dict[str, Any] = {"status": 200, "body": b""}
+def llamacpp() -> Iterator[dict[str, Any]]:
+    state: dict[str, Any] = {
+        "health": 200,
+        "models": (200, b'{"data": []}'),
+        "props": (200, b"{}"),
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - http.server API
-            self.send_response(state["status"])
-            self.end_headers()
-            self.wfile.write(state["body"])
+            if self.path == "/health":
+                self.send_response(state["health"])
+                self.end_headers()
+            elif self.path in ("/v1/models", "/props"):
+                code, body = state["models" if self.path == "/v1/models" else "props"]
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
 
         def log_message(self, *args: object) -> None:
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    state["spec"] = {**QWEN, "port": server.server_address[1]}
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    state["spec"] = {**LLAMACPP, "port": server.server_address[1]}
     yield state
     server.shutdown()
     server.server_close()
 
 
-def test_probe_ollama_reports_each_model_separately(ollama: dict[str, Any]) -> None:
-    ollama.update(status=200, body=_tags("qwen3:8b"))
-    _, models = probe_ollama(ollama["spec"], {"qwen3_8b": "qwen3:8b", "other": "llama3"})
+def _models(*names: str) -> tuple[int, bytes]:
+    return 200, json.dumps({"object": "list", "data": [{"id": n} for n in names]}).encode()
+
+
+def test_probe_llamacpp_reports_each_model_separately(llamacpp: dict[str, Any]) -> None:
+    llamacpp["models"] = _models(SERVED)
+    _, models = probe_llamacpp(llamacpp["spec"], {"qwen3_5_9b": SERVED, "other": "llama3"})
     assert {m: c.status for m, c in models.items()} == {
-        "qwen3_8b": Status.VERIFIED,
+        "qwen3_5_9b": Status.VERIFIED,
         "other": Status.FAILED,
     }
 
 
-def _tags(*names: str) -> bytes:
-    return json.dumps({"models": [{"name": n} for n in names]}).encode()
-
-
 @pytest.mark.parametrize(
-    ("status", "body", "daemon", "inventory"),
+    ("health", "models", "daemon", "inventory"),
     [
-        (200, _tags("qwen3:8b"), Status.VERIFIED, Status.VERIFIED),
-        (200, _tags("qwen3:8b-instruct", "llama3"), Status.VERIFIED, Status.FAILED),
-        (200, b"<html>", Status.VERIFIED, Status.FAILED),
-        (500, b"", Status.FAILED, Status.UNVERIFIED),
+        (200, _models(SERVED), Status.VERIFIED, Status.VERIFIED),
+        (200, _models("qwen3.5-9b-instruct", "llama3"), Status.VERIFIED, Status.FAILED),
+        (200, (200, b"<html>"), Status.VERIFIED, Status.FAILED),
+        (200, (500, b""), Status.VERIFIED, Status.UNVERIFIED),
+        (503, _models(SERVED), Status.FAILED, Status.UNVERIFIED),
+        (500, _models(SERVED), Status.FAILED, Status.UNVERIFIED),
     ],
-    ids=["exact-match", "no-exact-match", "malformed", "http-error"],
+    ids=["exact-match", "no-exact-match", "malformed", "models-error", "loading", "health-error"],
 )
-def test_probe_ollama(
-    ollama: dict[str, Any], status: int, body: bytes, daemon: Status, inventory: Status
+def test_probe_llamacpp(
+    llamacpp: dict[str, Any],
+    health: int,
+    models: tuple[int, bytes],
+    daemon: Status,
+    inventory: Status,
 ) -> None:
-    ollama.update(status=status, body=body)
-    provider, models = probe_ollama(ollama["spec"], {"qwen3_8b": "qwen3:8b"})
+    llamacpp.update(health=health, models=models)
+    provider, found = probe_llamacpp(llamacpp["spec"], {"qwen3_5_9b": SERVED})
     assert [c.status for c in provider] == [daemon]
-    assert [c.status for c in models.values()] == [inventory], models
+    assert [c.status for c in found.values()] == [inventory], found
 
 
-def test_probe_ollama_stopped() -> None:
+def test_probe_llamacpp_says_when_the_model_is_still_loading(llamacpp: dict[str, Any]) -> None:
+    llamacpp["health"] = 503
+    provider, _ = probe_llamacpp(llamacpp["spec"], {"qwen3_5_9b": SERVED})
+    assert "loading" in provider[0].detail
+
+
+def test_probe_llamacpp_stopped() -> None:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    provider, models = probe_ollama({**QWEN, "port": port}, {"qwen3_8b": "qwen3:8b"})
+    provider, models = probe_llamacpp({**LLAMACPP, "port": port}, {"qwen3_5_9b": SERVED})
     assert [c.status for c in provider] == [Status.FAILED]
     assert [c.status for c in models.values()] == [Status.UNVERIFIED]
+
+
+def _props(model_path: Path, build: str = "b11429-d812350493") -> tuple[int, bytes]:
+    return 200, json.dumps({"model_path": str(model_path), "build_info": build}).encode()
+
+
+def test_llamacpp_version_is_the_hash_of_the_model_file_and_the_build(
+    llamacpp: dict[str, Any], tmp_path: Path
+) -> None:
+    import hashlib
+
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF weights")
+    llamacpp.update(models=_models(SERVED), props=_props(gguf))
+    expected = hashlib.sha256(b"GGUF weights").hexdigest()
+    assert llamacpp_model_version(llamacpp["spec"], SERVED) == (
+        f"{SERVED}@sha256:{expected} (llama.cpp b11429-d812350493)"
+    )
+
+
+def test_llamacpp_version_follows_a_changed_model_file(
+    llamacpp: dict[str, Any], tmp_path: Path
+) -> None:
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"first")
+    llamacpp.update(models=_models(SERVED), props=_props(gguf))
+    before = llamacpp_model_version(llamacpp["spec"], SERVED)
+    gguf.write_bytes(b"second, and longer")
+    assert llamacpp_model_version(llamacpp["spec"], SERVED) != before
+
+
+@pytest.mark.parametrize(
+    ("models", "props", "message"),
+    [
+        (_models("other"), None, "not served"),
+        ((500, b""), None, "returned HTTP 500"),
+        ((200, b"<html>"), None, "malformed /v1/models"),
+        (None, (500, b""), "GET /props returned HTTP 500"),
+        (None, (200, b"[]"), "malformed /props"),
+        (None, "unreadable", "cannot read the model file"),
+    ],
+    ids=[
+        "other-model",
+        "models-error",
+        "models-malformed",
+        "props-error",
+        "props-malformed",
+        "no-file",
+    ],
+)
+def test_llamacpp_version_claims_nothing_it_cannot_show(
+    llamacpp: dict[str, Any],
+    tmp_path: Path,
+    models: tuple[int, bytes] | None,
+    props: Any,
+    message: str,
+) -> None:
+    llamacpp["models"] = models or _models(SERVED)
+    llamacpp["props"] = (
+        _props(tmp_path / "missing.gguf") if props == "unreadable" else props or _props(tmp_path)
+    )
+    with pytest.raises(LookupError, match=message):
+        llamacpp_model_version(llamacpp["spec"], SERVED)
 
 
 # ── OpenVINO Model Server endpoint ───────────────────────────────────────────
@@ -405,9 +494,9 @@ def ready_report() -> Report:
         providers={
             "claude_pro": [Check("executable", ok, "")],
             "google_ai_pro": [Check("executable", ok, "")],
-            "qwen_local": [Check("daemon", ok, ""), Check("listener_binding", ok, "")],
+            "llamacpp_local": [Check("daemon", ok, ""), Check("listener_binding", ok, "")],
         },
-        models={"qwen3_8b": [Check("model_inventory", ok, "")]},
+        models={"qwen3_5_9b": [Check("model_inventory", ok, "")]},
         isolation={name: Check(name, ok, "") for name in ISOLATION},
         registry=REGISTRY,
     )
@@ -444,10 +533,10 @@ def test_a3_falls_back_in_declared_order() -> None:
 
 def test_a_model_missing_from_the_local_inventory_blocks_build() -> None:
     report = ready_report()
-    _downgrade(report.models["qwen3_8b"], "model_inventory", Status.FAILED)
+    _downgrade(report.models["qwen3_5_9b"], "model_inventory", Status.FAILED)
     verdict = evaluate_stage("E1", report)
     assert not verdict.eligible
-    assert "implementation_patch: qwen3_8b.model_inventory FAILED" in verdict.reasons
+    assert "implementation_patch: qwen3_5_9b.model_inventory FAILED" in verdict.reasons
 
 
 def test_isolation_check_blocks_stage() -> None:

@@ -110,7 +110,7 @@ def _build_on_the_classifier(r: Registry) -> None:
 
 
 def _no_capabilities_declared(r: Registry) -> None:
-    r["models"]["qwen3_8b"]["capabilities"] = []
+    r["models"]["qwen3_5_9b"]["capabilities"] = []
 
 
 def _operation_requires_nothing(r: Registry) -> None:
@@ -163,7 +163,7 @@ def _mislabelled_family(r: Registry) -> None:
 
 
 def _model_on_a_non_model_provider(r: Registry) -> None:
-    r["models"]["qwen3_8b"]["provider"] = "deterministic_rules"
+    r["models"]["qwen3_5_9b"]["provider"] = "deterministic_rules"
 
 
 def _duplicate_model(r: Registry) -> None:
@@ -174,13 +174,17 @@ def _claude_model_declared_gemini(r: Registry) -> None:
     r["models"]["claude_cli_default"]["family"] = "gemini"
 
 
-def _ollama_model_with_no_pattern(r: Registry) -> None:
+def _llamacpp_model_with_no_pattern(r: Registry) -> None:
     r["models"]["llama3"] = {
-        "provider": "qwen_local",
+        "provider": "llamacpp_local",
         "model_id": "llama3",
         "family": "llama",
         "capabilities": [],
     }
+
+
+def _template_defaults_not_an_object(r: Registry) -> None:
+    r["models"]["qwen3_5_9b"]["chat_template_kwargs"] = "enable_thinking=false"
 
 
 def _provider_without_patterns(r: Registry) -> None:
@@ -192,7 +196,7 @@ def _openvino_qwen_declared_clef(r: Registry) -> None:
 
 
 def _binds_a_provider(r: Registry) -> None:
-    r["agents"]["build"]["primary"] = "qwen_local"
+    r["agents"]["build"]["primary"] = "llamacpp_local"
 
 
 def _bad_family_pattern(r: Registry) -> None:
@@ -208,11 +212,11 @@ def _cloud_declared_local(r: Registry) -> None:
 
 
 def _local_declared_cloud(r: Registry) -> None:
-    r["providers"]["qwen_local"]["location"] = "cloud"
+    r["providers"]["llamacpp_local"]["location"] = "cloud"
 
 
 def _unknown_access_mode(r: Registry) -> None:
-    r["providers"]["qwen_local"]["access_mode"] = "carrier_pigeon"
+    r["providers"]["llamacpp_local"]["access_mode"] = "carrier_pigeon"
 
 
 def _no_location(r: Registry) -> None:
@@ -257,8 +261,8 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ("binds a provider, not a model", _binds_a_provider, "registry R3 agents.build.primary"),
     ("schema: location required", _no_location, "registry R1"),
     ("cloud mode declared local", _cloud_declared_local, "registry R16 providers.claude_pro"),
-    ("local mode declared cloud", _local_declared_cloud, "registry R16 providers.qwen_local"),
-    ("unknown access mode", _unknown_access_mode, "registry R16 providers.qwen_local"),
+    ("local mode declared cloud", _local_declared_cloud, "registry R16 providers.llamacpp_local"),
+    ("unknown access mode", _unknown_access_mode, "registry R16 providers.llamacpp_local"),
     ("model id matches no pattern", _model_id_matches_no_pattern, "registry R17 models.gemini_3"),
     (
         "family disagrees with the id",
@@ -268,7 +272,7 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     (
         "model on a non-model provider",
         _model_on_a_non_model_provider,
-        "registry R17 models.qwen3_8b",
+        "registry R17 models.qwen3_5_9b",
     ),
     ("duplicate provider and model_id", _duplicate_model, "registry R17 models.gemini_twin"),
     (
@@ -276,7 +280,16 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
         _claude_model_declared_gemini,
         "registry R17 models.claude_cli_default",
     ),
-    ("ollama model with no pattern", _ollama_model_with_no_pattern, "registry R17 models.llama3"),
+    (
+        "llama.cpp model with no pattern",
+        _llamacpp_model_with_no_pattern,
+        "registry R17 models.llama3",
+    ),
+    (
+        "template defaults that are not an object",
+        _template_defaults_not_an_object,
+        "registry R1",
+    ),
     (
         "provider without patterns",
         _provider_without_patterns,
@@ -335,7 +348,7 @@ def test_pattern_family_takes_the_first_matching_pattern() -> None:
     assert pattern_family(provider, "x-gemini-1") is None
 
 
-CLAUDE, GEMINI, QWEN = "claude_cli_default", "gemini_3_8_flash_high", "qwen3_8b"
+CLAUDE, GEMINI, QWEN = "claude_cli_default", "gemini_3_8_flash_high", "qwen3_5_9b"
 
 
 def test_candidate_models_per_operation_are_pinned() -> None:
@@ -372,7 +385,7 @@ def test_each_candidates_resolved_properties_are_pinned() -> None:
     assert resolved == {
         CLAUDE: ("claude_pro", "cli-default", "claude", "cloud", ["code_generation", "design_reasoning"]),
         GEMINI: ("google_ai_pro", "gemini-3.8-flash-high", "gemini", "cloud", ["code_generation", "design_reasoning"]),
-        QWEN: ("qwen_local", "qwen3:8b", "qwen3", "local", ["classification", "code_generation"]),
+        QWEN: ("llamacpp_local", "qwen3.5-9b", "qwen3_5", "local", ["classification", "code_generation"]),
     }  # fmt: skip
 
 

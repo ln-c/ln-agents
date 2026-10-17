@@ -2,7 +2,7 @@
 
 PiQwenAdapter runs the Pi coding agent inside the bwrap sandbox (sandbox.py).
 Pi's only model is a `broker` provider pointing at the in-sandbox shim, which
-relays to the host-side InferenceBroker, which alone talks to the local server (Ollama or an
+relays to the host-side InferenceBroker, which alone talks to the local server (llama-server or an
 OpenVINO Model Server). Pi runs offline, ignores project-local config in its inputs, saves no
 session, loads no extensions/skills/MCP, and gets file tools only (no shell).
 
@@ -32,14 +32,14 @@ from agentic_pipeline.broker import (
     BrokerPolicy,
     InferenceBroker,
     Upstream,
-    ollama_upstream,
+    loopback_upstream,
     ovms_upstream,
 )
 from agentic_pipeline.design_tasks import extract_json_object, json_task
 from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, PreparedCall
 from agentic_pipeline.readiness import (
     Host,
-    ollama_model_digest,
+    llamacpp_model_version,
     ovms_model_version,
     resolve_executable,
 )
@@ -151,15 +151,20 @@ class PiQwenAdapter:
     def from_registry(
         cls, registry: Mapping[str, Any], backend: str, **overrides: Any
     ) -> PiQwenAdapter:
-        """Build for a model on a local server (Ollama or OVMS), resolving Pi and the model."""
+        """Build for a model on a local server (llama-server or OVMS): resolve Pi and the model."""
         model = registry["models"][backend]
         spec = registry["providers"][model["provider"]]["readiness"]
         if spec["protocol"] == "ovms":
             version = ovms_model_version(spec, model["model_id"])
             upstream = ovms_upstream(spec["host"], spec["port"], timeout=600.0)
         else:
-            version = ollama_model_digest(spec, model["model_id"])
-            upstream = ollama_upstream(spec["host"], spec["port"], timeout=600.0)
+            version = llamacpp_model_version(spec, model["model_id"])
+            upstream = loopback_upstream(spec["host"], spec["port"], timeout=600.0)
+        if kwargs := model.get("chat_template_kwargs"):
+            overrides.setdefault(
+                "broker_policy",
+                lambda model_id: BrokerPolicy(model_id, chat_template_kwargs=kwargs),
+            )
         return cls(
             pi_package=overrides.pop("pi_package", None) or find_pi_package(),
             model_id=model["model_id"],
