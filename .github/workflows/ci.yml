@@ -43,3 +43,40 @@ jobs:
 
       - name: Validate pipeline graph invariants
         run: uv run python -m agentic_pipeline validate
+
+  rust:
+    # ln-hub must build and pass on every OS it ships for; the toolchain is pinned in
+    # rust/rust-toolchain.toml.
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Release build and binary size
+        run: |
+          cargo build --release --locked
+          ls -l target/release/ln-hub target/release/ln-hub.exe 2>/dev/null || true
