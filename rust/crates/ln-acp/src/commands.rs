@@ -53,6 +53,11 @@ pub enum Command {
     Evidence {
         run: Option<String>,
     },
+    /// Anything that is not a slash command: a question for the coordinator model, answered in
+    /// text. It is never parsed into an action.
+    Ask {
+        question: String,
+    },
     Start {
         run: String,
         entry_spec: String,
@@ -122,7 +127,12 @@ impl fmt::Display for Refusal {
 pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
     let text = text.trim();
     let Some(rest) = text.strip_prefix('/') else {
-        return Ok(Command::Help);
+        return Ok(match text {
+            "" | "help" | "?" => Command::Help,
+            question => Command::Ask {
+                question: question.to_string(),
+            },
+        });
     };
     let mut words = rest.split_whitespace();
     let name = words.next().unwrap_or_default();
@@ -189,8 +199,9 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
 
 pub fn help(mode: Mode) -> String {
     let mut text = String::from(
-        "ln-hub drives the ln-pipeline orchestrator. It runs these commands as code; it does \
-         not interpret free text.\n\n",
+        "ln-hub drives the ln-pipeline orchestrator. It runs these commands as code. Anything \
+         else you type is a question for the coordinator model: it answers in text from the \
+         run's Markdown views, and cannot start, advance, sign or resume anything.\n\n",
     );
     for (name, hint, description) in available(mode) {
         let usage = if hint.is_empty() {
@@ -262,7 +273,14 @@ mod tests {
                 reason: "ok".into(),
             })
         );
-        assert_eq!(parse("add rate limiting please", design), Ok(Command::Help));
+        assert_eq!(
+            parse("why is the synthesis first?", design),
+            Ok(Command::Ask {
+                question: "why is the synthesis first?".into()
+            })
+        );
+        assert_eq!(parse("  help ", design), Ok(Command::Help));
+        assert_eq!(parse("", design), Ok(Command::Help));
         assert!(parse("/start r1", design).is_err());
         assert!(parse("/approval-doc d ln-c", design).is_err());
         assert!(parse("/status a b", design).is_err());

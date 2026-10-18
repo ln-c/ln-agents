@@ -1,7 +1,7 @@
 //! A2A client: `ln-hub` talks to the Python orchestrator (`a2a_server.py`, agent `ln-pipeline`)
 //! over JSON-RPC and SSE on loopback.
 //!
-//! The client can express exactly the server's five skills ([`Request`]); none of them signs,
+//! The client can express exactly the server's six skills ([`Request`]); none of them signs,
 //! decides or resumes a run. Its rules, from the server's behaviour:
 //!
 //! * `status`, `evidence` and `approval_document` are queries: they go without a task and name
@@ -63,7 +63,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// One skill call. Only these five exist on the server; there is no way to build another.
+/// One skill call. Only these six exist on the server; there is no way to build another.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     skill: &'static str,
@@ -112,6 +112,16 @@ impl Request {
             args["candidate"] = Value::from(candidate);
         }
         Self::new("approval_document", args)
+    }
+
+    /// A question for the coordinator model about a run (the task's own when `run_id` is None).
+    /// It answers in text from the run's views and changes nothing.
+    pub fn ask(run_id: Option<&str>, question: &str) -> Self {
+        let mut args = json!({"question": question});
+        if let Some(run_id) = run_id {
+            args["run_id"] = Value::from(run_id);
+        }
+        Self::new("ask", args)
     }
 
     pub fn skill(&self) -> &'static str {

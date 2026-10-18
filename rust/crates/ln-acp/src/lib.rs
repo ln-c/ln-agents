@@ -480,6 +480,12 @@ impl Prompt {
                     self.agent.update(&self.session_id, update);
                 }
             }
+            Command::Ask { question } => {
+                let run = self.the_run(None)?;
+                let request = Request::ask(Some(&run), &question);
+                let reply = skill_reply(&client()?, &request).map_err(a2a)?;
+                self.say(render::answer_text(&reply));
+            }
             Command::Start { run, entry_spec } => {
                 let spec = read_entry_spec(&self.cwd, &entry_spec)?;
                 return self.stream(&client()?, &Request::start_run(&run, spec), &run);
