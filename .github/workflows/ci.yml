@@ -1,9 +1,10 @@
 name: CI
 
-# CI runs on AppVeyor (appveyor.yml, ci/). This workflow is kept for when GitHub Actions is
-# available again and runs only by hand; restore the push and pull_request triggers to use it.
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 # Read-only token; no job needs to write. Actions are pinned to commit SHAs (Dependabot keeps
 # them current), checkout keeps no credentials, and a newer push to a PR cancels the older run.
