@@ -15,6 +15,10 @@ session is saved. The adapter writes the reply into the write root itself.
 
 AgyAdapter runs Google's `agy -p` the same way (see its docstring for what agy cannot
 enforce).
+
+DecisionAdapter asks a decision model (Clef-Flash on llama-server) typed questions over
+`/v1/systemone` from the host: no process, no tools, nothing for the model to act with. It
+validates every answer and writes the probabilities into the write root itself.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, Pr
 from agentic_pipeline.readiness import (
     Host,
     llamacpp_model_version,
+    llamacpp_output_modalities,
     ovms_model_version,
     resolve_executable,
 )
@@ -516,3 +521,224 @@ class AgyAdapter:
             return AdapterResult("error", f"empty response: {tail}")
         write_reply(grant, text)
         return AdapterResult("ok", f"turns={reply.get('num_turns')}")
+
+
+# ── Decision model on llama-server (/v1/systemone) ───────────────────────────
+
+DECISION_PATH = "/v1/systemone"
+DECISION_MAX_RESPONSE_BYTES = 1024 * 1024
+SCORE_LEVELS = range(2, 11)  # a score question has 2 to 10 levels, lowest first
+ANSWER_KEYS = {
+    "noul": {"type", "noul"},
+    "choice": {"type", "choice", "probabilities", "confidence"},
+    "score": {"type", "score", "legend", "probabilities", "confidence"},
+}
+type DecisionRequest = dict[str, Any]  # {"id", "state", "questions"}, see request_problems
+
+
+def _probability(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and 0 <= value <= 1
+
+
+def request_problems(request: Any) -> list[str]:
+    """Why a request is not one the adapter will send (empty means well formed).
+
+    A request is {"id": str, "state": str, "questions": {name: question}}; a question is
+    {"type": "noul", "instructions": str} (a yes/no question), {"type": "choice", ...,
+    "criteria": {option: description or null}} or {"type": "score", ..., "criteria": [level,
+    ...]} with 2 to 10 levels, lowest first.
+    """
+    if not isinstance(request, dict) or set(request) != {"id", "state", "questions"}:
+        return ["a request has exactly the keys id, state and questions"]
+    where = f"request {request['id']!r}"
+    problems: list[str] = []
+    if not isinstance(request["id"], str) or not request["id"]:
+        problems.append(f"{where}: id must be a non-empty string")
+    if not isinstance(request["state"], str) or not request["state"].strip():
+        problems.append(f"{where}: state must be non-empty text")
+    questions = request["questions"]
+    if not isinstance(questions, dict) or not questions:
+        return [*problems, f"{where}: questions must be a non-empty object"]
+    for name, question in questions.items():
+        kind = question.get("type") if isinstance(question, dict) else None
+        if kind not in ANSWER_KEYS:
+            problems.append(f"{where}.{name}: type must be one of {sorted(ANSWER_KEYS)}")
+            continue
+        keys = {"type", "instructions"} if kind == "noul" else {"type", "instructions", "criteria"}
+        if set(question) != keys:
+            problems.append(f"{where}.{name}: unexpected or missing keys")
+            continue
+        if not isinstance(question["instructions"], str) or not question["instructions"].strip():
+            problems.append(f"{where}.{name}: instructions must be non-empty text")
+        criteria = question.get("criteria")
+        if kind == "choice" and not (
+            isinstance(criteria, dict)
+            and len(criteria) >= 2
+            and all(isinstance(v, str | None) for v in criteria.values())
+        ):
+            problems.append(f"{where}.{name}: criteria must map 2 or more options to text or null")
+        if kind == "score" and not (
+            isinstance(criteria, list)
+            and len(criteria) in SCORE_LEVELS
+            and all(isinstance(level, str) and level for level in criteria)
+            and len(set(criteria)) == len(criteria)
+        ):
+            problems.append(f"{where}.{name}: criteria must list 2 to 10 distinct levels")
+    return problems
+
+
+def answer_problems(questions: Mapping[str, Any], answers: Any) -> list[str]:
+    """Why a model's answers do not match the questions asked (empty means they do)."""
+    if not isinstance(answers, dict) or set(answers) != set(questions):
+        return ["answers do not cover exactly the questions asked"]
+    problems: list[str] = []
+    for name, question in questions.items():
+        answer, kind = answers[name], question["type"]
+        if not isinstance(answer, dict) or answer.get("type") != kind:
+            problems.append(f"{name}: not a {kind} answer")
+            continue
+        if set(answer) != ANSWER_KEYS[kind]:
+            problems.append(f"{name}: unexpected or missing keys {sorted(answer)}")
+            continue
+        if kind == "noul":
+            if not _probability(answer["noul"]):
+                problems.append(f"{name}: noul is not a probability")
+            continue
+        options = (
+            list(question["criteria"])
+            if kind == "choice"
+            else [str(i) for i in range(len(question["criteria"]))]
+        )
+        probabilities = answer["probabilities"]
+        if not isinstance(probabilities, dict) or set(probabilities) != set(options):
+            problems.append(f"{name}: probabilities do not cover exactly the options")
+        elif not all(map(_probability, probabilities.values())):
+            problems.append(f"{name}: a probability is outside [0, 1]")
+        if not _probability(answer["confidence"]):
+            problems.append(f"{name}: confidence is not a probability")
+        if kind == "choice" and answer["choice"] not in options:
+            problems.append(f"{name}: choice {answer['choice']!r} was not offered")
+        if kind == "score":
+            score = answer["score"]
+            if not isinstance(score, int | float) or not 0 <= score <= len(options) - 1:
+                problems.append(f"{name}: score is outside the levels")
+            if answer["legend"] != dict(zip(options, question["criteria"], strict=True)):
+                problems.append(f"{name}: legend does not match the levels asked")
+    return problems
+
+
+def requests_from_inputs(grant: DispatchGrant) -> list[DecisionRequest]:
+    """The requests the sealed inputs carry: each input is a file {"requests": [...]}."""
+    requests: list[DecisionRequest] = []
+    for artifact_id in sorted(grant.inputs):
+        document = json.loads(grant.inputs[artifact_id].read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or not isinstance(document.get("requests"), list):
+            raise ValueError(f"{artifact_id}: not an object with a requests list")
+        requests.extend(document["requests"])
+    return requests
+
+
+@dataclass(slots=True)
+class DecisionAdapter:
+    """One POST to llama-server's `/v1/systemone` per request, made from the host on loopback.
+
+    The prepared prompt is the compact JSON of the request list and is what gets sent, so its
+    hash covers the questions asked. Answers are untrusted: each must answer exactly the
+    questions asked, with probabilities in [0, 1], from the pinned model. The verdict file
+    `<operation_id>.json` is written only when every request was answered; it holds the raw
+    probabilities so a threshold can be calibrated from them later.
+
+    The server does not report its -b/-ub, which shift the probabilities slightly, so the
+    identity pins the model file and llama.cpp build only (see the registry's launch flags).
+    """
+
+    model_id: str
+    model_version: str
+    upstream: Upstream
+    request_builder: Callable[[DispatchGrant], list[DecisionRequest]] = requests_from_inputs
+    max_response_bytes: int = DECISION_MAX_RESPONSE_BYTES
+    # No process and no tools: sealed inputs are verified by the dispatcher, and the model
+    # sees only the request text.
+    enforced_isolation: frozenset[str] = frozenset()
+
+    @classmethod
+    def from_registry(
+        cls, registry: Mapping[str, Any], backend: str, **overrides: Any
+    ) -> DecisionAdapter:
+        """Build for a decision model on llama-server; refuses a server that is not serving one."""
+        model = registry["models"][backend]
+        spec = registry["providers"][model["provider"]]["readiness"]
+        if "decisions" not in llamacpp_output_modalities(spec, model["model_id"]):
+            raise LookupError(f"{model['model_id']} on port {spec['port']} is not a decision model")
+        return cls(
+            model_id=model["model_id"],
+            model_version=llamacpp_model_version(spec, model["model_id"]),
+            upstream=loopback_upstream(spec["host"], spec["port"], timeout=120.0),
+            **overrides,
+        )
+
+    def identity(self) -> Identity:
+        return Identity(
+            model=self.model_id,
+            model_version=self.model_version,
+            access_method="local_inference via llama-server /v1/systemone (decisions only)",
+        )
+
+    def prepare(self, grant: DispatchGrant) -> PreparedCall:
+        requests = self.request_builder(grant)
+        if not requests:
+            raise ValueError("no decision requests to send")
+        if problems := [p for request in requests for p in request_problems(request)]:
+            raise ValueError("; ".join(problems))
+        if len({r["id"] for r in requests}) != len(requests):
+            raise ValueError("request ids are not unique")
+        # Key order is kept, not sorted: it is the order the options are put to the model.
+        prompt = json.dumps(requests, separators=(",", ":"))
+        return PreparedCall(**asdict(self.identity()), prompt=prompt.encode("utf-8"))
+
+    def _ask(self, request: DecisionRequest) -> tuple[dict[str, Any] | None, str]:
+        """(the validated reply, "") or (None, why it was refused)."""
+        body = {
+            "model": self.model_id,
+            "state": request["state"],
+            "questions": request["questions"],
+        }
+        try:
+            status, _, chunks = self.upstream(DECISION_PATH, json.dumps(body).encode("utf-8"))
+            raw = b""
+            for chunk in chunks:
+                raw += chunk
+                if len(raw) > self.max_response_bytes:
+                    return None, f"response over {self.max_response_bytes} bytes"
+        except Exception as exc:  # unreachable server, reset connection, bad HTTP
+            return None, f"{type(exc).__name__}: {exc}"
+        try:
+            reply = json.loads(raw)
+        except ValueError:
+            return None, f"HTTP {status}: not JSON"
+        if status != 200:
+            error = reply.get("error") if isinstance(reply, dict) else None
+            message = error.get("message") if isinstance(error, dict) else None
+            return None, f"HTTP {status}: {str(message or raw[:200])[:200]}"
+        if not isinstance(reply, dict) or reply.get("model") != self.model_id:
+            return None, f"answered by {reply.get('model') if isinstance(reply, dict) else None!r}"
+        if problems := answer_problems(request["questions"], reply.get("answers")):
+            return None, "; ".join(problems)[:300]
+        return reply, ""
+
+    def invoke(self, grant: DispatchGrant, call: PreparedCall) -> AdapterResult:
+        results: list[dict[str, Any]] = []
+        tokens = 0
+        for request in json.loads(call.prompt):
+            reply, why = self._ask(request)
+            if reply is None:
+                return AdapterResult("error", f"request {request['id']!r}: {why}")
+            usage = reply.get("usage")
+            used = usage.get("input_tokens") if isinstance(usage, dict) else None
+            used = used if isinstance(used, int) and not isinstance(used, bool) else None
+            tokens += used or 0
+            results.append({"id": request["id"], "answers": reply["answers"], "input_tokens": used})
+        document = {"model": self.model_id, "model_version": self.model_version, "results": results}
+        output = grant.write_path / f"{grant.operation_id}.json"
+        output.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")
+        return AdapterResult("ok", f"requests={len(results)} input_tokens={tokens}", self.model_id)

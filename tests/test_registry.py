@@ -424,7 +424,7 @@ def test_known_but_unclaimed_models_cannot_be_bound() -> None:
     unclaimed = [m for m, v in REGISTRY["models"].items() if not v["capabilities"]]
     agy = [m for m, v in REGISTRY["models"].items() if v["provider"] == "google_ai_pro"]
     openvino = [m for m, v in REGISTRY["models"].items() if v["provider"] == "openvino_local"]
-    assert sorted(unclaimed) == sorted([*(set(agy) - {GEMINI}), *openvino])
+    assert sorted(unclaimed) == sorted([*(set(agy) - {GEMINI}), *openvino, "clef_flash_local"])
     for model in unclaimed:
         registry = copy.deepcopy(REGISTRY)
         registry["agents"]["design"]["proposal_b"]["primary"] = model

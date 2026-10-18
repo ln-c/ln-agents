@@ -18,7 +18,7 @@ MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
 CODE_ARTIFACTS = ("pinned_source_tree", "protected_tests")
 GROUNDING_PRODUCERS = ("START", "G")
 # Checks conformance.py implements; policy/model_test_profiles.yaml may name only these.
-CHECK_NAMES = ("identity", "json_reply", "file_output")
+CHECK_NAMES = ("identity", "json_reply", "file_output", "decision_probe")
 POLICY_FILES = (
     "weights",
     "vetoes",

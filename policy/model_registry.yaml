@@ -80,6 +80,25 @@ providers:
       host: 127.0.0.1
       port: 8080
       timeout_seconds: 1.0
+  # A second llama-server for decision models (Clef-Flash), which answer only on /v1/systemone:
+  # one probability per question option from a single forward pass, no generated text. The
+  # whole request must fit one physical batch, and the probabilities shift slightly with -b/-ub,
+  # so start it with exactly these flags (the server does not report -b/-ub, so nothing checks
+  # them):
+  #   llama-server -m ~/models/gguf/Clef-Flash-Q4_K_M.gguf --alias clef-flash --host 127.0.0.1 \
+  #     --port 8081 -dev Vulkan0 -ngl 99 -c 16384 -b 4096 -ub 4096 --parallel 1
+  llamacpp_decision:
+    access_mode: local_inference
+    location: local
+    family_patterns:
+      - {pattern: '^clef', family: clef}
+    network_required: false
+    api_billing_allowed: false
+    readiness:
+      protocol: llamacpp
+      host: 127.0.0.1
+      port: 8081
+      timeout_seconds: 1.0
   # OpenVINO Model Server on loopback (Intel CPU/GPU/NPU). It serves an OpenAI-compatible API
   # under /v3, which the broker reaches by rewriting the sandbox's /v1 path on the host. OVMS
   # reports no build digest, so a model's provenance records "no build digest reported".
@@ -154,6 +173,15 @@ models:
     alias: Clef-flash
     family: clef
     capabilities: [classification]
+  # Cloudflare's Clef-Flash (post-trained from Qwen3.5-9B) on the local decision server. Nothing
+  # is claimed until an operation needs `decision`: `models test` derives its checks from the
+  # operations a model is bound to.
+  clef_flash_local:
+    provider: llamacpp_decision
+    model_id: clef-flash
+    alias: Clef-Flash (llama.cpp)
+    family: clef
+    capabilities: []
   # Served by OpenVINO Model Server under the Hugging Face repo name (the models in the local
   # Hugging Face cache). No capabilities are claimed yet: `models test` needs a bound role to
   # derive its checks from, so claim some, or bind one, before testing it.

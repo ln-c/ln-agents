@@ -179,10 +179,49 @@ def check_file_output(env: ProbeEnv) -> tuple[bool, str]:
     return True, f"wrote only {EXPECTED_FILE} with the nonce"
 
 
+def check_decision_probe(env: ProbeEnv) -> tuple[bool, str]:
+    """A decision model answers questions about a sealed record with the obvious probabilities.
+
+    The record carries the nonce, so a cached or canned reply to another record cannot pass.
+    """
+    state = f"Inspection record {env.nonce}: the front door is red and the back door is locked."
+    questions = {
+        "yes": {"type": "noul", "instructions": "Does the record say the front door is red?"},
+        "no": {"type": "noul", "instructions": "Does the record say the front door is blue?"},
+        "colour": {
+            "type": "choice",
+            "instructions": "What colour is the front door, according to the record?",
+            "criteria": {"red": None, "blue": None, "green": None},
+        },
+    }
+    source = env.work / "decision_probe_input" / "requests.json"
+    source.parent.mkdir(parents=True)
+    request = {"id": env.nonce, "state": state, "questions": questions}
+    source.write_text(json.dumps({"requests": [request]}), encoding="utf-8")
+    grant = _grant(env, "decision_probe", {"probe_input": source}, None)
+    if why := _call(env, grant):
+        return False, why
+    try:
+        document = json.loads((grant.write_path / "decision_probe.json").read_text("utf-8"))
+        (result,) = document["results"]
+        answers = result["answers"]
+        yes, no = answers["yes"]["noul"], answers["no"]["noul"]
+        colour = answers["colour"]["choice"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return False, f"no usable decision_probe.json: {type(exc).__name__}: {exc}"
+    detail = f"yes={yes:.3f} no={no:.3f} colour={colour}"
+    if result["id"] != env.nonce:
+        return False, "the verdict is for another request"
+    if not (yes > 0.5 > no and colour == "red"):
+        return False, f"wrong answers: {detail}"
+    return True, detail
+
+
 CHECKS: Mapping[str, Probe] = {
     "identity": check_identity,
     "json_reply": check_json_reply,
     "file_output": check_file_output,
+    "decision_probe": check_decision_probe,
 }
 assert tuple(CHECKS) == CHECK_NAMES
 
