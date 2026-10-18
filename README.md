@@ -81,6 +81,8 @@ A request is one A2A message with one data part naming a skill:
 
 Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume`.
 
+A request is checked before any task is touched. A refused request is a JSON-RPC error and leaves every task as it was. `status`, `evidence` and `approval_document` are answered with a message, even when the request names a task. A message that names a task without a `contextId` gets the task's context.
+
 `advance` streams every provenance event as a WORKING status update, then ends in one of these states:
 - `TASK_STATE_INPUT_REQUIRED` when the run awaits a human, with the evidence attached as an artifact;
 - `TASK_STATE_AUTH_REQUIRED` when the run paused on `auth_failed` or `quota_exhausted`;

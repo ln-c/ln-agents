@@ -4,8 +4,8 @@
 //! The client can express exactly the server's five skills ([`Request`]); none of them signs,
 //! decides or resumes a run. Its rules, from the server's behaviour:
 //!
-//! * `status`, `evidence` and `approval_document` go without a task and name the run, so a
-//!   refused request never touches a task (a refusal inside a task turns it FAILED, terminally);
+//! * `status`, `evidence` and `approval_document` are queries: they go without a task and name
+//!   the run, and the server answers them with a message;
 //! * `start_run` and `advance` each open a new task, streamed until the server ends it;
 //! * the bearer token goes only to a literal loopback address, never through a proxy.
 
