@@ -1,0 +1,30 @@
+# ln-hub: one binary for ACP (editor to agent), A2A (to the Python orchestrator) and MCP
+# (agent to tool). The orchestrator in src/agentic_pipeline stays authoritative; nothing here
+# takes a pipeline transition or signs an approval.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Small and fast: one codegen unit with full LTO, no unwinding tables, symbols stripped.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
