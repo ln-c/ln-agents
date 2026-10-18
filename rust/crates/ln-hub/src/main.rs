@@ -1,8 +1,10 @@
 //! `ln-hub`: the command line. Subcommands arrive with the PRs that implement them
-//! (`acp` now; `harness`, `sandbox`, `status` later).
+//! (`acp`, `decide` and `resume` now; `harness`, `sandbox`, `status` later).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+mod human;
 
 use clap::{Parser, Subcommand};
 
@@ -23,6 +25,50 @@ enum Commands {
         /// The bearer token file [default: <session cwd>/.runs/.a2a/token].
         #[arg(long, env = "LN_HUB_TOKEN_FILE")]
         token_file: Option<PathBuf>,
+        /// The words that open a terminal window for `/decide` and `/resume`, such as `kitty`
+        /// or `alacritty -e` [default: $TERMINAL, xdg-terminal-exec, or a known emulator].
+        #[arg(long, env = "LN_HUB_TERMINAL")]
+        terminal: Option<String>,
+        /// How that window runs the orchestrator's CLI, split on spaces
+        /// [default: uv run python -m agentic_pipeline].
+        #[arg(long, env = "LN_HUB_PIPELINE")]
+        pipeline: Option<String>,
+        /// The private key the human signs with [default: ~/.ssh/id_ed25519].
+        #[arg(long, env = "LN_HUB_SSH_KEY")]
+        ssh_key: Option<PathBuf>,
+        /// Where `/resume` finds runs [default: <session cwd>/.runs].
+        #[arg(long, env = "LN_HUB_RUNS_DIR")]
+        runs_dir: Option<PathBuf>,
+    },
+    /// Sign an approval document with your SSH key and record the decision. For a terminal
+    /// you are looking at: `/decide` in an editor opens one. Never run by a model.
+    Decide {
+        run: String,
+        #[arg(long)]
+        approval: PathBuf,
+        /// The ssh-keygen -Y namespace from policy/approvers.yaml.
+        #[arg(long)]
+        namespace: String,
+        #[arg(long)]
+        key: Option<PathBuf>,
+        #[arg(long)]
+        runs_dir: PathBuf,
+        /// The orchestrator's CLI, after `--`.
+        #[arg(last = true)]
+        pipeline: Vec<String>,
+    },
+    /// Resume a paused run in a terminal you are looking at: `/resume` in an editor opens one.
+    Resume {
+        run: String,
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        runs_dir: PathBuf,
+        /// The orchestrator's CLI, after `--`.
+        #[arg(last = true)]
+        pipeline: Vec<String>,
     },
 }
 
@@ -36,18 +82,70 @@ fn main() -> ExitCode {
         Some(Commands::Acp {
             a2a_url,
             token_file,
+            terminal,
+            pipeline,
+            ssh_key,
+            runs_dir,
         }) => {
             // Refuse a non-loopback endpoint before the editor sends anything.
             if let Err(error) = ln_a2a::loopback_origin(&a2a_url) {
                 eprintln!("ln-hub acp: {error}");
                 return ExitCode::FAILURE;
             }
+            let setup = ln_acp::human::Setup {
+                terminal,
+                pipeline: pipeline
+                    .map(|p| p.split_whitespace().map(String::from).collect())
+                    .unwrap_or_default(),
+                key: ssh_key,
+                runs_dir,
+            };
             let config = ln_acp::Config {
                 url: a2a_url,
                 token_file,
+                window: std::sync::Arc::new(human::Terminal(setup.clone())),
+                human: setup,
             };
             ln_acp::serve(std::io::stdin().lock(), std::io::stdout(), config);
             ExitCode::SUCCESS
         }
+        Some(Commands::Decide {
+            run,
+            approval,
+            namespace,
+            key,
+            runs_dir,
+            pipeline,
+        }) => {
+            let decision = human::Decision {
+                run: &run,
+                approval: &approval,
+                namespace: &namespace,
+                key: key.as_deref(),
+                runs_dir: &runs_dir,
+                pipeline: &pipeline,
+            };
+            exit(human::decide(&decision, &mut human::Tty))
+        }
+        Some(Commands::Resume {
+            run,
+            by,
+            reason,
+            runs_dir,
+            pipeline,
+        }) => {
+            let resumption = human::Resumption {
+                run: &run,
+                by: &by,
+                reason: &reason,
+                runs_dir: &runs_dir,
+                pipeline: &pipeline,
+            };
+            exit(human::resume(&resumption, &mut human::Tty))
+        }
     }
+}
+
+fn exit(code: i32) -> ExitCode {
+    u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }

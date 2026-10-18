@@ -82,7 +82,7 @@ A request is one A2A message with one data part naming a skill:
 - `approval_document` (`decision`, `approver`, `reason`, and `candidate` for a design approval);
 - `ask` (`question`, and `run_id` unless the task has one): the coordinator's text answer, from the run's Markdown views (see [The coordinator](#the-coordinator)).
 
-Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume`.
+Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume` (`ln-hub` opens a terminal for that, see below).
 
 A request is checked before any task is touched. A refused request is a JSON-RPC error and leaves every task as it was. `status`, `evidence` and `approval_document` are answered with a message, even when the request names a task. A message that names a task without a `contextId` gets the task's context.
 
@@ -109,8 +109,12 @@ Every prompt is a slash command that runs as code; free text gets the help.
 - `/runs`, `/status [run]` and `/evidence [run]` work in either mode.
 - Anything you type that is not a slash command is a question for the coordinator model (see [The coordinator](#the-coordinator)), asked about the session's run. The answer is text, from the run's Markdown views; it starts, advances, signs and resumes nothing, and `/help` or `help` shows the commands.
 - `/start <run> <entry_spec.json>`, `/advance [run]` and `/approval-doc <decision>[:<candidate>] <approver> <reason>` need the `design` mode. A design approval names its candidate, e.g. `approve_design_and_no_security_veto:synthesis_sealed`. A session starts in the read-only `status` mode.
-- `/approval-doc` asks the editor once (allow or reject, never "always") before writing the unsigned document. It then shows the `ssh-keygen` and `run decide` commands.
-- `/approve`, `/decide` and `/resume` only explain that a human does these in a terminal.
+- `/approval-doc` asks the editor once (allow or reject, never "always") before writing the unsigned document. It then shows the `ssh-keygen` and `run decide` commands you could run by hand, and remembers the document for `/decide`.
+- `/decide` (design mode) opens a terminal window for the document `/approval-doc` wrote in this session. ln-hub does not sign or decide: the window runs `ln-hub decide`, which shows the run, node, decision, candidate, approver and reason, asks you to type the run id, runs `ssh-keygen -Y sign` so it asks for your passphrase there, and then runs `run decide`, which verifies the signature against `policy/approvers.yaml` as before. The window drops `SSH_AUTH_SOCK` and `SSH_ASKPASS_REQUIRE`, so a key loaded in an ssh-agent still asks for its passphrase. A key without a passphrase is protected only by the typed run id. An earlier `.sig` next to the document is set aside while signing and put back if the signing fails.
+- `/resume <who> <reason>` (design mode) opens a terminal that runs `run resume`, which shows why the run paused and asks you to type the run id. A resume is still self-asserted (`--by`); it has no passphrase.
+- `/approve`, `/sign` and `/reject` are not commands.
+
+The window is opened with `LN_HUB_TERMINAL` (the words that open one, such as `kitty` or `alacritty -e`), else `$TERMINAL`, `xdg-terminal-exec` or the first of foot, kitty, alacritty, wezterm, ghostty, gnome-terminal, konsole, xfce4-terminal and xterm on `PATH`. It runs the orchestrator as `LN_HUB_PIPELINE` (default `uv run python -m agentic_pipeline`), signs with `LN_HUB_SSH_KEY` (default `~/.ssh/id_ed25519`), and `/resume` looks for runs in `LN_HUB_RUNS_DIR` (default `<session cwd>/.runs`). macOS and Windows have no known emulator yet, so set `LN_HUB_TERMINAL` there. If no window can be opened, ln-hub prints the commands to run by hand.
 
 While a run advances, the editor shows each state as a plan entry and each model call as a tool call. When the run stops for a human, and on `/evidence`, it shows the choices and the candidates at a glance, with a link that opens the full report. When a run stops, it also shows the coordinator's summary of the stop, with a link that opens the file. Cancelling ends the turn at once and cancels the task, and the run stops after its current step. The session list holds the runs driven over A2A (`run/<id>`), and loading one shows its status. MCP servers that the editor offers are ignored: pipeline tools are policy.
 
@@ -119,7 +123,7 @@ While a run advances, the editor shows each state as a plan entry and each model
 A human state (`H1` design, `R1` merge, `R2` deploy) stops the run. The decision is a signed document, not a command-line flag:
 
 1. `run evidence` (or `run approve`, or `/evidence` in the editor) writes a readable report to `.runs/<run>/approvals/<node>-evidence.md`. It lists every choice, each candidate's components, data flows, dependencies, vetoes and scores, and every finding with its judged probability and the synthesis's answer. It ends with the digests a signature binds to. The report is a view, rebuilt from sealed state each time, and model text in it is escaped so it cannot turn into links or HTML. `run approve` writes an approval document that binds the decision to that evidence, including the run's provenance tip, so an approval is single-use.
-2. The human signs it: `ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n agentic-pipeline-approval <document>`.
+2. The human signs it: `ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n agentic-pipeline-approval <document>`. (`/decide` in the editor does 2 and 3 in a terminal window.)
 3. `run decide` verifies the signature offline against `policy/approvers.yaml`, recomputes the evidence and takes the edge only if it still matches.
 
 Only the keys listed in `policy/approvers.yaml` count. A model process has no way to produce an approval, but the approver's key is the user's own login key here: an unprotected key readable by a model process running as the same user could forge one, so protect it with a passphrase or use a dedicated or hardware key.

@@ -11,6 +11,7 @@
       "then": "python -m agentic_pipeline run decide deploy-design --approval /work/runs/deploy-design/approvals/H1-approve_design_and_no_security_veto.json",
       "decision": "approve_design_and_no_security_veto",
       "document": "/work/runs/deploy-design/approvals/H1-approve_design_and_no_security_veto.json",
+      "namespace": "agentic-pipeline-approval",
       "skill": "approval_document"
      }
     }

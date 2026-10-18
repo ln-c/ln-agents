@@ -1,12 +1,15 @@
 //! ACP (Agent Client Protocol) agent side of `ln-hub acp`: editors such as Zed and JetBrains
 //! start it and talk JSON-RPC over stdio. Every prompt is a slash command run as code over one
 //! A2A skill of `ln-pipeline` (see [`commands`]); nothing here approves, decides or resumes a
-//! run, and editor-supplied MCP servers are accepted and ignored (pipeline tools are policy).
+//! run by itself, and editor-supplied MCP servers are accepted and ignored (pipeline tools are
+//! policy). `/decide` and `/resume` only open a terminal window where the human does it (see
+//! [`human`]).
 //!
 //! An ACP session is a conversation about runs: `/start` or `/advance` binds it to a run, and
 //! `session/list` lists the runs the orchestrator knows (as `run/<id>`, loadable).
 
 pub mod commands;
+pub mod human;
 pub mod render;
 pub mod rpc;
 
@@ -50,6 +53,10 @@ pub struct Config {
     pub url: String,
     /// The bearer token file; `<session cwd>/.runs/.a2a/token` when unset.
     pub token_file: Option<PathBuf>,
+    /// What `/decide` and `/resume` put in their terminal windows.
+    pub human: human::Setup,
+    /// Opens those windows (the binary implements it; this crate starts no process).
+    pub window: human::SharedWindow,
 }
 
 impl Config {
@@ -75,6 +82,8 @@ struct Session {
     cwd: PathBuf,
     mode: Mode,
     run: Option<String>,
+    /// The unsigned document `/approval-doc` last wrote in this session, for `/decide`.
+    pending: Option<human::Pending>,
     turn: Option<Sender<Signal>>,
 }
 
@@ -209,6 +218,7 @@ impl Agent {
             cwd,
             mode: Mode::Status,
             run,
+            pending: None,
             turn: None,
         };
         self.sessions
@@ -514,9 +524,84 @@ impl Prompt {
                 );
                 let reply = skill_reply(&client()?, &request).map_err(a2a)?;
                 self.say(render::approval_text(&reply));
+                match human::Pending::from_reply(&run, &reply) {
+                    Ok(pending) => self.remember(pending),
+                    Err(error) => {
+                        self.say(format!("\n`/decide` cannot use this document: {error}.\n"))
+                    }
+                }
+            }
+            Command::Decide => {
+                let run = self.the_run(None)?;
+                let pending = self.pending_for(&run)?;
+                if !pending.document.is_file() {
+                    return Err(format!(
+                        "The document {} is not on disk any more; write it again with \
+                         `/approval-doc`.",
+                        pending.document.display()
+                    ));
+                }
+                let setup = &self.agent.config.human;
+                let args = human::decide_args(setup, &run, &pending.document, &pending.namespace)?;
+                let manual = format!("{}\n{}", pending.sign, pending.then);
+                self.open_window(&args, &run, "sign and record your decision", &manual);
+            }
+            Command::Resume { by, reason } => {
+                let run = self.the_run(None)?;
+                let setup = &self.agent.config.human;
+                let args = human::resume_args(setup, &self.cwd, &run, &by, &reason);
+                let mut hand = setup.pipeline.clone();
+                if hand.is_empty() {
+                    hand = human::DEFAULT_PIPELINE
+                        .iter()
+                        .map(|w| w.to_string())
+                        .collect();
+                }
+                hand.extend(
+                    ["run", "resume", &run, "--by", &by, "--reason", &reason].map(String::from),
+                );
+                let manual = human::display(&hand);
+                self.open_window(&args, &run, "confirm the resume", &manual);
             }
         }
         Ok(Ended::Done)
+    }
+
+    fn remember(&self, pending: human::Pending) {
+        let mut sessions = self
+            .agent
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(session) = sessions.get_mut(&self.session_id) {
+            session.pending = Some(pending);
+        }
+    }
+
+    fn pending_for(&self, run: &str) -> Result<human::Pending, String> {
+        let sessions = self
+            .agent
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        sessions
+            .get(&self.session_id)
+            .and_then(|session| session.pending.clone())
+            .filter(|pending| pending.run == run)
+            .ok_or_else(|| {
+                format!(
+                    "No unsigned document for run `{run}` in this session: write one with \
+                     `/approval-doc <decision> <approver> <reason>` first."
+                )
+            })
+    }
+
+    /// Open the human's terminal window and say what to do in it, or how to do it by hand.
+    fn open_window(&self, args: &[String], run: &str, what: &str, manual: &str) {
+        match self.agent.config.window.open(&self.cwd, args) {
+            Ok(command) => self.say(render::window_opened(run, what, &command)),
+            Err(error) => self.say(render::window_failed(&error, manual)),
+        }
     }
 
     /// Ask before writing the document: allow or reject this once, never "always".
