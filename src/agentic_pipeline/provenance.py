@@ -10,7 +10,6 @@ tamper-proof; immutable storage is host configuration.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -22,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agentic_pipeline.fsutil import fsync_dir
+from agentic_pipeline.fsutil import O_BINARY, fsync_dir, lock, read_all, unlock
 from agentic_pipeline.schemas import ValidationError, validate
 
 GENESIS_HASH = "sha256:" + "0" * 64
@@ -84,20 +83,24 @@ class JsonlProvenanceLog:
             raise ValueError(f"fields assigned by the log: {sorted(clash)}")
         with self._lock:
             created = not self.path.exists()
-            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND | O_BINARY, 0o600)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-                record = self._next_record(fd, event)
-                _write_all(fd, (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
-                os.fsync(fd)
+                lock(fd, blocking=True)
+                try:
+                    record = self._next_record(fd, event)
+                    line = json.dumps(record, ensure_ascii=False) + "\n"
+                    _write_all(fd, line.encode("utf-8"))
+                    os.fsync(fd)
+                finally:
+                    unlock(fd)
             finally:
-                os.close(fd)  # closing releases the flock
+                os.close(fd)
             if created:
                 fsync_dir(self.path.parent)
         return record
 
     def _next_record(self, fd: int, event: Mapping[str, Any]) -> dict[str, Any]:
-        data = os.pread(fd, os.fstat(fd).st_size, 0)
+        data = read_all(fd)
         seq, prev_hash = 0, GENESIS_HASH
         if data.strip():
             if not data.endswith(b"\n"):

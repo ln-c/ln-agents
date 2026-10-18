@@ -20,7 +20,6 @@ does not verify refuses to load at all.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -34,7 +33,7 @@ from typing import Any
 
 import yaml
 
-from agentic_pipeline.fsutil import atomic_write_json
+from agentic_pipeline.fsutil import O_BINARY, atomic_write_json, lock, unlock
 from agentic_pipeline.graph import Graph, loads_yaml
 from agentic_pipeline.provenance import RUN_ID_RE, JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.schemas import ValidationError, validate
@@ -232,11 +231,11 @@ class RunStore:
         The short wait rides out momentary holders such as `run status` probing it.
         """
         self.run_root.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.run_root / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(self.run_root / LOCK_FILE, os.O_RDWR | os.O_CREAT | O_BINARY, 0o600)
         deadline = time.monotonic() + wait
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock(fd, blocking=False)
                 break
             except BlockingIOError as exc:
                 if time.monotonic() >= deadline:
@@ -251,21 +250,24 @@ class RunStore:
         Probing takes the lock for an instant; acquire() waits briefly, so a runner
         starting at the same moment is not refused.
         """
-        lock = self.run_root / LOCK_FILE
-        if not lock.exists():
+        path = self.run_root / LOCK_FILE
+        if not path.exists():
             return False
-        fd = os.open(lock, os.O_RDWR)
+        fd = os.open(path, os.O_RDWR | O_BINARY)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock(fd, blocking=False)
         except BlockingIOError:
             return True
+        else:
+            unlock(fd)
         finally:
-            os.close(fd)  # closing also drops the lock if we took it
+            os.close(fd)
         return False
 
     def release(self) -> None:
         if self._lock_fd is not None:
-            os.close(self._lock_fd)  # closing releases the flock
+            unlock(self._lock_fd)
+            os.close(self._lock_fd)
             self._lock_fd = None
 
     def load(self) -> RunState:

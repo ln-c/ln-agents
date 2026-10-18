@@ -50,6 +50,7 @@ def fake_host(tmp_path: Path, output: str = "", code: int = 0, found: bool = Tru
         environ={"PATH": "/usr/bin"},
         home=tmp_path,
         proc_root=tmp_path / "proc",
+        platform="linux",  # the same probes on every OS the suite runs on
         which=lambda name: f"/fake/{name}" if found else None,
         run=lambda argv, env: (code, output),
     )
@@ -379,7 +380,8 @@ def _proc(tmp_path: Path, tcp: list[str], tcp6: list[str]) -> Path:
          "v6-wildcard-alongside-loopback", "other-port-only"],
 )  # fmt: skip
 def test_probe_listeners(tmp_path: Path, tcp: list[str], tcp6: list[str], expected: Status) -> None:
-    assert probe_listeners(11434, _proc(tmp_path, tcp, tcp6)).status is expected
+    _proc(tmp_path, tcp, tcp6)
+    assert probe_listeners(11434, fake_host(tmp_path)).status is expected
 
 
 def test_probe_listeners_ignores_non_listening_sockets(tmp_path: Path) -> None:
@@ -389,7 +391,77 @@ def test_probe_listeners_ignores_non_listening_sockets(tmp_path: Path) -> None:
         tcp.read_text() + f"   9: {V4_ANY}:2CAA 0100007F:DC62 01 00000000:00000000\n",
         encoding="ascii",
     )
-    assert probe_listeners(11434, proc).status is Status.VERIFIED
+    assert probe_listeners(11434, fake_host(tmp_path)).status is Status.VERIFIED
+
+
+def _listing_host(tmp_path: Path, platform: str, outputs: dict[str, tuple[int, str]]) -> Host:
+    """A host whose listener tool answers from `outputs`, keyed by the argv after the tool."""
+
+    def run(argv: list[str], env: Mapping[str, str]) -> tuple[int, str]:
+        assert env.keys() <= {"HOME", "LANG", "PATH", "SYSTEMROOT"}
+        return outputs[" ".join(argv[1:])]
+
+    return dataclasses.replace(fake_host(tmp_path), platform=platform, run=run)
+
+
+LSOF = "-nP -iTCP:11434 -sTCP:LISTEN -Fn"
+
+
+@pytest.mark.parametrize(
+    ("output", "code", "expected"),
+    [
+        ("p812\nf6\nn127.0.0.1:11434\n", 0, Status.VERIFIED),
+        ("p812\nf6\nn[::1]:11434\nf7\nn127.0.0.1:11434\n", 0, Status.VERIFIED),
+        ("p812\nf6\nn*:11434\n", 0, Status.FAILED),
+        ("p812\nf6\nn192.168.1.4:11434\n", 0, Status.FAILED),
+        ("", 1, Status.UNVERIFIED),  # lsof found nothing
+        ("", 2, Status.UNVERIFIED),
+        ("p812\nnnot-an-address\n", 0, Status.UNVERIFIED),
+    ],
+    ids=["v4-loopback", "both-loopbacks", "wildcard", "lan", "none", "lsof-error", "garbled"],
+)
+def test_probe_listeners_on_macos_reads_lsof(
+    tmp_path: Path, output: str, code: int, expected: Status
+) -> None:
+    host = _listing_host(tmp_path, "darwin", {LSOF: (code, output)})
+    assert probe_listeners(11434, host).status is expected
+
+
+NETSTAT_HEAD = "\nActive Connections\n\n  Proto  Local Address  Foreign Address  State  PID\n"
+
+
+@pytest.mark.parametrize(
+    ("v4", "v6", "expected"),
+    [
+        (["TCP    127.0.0.1:11434    0.0.0.0:0    LISTENING    40"], [], Status.VERIFIED),
+        ([], ["TCP    [::1]:11434    [::]:0    ABHÖREN    40"], Status.VERIFIED),  # localized
+        (["TCP    0.0.0.0:11434    0.0.0.0:0    LISTENING    40"], [], Status.FAILED),
+        (
+            ["TCP    127.0.0.1:11434    0.0.0.0:0    LISTENING    40"],
+            ["TCP    [::]:11434    [::]:0    LISTENING    40"],
+            Status.FAILED,
+        ),
+        (["TCP    0.0.0.0:11434    10.0.0.2:5555    ESTABLISHED    40"], [], Status.UNVERIFIED),
+        (["TCP    0.0.0.0:8080    0.0.0.0:0    LISTENING    40"], [], Status.UNVERIFIED),
+    ],
+    ids=["v4-loopback", "v6-loopback-localized", "wildcard", "v6-wildcard", "not-listening",
+         "other-port"],
+)  # fmt: skip
+def test_probe_listeners_on_windows_reads_netstat(
+    tmp_path: Path, v4: list[str], v6: list[str], expected: Status
+) -> None:
+    outputs = {
+        "-ano -p TCP": (0, NETSTAT_HEAD + "\n".join(v4)),
+        "-ano -p TCPv6": (0, NETSTAT_HEAD + "\n".join(v6)),
+    }
+    assert probe_listeners(11434, _listing_host(tmp_path, "win32", outputs)).status is expected
+
+
+def test_probe_listeners_without_a_tool_or_platform_is_unverified(tmp_path: Path) -> None:
+    missing = dataclasses.replace(fake_host(tmp_path, found=False), platform="darwin")
+    assert "lsof not found" in probe_listeners(11434, missing).detail
+    other = dataclasses.replace(fake_host(tmp_path), platform="sunos5")
+    assert probe_listeners(11434, other).status is Status.UNVERIFIED
 
 
 # ── Sandbox self-test ────────────────────────────────────────────────────────
