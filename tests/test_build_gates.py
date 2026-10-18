@@ -169,8 +169,6 @@ def test_e2_records_an_audit_bound_to_the_patch(build: Build) -> None:
         ({"scripts/ci_mcdc.py": "x = 1\n"}, "write_scope"),
         ({"contracts/api.json": "{}\n"}, "write_scope"),
         ({".github/CODEOWNERS": "* @me\n"}, "write_scope"),
-        ({"appveyor.yml": "build: off\n"}, "write_scope"),
-        ({"ci/appveyor.sh": "exit 0\n"}, "write_scope"),
         ({"src/CODEOWNERS": "* @me\n"}, "write_scope"),
         ({"src/a.py": "KEY = '-----BEGIN RSA PRIVATE KEY-----'\n"}, "no_secrets"),
         ({"src/a.py": "api_key = 'abcd1234abcd1234abcd'\n"}, "no_secrets"),

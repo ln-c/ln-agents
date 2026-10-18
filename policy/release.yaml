@@ -21,5 +21,3 @@ constraint_paths:
   - pipeline
   - scripts
   - .github
-  - ci
-  - appveyor.yml

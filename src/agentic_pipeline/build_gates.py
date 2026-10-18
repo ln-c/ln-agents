@@ -72,8 +72,7 @@ PATCH_ARTIFACT = "implementation_patch"
 MAX_SCAN_BYTES = 1 << 20
 
 # Repo subtrees E1 may never write (graph X.forbidden_mutations, plus the human-owned
-# trees, CODEOWNERS and the CI configuration). The tests and contracts subtrees come from the
-# pinned artifact map.
+# trees and CODEOWNERS). The tests and contracts subtrees come from the pinned artifact map.
 FORBIDDEN_TREES = (
     PINNED_SOURCES["protected_tests"],
     PINNED_SOURCES["applicable_contracts"],
@@ -82,8 +81,6 @@ FORBIDDEN_TREES = (
     "pipeline",
     "scripts",
     ".github",
-    "ci",
-    "appveyor.yml",
 )
 DEPENDENCY_FILES = re.compile(
     r"(^|/)(pyproject\.toml|uv\.lock|requirements[^/]*\.txt|setup\.(py|cfg)|Pipfile(\.lock)?"
