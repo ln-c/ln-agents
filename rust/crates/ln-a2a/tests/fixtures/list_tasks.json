@@ -16,6 +16,12 @@
         "text": "waiting for a signed approval at H1: write it (approval_document skill or `run approve`), sign it with ssh-keygen, then `run decide`. An A2A message cannot approve.",
         "filename": "",
         "mediaType": ""
+       },
+       {
+        "data": {
+         "run_status": "awaiting_human",
+         "node": "H1"
+        }
        }
       ],
       "extensions": [],

@@ -52,9 +52,12 @@ impl Turn {
                 if self.closed() && !self.entered.is_empty() {
                     updates.push(self.plan()); // every state done
                 }
+                let run_status = data
+                    .and_then(|d| d.get("run_status"))
+                    .and_then(Value::as_str);
                 updates.push(message(format!(
                     "\n{}\n",
-                    stopped_text(&status.state, &text)
+                    stopped_text(&status.state, run_status, &text)
                 )));
                 updates
             }
@@ -141,13 +144,18 @@ fn model_fields(event: &Value) -> Value {
     Value::Object(fields)
 }
 
-fn stopped_text(state: &TaskState, text: &str) -> String {
-    let label = match state {
-        TaskState::InputRequired => "Stopped, needs a human",
-        TaskState::AuthRequired => "Paused, needs a sign-in or quota",
-        TaskState::Completed => "Finished",
-        TaskState::Canceled => "Cancelled",
-        TaskState::Failed => "Failed",
+/// `run_status` tells apart the stops A2A folds into INPUT_REQUIRED; only a run waiting at
+/// H1, R1 or R2 is said to need a human (a server that omits it gets a plain "Stopped").
+fn stopped_text(state: &TaskState, run_status: Option<&str>, text: &str) -> String {
+    let label = match (state, run_status) {
+        (TaskState::InputRequired, Some("awaiting_human")) => "Stopped, needs a human",
+        (TaskState::InputRequired, Some("paused")) => "Paused, a human resumes it",
+        (TaskState::InputRequired, Some("blocked")) => "Blocked",
+        (TaskState::InputRequired, _) => "Stopped",
+        (TaskState::AuthRequired, _) => "Paused, needs a sign-in or quota",
+        (TaskState::Completed, _) => "Finished",
+        (TaskState::Canceled, _) => "Cancelled",
+        (TaskState::Failed, _) => "Failed",
         _ => "Stopped",
     };
     format!("**{label}.** {text}")
@@ -314,7 +322,7 @@ mod tests {
         let updates = turn.event(&status_update(
             "TASK_STATE_INPUT_REQUIRED",
             "waiting for a signed approval at H1",
-            None,
+            Some(json!({"run_status": "awaiting_human", "node": "H1"})),
         ));
         assert_eq!(turn.stopped, Some(TaskState::InputRequired));
         let [SessionUpdate::AgentMessageChunk(chunk)] = updates.as_slice() else {
@@ -322,6 +330,35 @@ mod tests {
         };
         let text = serde_json::to_value(&chunk.content).unwrap();
         assert!(text["text"].as_str().unwrap().contains("needs a human"));
+    }
+
+    #[test]
+    fn only_a_wait_at_a_human_state_says_it_needs_a_human() {
+        let stop = |run_status: Option<&str>| {
+            let data = run_status.map(|s| json!({"run_status": s, "node": "A2"}));
+            let mut turn = Turn::default();
+            let updates = turn.event(&status_update(
+                "TASK_STATE_INPUT_REQUIRED",
+                "blocked at A2: handler_error",
+                data,
+            ));
+            let [SessionUpdate::AgentMessageChunk(chunk)] = updates.as_slice() else {
+                panic!("{updates:?}")
+            };
+            serde_json::to_value(&chunk.content).unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(stop(Some("blocked")).contains("**Blocked.** blocked at A2"));
+        assert!(stop(Some("paused")).contains("**Paused, a human resumes it.**"));
+        for quiet in [Some("out_of_steps"), Some("stopped"), None] {
+            let text = stop(quiet);
+            assert!(
+                text.contains("**Stopped.**") && !text.contains("human"),
+                "{text}"
+            );
+        }
     }
 
     #[test]

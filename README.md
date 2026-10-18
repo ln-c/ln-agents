@@ -89,6 +89,8 @@ A request is checked before any task is touched. A refused request is a JSON-RPC
 - `TASK_STATE_INPUT_REQUIRED` when the run is otherwise paused, blocked or out of steps (it is resumable);
 - `TASK_STATE_COMPLETED` at a terminal state.
 
+Because one A2A state covers several stops, the final status message also carries `{"run_status", "node"}`: `awaiting_human`, `paused`, `blocked`, `out_of_steps`, `stopped` or `finished`. A blocked step spent nothing. Advance retries it, but it blocks again until its cause is fixed. `ln-hub` says a run "needs a human" only for `awaiting_human`.
+
 Tasks are stored under `<runs-dir>/.a2a/tasks` and answered from the run's own state after a restart.
 
 `ln-hub acp` puts those skills in an editor that speaks ACP (Zed, JetBrains, Neovim plugins). The editor starts it and talks JSON-RPC over stdio. It calls the A2A server above, which must be running.

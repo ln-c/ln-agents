@@ -26,6 +26,11 @@ a WORKING status update; when it stops, the task's state says why:
   would be terminal in A2A);
 * finished -> COMPLETED (CANCELED at T-CANCELED).
 
+INPUT_REQUIRED covers several stops, so the final status message also carries a data part
+`{"run_status": ..., "node": ...}`: `awaiting_human`, `paused`, `blocked` (the step spent
+nothing; advance retries it, and it blocks again until the cause is fixed),
+`out_of_steps`, `stopped` (known only from the run, after a restart) or `finished`.
+
 Tasks are stored next to the runs (`<runs>/.a2a/tasks`). A stored task that claims to be
 running when no request is driving it (the server restarted mid-advance) is answered from the
 run's own state, so it never reads as WORKING forever. The run lock is held only while a request
@@ -223,34 +228,58 @@ class PipelineService:
             "then": f"python -m agentic_pipeline run decide {run_id} --approval {draft.path}",
         }
 
-    def task_state(self, run_id: str, detail: str = "") -> tuple[int, str]:
-        """(A2A task state, why) for the run as it is on disk now."""
+    def task_state(
+        self, run_id: str, result: StepResult | None = None
+    ) -> tuple[int, str, dict[str, str]]:
+        """(A2A task state, why, {run_status, node}) for the run as it is on disk now;
+        `result` is how the last advance ended, if one just did."""
         state = RunStore(self.run_dir(run_id)).load()
         node = state.current
+        stop = lambda kind: {"run_status": kind, "node": node}  # noqa: E731
         if state.status is Status.FINISHED:
             done = TaskState.TASK_STATE_CANCELED if node == "T-CANCELED" else None
-            return done or TaskState.TASK_STATE_COMPLETED, f"finished at {node}"
+            return done or TaskState.TASK_STATE_COMPLETED, f"finished at {node}", stop("finished")
         if state.status is Status.AWAITING_HUMAN:
-            return TaskState.TASK_STATE_INPUT_REQUIRED, (
+            return (
+                TaskState.TASK_STATE_INPUT_REQUIRED,
                 f"waiting for a signed approval at {node}: write it (approval_document skill or "
                 "`run approve`), sign it with ssh-keygen, then `run decide`. An A2A message "
-                "cannot approve."
+                "cannot approve.",
+                stop("awaiting_human"),
             )
         if state.status is Status.PAUSED:
             results = [e for e in self.events(run_id, 0) if e.get("event") == "model_result"]
             reason = results[-1].get("reason_code") if results else None
             why = state.paused_reason or ""
             if reason in CREDENTIAL_REASONS:
-                return TaskState.TASK_STATE_AUTH_REQUIRED, (
+                return (
+                    TaskState.TASK_STATE_AUTH_REQUIRED,
                     f"paused at {node}: {reason}. Sign in or wait for the quota, then a human "
-                    f"runs `run resume`. ({why})"
+                    f"runs `run resume`. ({why})",
+                    stop("paused"),
                 )
-            return TaskState.TASK_STATE_INPUT_REQUIRED, (
-                f"paused at {node}: {why}. A human resumes it with `run resume`."
+            return (
+                TaskState.TASK_STATE_INPUT_REQUIRED,
+                f"paused at {node}: {why}. A human resumes it with `run resume`.",
+                stop("paused"),
             )
-        stopped = f": {detail}" if detail else ""
-        return TaskState.TASK_STATE_INPUT_REQUIRED, (
-            f"stopped at {node}{stopped}. Send advance to continue."
+        if result is not None and result.outcome is Outcome.BLOCKED:
+            return (
+                TaskState.TASK_STATE_INPUT_REQUIRED,
+                f"blocked at {node}: {result.detail}. The step spent nothing; advance retries "
+                "it, and it blocks again until the cause is fixed.",
+                stop("blocked"),
+            )
+        if result is not None and result.outcome is Outcome.ADVANCED:
+            return (
+                TaskState.TASK_STATE_INPUT_REQUIRED,
+                f"stopped at {node} after the step limit. Send advance to continue.",
+                stop("out_of_steps"),
+            )
+        return (
+            TaskState.TASK_STATE_INPUT_REQUIRED,
+            f"stopped at {node}. Send advance to continue.",
+            stop("stopped"),
         )
 
 
@@ -292,9 +321,11 @@ class RunTaskStore(TaskStore):
             return task
         fixed = Task()
         fixed.CopyFrom(task)
-        state, why = self.service.task_state(str(run_id))
+        state, why, stop = self.service.task_state(str(run_id))
         fixed.status.state = state
-        fixed.status.message.CopyFrom(new_message([new_text_part(why)], task.context_id, task.id))
+        fixed.status.message.CopyFrom(
+            new_message([new_text_part(why), new_data_part(stop)], task.context_id, task.id)
+        )
         return fixed
 
     async def save(self, task: Task, context: ServerCallContext) -> None:
@@ -469,7 +500,7 @@ class PipelineExecutor(AgentExecutor):
             except Exception as exc:  # the run could not be opened or stepped: it stays as it is
                 current = (await asyncio.to_thread(self.service.status, run_id))["current"]
                 result = StepResult(Outcome.BLOCKED, current, f"{type(exc).__name__}: {exc}")
-            state, why = await asyncio.to_thread(self.service.task_state, run_id, result.detail)
+            state, why, stop = await asyncio.to_thread(self.service.task_state, run_id, result)
             if (
                 state == TaskState.TASK_STATE_INPUT_REQUIRED
                 and result.outcome is Outcome.AWAITING_HUMAN
@@ -480,7 +511,8 @@ class PipelineExecutor(AgentExecutor):
                 except Exception as exc:  # unverifiable evidence is reported, never invented
                     why = f"{why} Evidence could not be recomputed: {exc}"
             await updater.update_status(
-                state, new_message([new_text_part(why)], task.context_id, task.id)
+                state,
+                new_message([new_text_part(why), new_data_part(stop)], task.context_id, task.id),
             )
         finally:
             self._stops.pop(task.id, None)
