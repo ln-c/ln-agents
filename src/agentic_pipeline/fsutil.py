@@ -11,7 +11,7 @@ import json
 import os
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ WINDOWS = os.name == "nt"
 O_BINARY: int = getattr(os, "O_BINARY", 0)
 _WINDOWS_LOCK_OFFSET = 2**31 - 2  # one byte no file of ours ever reaches
 _LOCK_POLL_SECONDS = 0.01
+_SHARING_RETRY_SECONDS = 1.0
 
 
 def lock(fd: int, *, blocking: bool) -> None:
@@ -56,6 +57,26 @@ def unlock(fd: int) -> None:
     msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
+def retry_sharing[T](operation: Callable[[], T]) -> T:
+    """Run `operation`, retrying it briefly on Windows while another open handle blocks it.
+
+    Windows refuses to open a file that `os.replace` is swapping in, and refuses the replace
+    while a reader has the target open (Python opens files without FILE_SHARE_DELETE). Either
+    lasts only as long as the other side's open, so a short retry is enough; a PermissionError
+    that outlasts it is raised. On POSIX it runs once.
+    """
+    if not WINDOWS:
+        return operation()
+    deadline = time.monotonic() + _SHARING_RETRY_SECONDS
+    while True:
+        try:
+            return operation()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(_LOCK_POLL_SECONDS)
+
+
 def read_all(fd: int) -> bytes:
     """The whole file from offset 0 (a portable `os.pread(fd, size, 0)`); moves the offset."""
     os.lseek(fd, 0, os.SEEK_SET)
@@ -81,6 +102,7 @@ def atomic_write_json(path: Path, document: Mapping[str, Any]) -> None:
     """Write `document` so readers see the old file or the new one, never a partial write.
 
     Temp file in the same directory, fsync, `os.replace`, then fsync of the directory.
+    The replace waits out a concurrent reader on Windows (`retry_sharing`).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp.{uuid.uuid4().hex}")
@@ -89,7 +111,7 @@ def atomic_write_json(path: Path, document: Mapping[str, Any]) -> None:
             json.dump(document, fh, sort_keys=True, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        retry_sharing(lambda: os.replace(tmp, path))
     finally:
         tmp.unlink(missing_ok=True)
     fsync_dir(path.parent)
