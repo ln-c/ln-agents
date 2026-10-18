@@ -90,8 +90,8 @@ providers:
   # whole request must fit one physical batch, and the probabilities shift slightly with -b/-ub,
   # so it starts with exactly these flags (the server does not report -b/-ub, so nothing else
   # checks them). A2J requests reach about 6k tokens, so the batch is 8192 (4096 refused a
-  # 5,779-token finding on 2026-10-18); policy/triage.yaml's threshold was calibrated at 4096
-  # and should be recalibrated at 8192.
+  # 5,779-token finding on 2026-10-18); policy/triage.yaml's threshold was recalibrated at
+  # 8192 on 2026-10-18.
   llamacpp_decision:
     access_mode: local_inference
     location: local

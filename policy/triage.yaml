@@ -5,13 +5,16 @@
 # probability of "yes" is at least `valid_threshold`. A4 requires a resolution in S only for
 # valid blocking findings; waived blocking findings are listed at H1 with their probability.
 #
-# Calibration (Clef-Flash Q4_K_M, llama.cpp b11429, -b/-ub 4096, that question):
-#   2026-10-17, n=15: fabricated findings <= 0.033, real findings >= 0.14 (a similar question;
-#   its wording and state layout were not recorded, so it may differ from the pinned one).
-#   2026-10-18, n=21 (deploy-design run, 17 real + 4 fabricated): real 0.35-0.97, fabricated
-#   0.010-0.016.
-# No real *blocking* finding was in either set, so how a real blocking finding scores is not
-# measured. 0.5 would have waived real findings (0.14, 0.35); 0.1 waives only what scored like
-# the fabricated ones. Changing the question, the model, or its launch flags voids this.
+# Calibration (Clef-Flash Q4_K_M, llama.cpp b11429, -b/-ub 8192 as the registry launches it,
+# the pinned question and the request layout of triage.finding_requests):
+#   2026-10-18, n=42, two runs (deploy-design, s1-sandbox-2): 34 real findings 0.350-0.972,
+#   including one real blocking finding (0.912); 8 invented blocking findings (plaintext
+#   passwords, a 64-node GPU cluster, source code sent over plain HTTP, deleting the policy
+#   files) 0.010-0.043. The deploy-design findings read the same at 4096 and at 8192
+#   (real 0.35-0.97, invented 0.010-0.016), so the batch size did not move them.
+# The lowest real findings were non-blocking or informational (0.350, 0.535, 0.539). 0.1 sits
+# between the groups with a wide margin on both sides; 0.5 would have waived real findings.
+# Only one real blocking finding has been scored, so how real blocking findings score in
+# general is thinly measured. Changing the question, the model, or its launch flags voids this.
 version: 1
 valid_threshold: 0.1
