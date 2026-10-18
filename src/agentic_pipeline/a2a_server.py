@@ -258,8 +258,11 @@ class PipelineService:
             self._converting.add(run_id)
 
         def convert() -> None:
+            store = RunStore(self.run_dir(run_id))
             try:
-                self.coordinator(run_id).convert_all()
+                # Stop as soon as a runner is stepping the run: its own model calls come first,
+                # and two subscription sandboxes should not share one login at once.
+                self.coordinator(run_id).convert_all(cancelled=store.is_locked)
             except Exception as exc:  # advisory: the next stop tries again
                 logging.getLogger(__name__).warning("views of %s not written: %s", run_id, exc)
             finally:

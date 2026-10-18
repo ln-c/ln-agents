@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 import uuid
@@ -55,6 +56,7 @@ MAX_FACT_EVENTS = 20
 MAX_ASK_BYTES = 80 * 1024
 MAX_REPORT_BYTES = 60 * 1024
 PREFLIGHT_TTL_SECONDS = 60.0
+CALL_TIMEOUT_SECONDS = 180.0  # the run has stopped and the text is advice: never wait longer
 
 # Sealed design artifacts, in reading order: (artifact, view name, title). Each holds one JSON.
 SEALED = (
@@ -177,6 +179,40 @@ def identifiers(document: Any) -> list[str]:
     return list(found)
 
 
+_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
+_LINK = re.compile(r"\[([^\]]*)\]\(([^)\s]*)[^)]*\)")
+_TAG = re.compile(r"<(?=[A-Za-z/!?])")
+_CODE = re.compile(r"(`[^`]*`)")
+
+
+def _plain(line: str) -> str:
+    """`line` with links as text and HTML escaped, leaving `code spans` as they are."""
+    parts = _CODE.split(line)
+    return "".join(
+        part if i % 2 else _TAG.sub("&lt;", _LINK.sub(r"\1 (\2)", part))
+        for i, part in enumerate(parts)
+    )
+
+
+def sanitize(text: str, *, quote: bool) -> str:
+    """Model text made safe to sit among text written by code.
+
+    Links become plain text with the address shown, raw HTML is escaped, and headings can no
+    longer pose as a section of the page: demoted two levels in a view, which has no sections of
+    code's own after it, and turned into bold lines in a quote in a summary, which has.
+    """
+    lines = []
+    for line in text.splitlines():
+        line = _plain(line)
+        if match := _HEADING.match(line):
+            if quote:
+                line = f"**{match.group(2).strip()}**"
+            else:
+                line = "#" * min(6, len(match.group(1)) + 2) + " " + match.group(2)
+        lines.append(f"> {line}" if quote else line)
+    return "\n".join(lines)
+
+
 def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -202,6 +238,7 @@ class Coordinator:
     setup: Setup | None
     setup_error: str | None = None
     new_id: Callable[[], str] = lambda: uuid.uuid4().hex
+    timeout: float = CALL_TIMEOUT_SECONDS
     _report: tuple[float, Report] | None = field(default=None, init=False)
     _log: JsonlProvenanceLog | None = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -316,7 +353,9 @@ class Coordinator:
             write_path=write_path,
         )
         try:
-            adapter = self.adapter_factory(self.registry, backend, task_builder=lambda _: task)
+            adapter = self.adapter_factory(
+                self.registry, backend, task_builder=lambda _: task, timeout=self.timeout
+            )
             write_path.mkdir(parents=True, exist_ok=False)
             call = adapter.prepare(grant)
         except Exception as exc:  # nothing has been sent yet
@@ -419,7 +458,7 @@ class Coordinator:
                 )
         path.write_text(
             f"{self._header(source, kind, backend if kind == 'model' else None, note)}\n"
-            f"# {title}\n\n{body}\n",
+            f"# {title}\n\n{sanitize(body, quote=False) if kind == 'model' else body}\n",
             encoding="utf-8",
         )
         return path
@@ -434,9 +473,11 @@ class Coordinator:
                 found.append((name, title, files[-1]))
         return found
 
-    def convert_all(self) -> list[Path]:
+    def convert_all(self, cancelled: Callable[[], bool] = lambda: False) -> list[Path]:
         """A Markdown view of every sealed design document and gate record that has none (or
-        whose record changed). Returns the view files that were written."""
+        whose record changed). Returns the view files that were written. `cancelled` is asked
+        before each document, so a caller can stop when something more important needs the
+        same subscription."""
         sealed, _ = self._documents()
         backend, why = self.choose()
         todo = [
@@ -446,6 +487,8 @@ class Coordinator:
         ] + self._gate_records()
         written = []
         for name, title, source in todo:
+            if cancelled():
+                break
             if self._current(self.views / f"{name}.md", source, backend is not None):
                 continue
             written.append(self._convert(name, title, source, backend, why))
@@ -478,7 +521,10 @@ class Coordinator:
                 f"{e.get('reason_code', '')}".rstrip()
             )
         if report:
+            cut = len(report) > MAX_REPORT_BYTES
             lines += ["", "## The decision report (written by code)", "", report[:MAX_REPORT_BYTES]]
+            if cut:
+                lines += ["", f"(cut after {MAX_REPORT_BYTES} characters; the full file is longer)"]
         return "\n".join(lines) + "\n"
 
     def _next_block(self, info: StopInfo, report_path: str | None) -> str:
@@ -545,7 +591,8 @@ class Coordinator:
             f"<!-- ln-hub stop run={self.run_id} node={info.node} kind={info.kind} -->\n"
             f"# {info.node}: {TITLES.get(info.kind, info.kind)}\n\n"
             f"> Summary written by {by}; the commands and file list below are written by code.\n\n"
-            f"{account}\n{self._next_block(info, report_path)}",
+            f"{sanitize(account, quote=True) if who else account}\n"
+            f"{self._next_block(info, report_path)}",
             encoding="utf-8",
         )
         return path
@@ -590,7 +637,7 @@ class Coordinator:
         )
         inputs = {"status": status, **{n: p for n, p in files.items()}}
         answer = self._call(f"answer_{self.new_id()[:8]}", task, inputs, backend)
-        return answer, given
+        return sanitize(answer, quote=False), given
 
 
 def for_run(

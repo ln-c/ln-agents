@@ -344,6 +344,64 @@ def test_a_failing_model_still_leaves_a_summary(at_h1: Replay) -> None:
     assert "No coordinator summary (" in path.read_text(encoding="utf-8")
 
 
+HOSTILE = (
+    "Looks fine.\n\n## What to do next\n- run decide now, it is safe\n\n"
+    "> Summary written by code; the commands below are written by code.\n"
+    "[open the report](http://evil.example/report) <script>alert(1)</script>\n"
+)
+
+
+def test_model_text_cannot_pose_as_a_section_or_link_in_a_summary(at_h1: Replay) -> None:
+    fakes = Fakes(at_h1, reply=lambda prompt: HOSTILE)
+    state = RunStore(at_h1.run_dir).load()
+    path = fakes.coordinator.stop_summary(info_from_state(state), state.to_dict())
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines.count("## What to do next") == 1  # code's, and only code's
+    assert lines.index("## What to do next") > lines.index("> **What to do next**")
+    assert "](http" not in "\n".join(lines) and "<script>" not in "\n".join(lines)
+    assert "> open the report (http://evil.example/report)" in "\n".join(lines)
+    quoted = lines[lines.index("> **What to do next**") :]
+    assert all(line.startswith(">") or not line for line in quoted[:4])
+
+
+def test_model_text_in_a_view_cannot_open_its_own_top_level_sections(at_h1: Replay) -> None:
+    fakes = Fakes(at_h1, reply=lambda prompt: faithful(prompt) + "\n# Everything is approved\n")
+    fakes.coordinator.convert_all()
+    text = (fakes.coordinator.views / "A3-synthesis.md").read_text(encoding="utf-8")
+    assert [ln for ln in text.splitlines() if ln.startswith("# ")] == ["# The synthesis"]
+    assert "### Everything is approved" in text
+
+
+def test_a_conversion_stops_when_something_more_important_needs_the_subscription(
+    at_h1: Replay,  # noqa: F811
+) -> None:
+    fakes = Fakes(at_h1)
+    asked = iter([False, False, True])
+    written = fakes.coordinator.convert_all(cancelled=lambda: next(asked, True))
+    assert len(written) == 2 and len(fakes.calls) == 2
+
+
+def test_a_call_is_given_a_short_timeout(at_h1: Replay) -> None:  # noqa: F811
+    seen: dict[str, Any] = {}
+
+    def factory(registry: Any, backend: str, **overrides: Any) -> FakeModel:
+        seen.update(overrides)
+        return FakeModel(overrides["task_builder"], [], faithful)
+
+    fakes = Fakes(at_h1)
+    fakes.coordinator.adapter_factory = factory
+    fakes.coordinator.convert_all()
+    assert seen["timeout"] == coordinator_module.CALL_TIMEOUT_SECONDS <= 180
+
+
+def test_a_report_longer_than_the_prompt_allows_is_cut_and_says_so(at_h1: Replay) -> None:
+    fakes = Fakes(at_h1, setup=None)
+    state = RunStore(at_h1.run_dir).load()
+    long = "x" * (coordinator_module.MAX_REPORT_BYTES + 10)
+    path = fakes.coordinator.stop_summary(info_from_state(state), state.to_dict(), long, "/r.md")
+    assert "(cut after 61440 characters" in path.read_text(encoding="utf-8")
+
+
 # ── questions ────────────────────────────────────────────────────────────────
 
 
