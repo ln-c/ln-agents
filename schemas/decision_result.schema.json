@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "decision_result",
+  "title": "Answers of a decision model (llama-server /v1/systemone), written by DecisionAdapter as <operation_id>.json. The adapter has already checked each answer against the question asked; consumers re-check what they rely on.",
+  "type": "object",
+  "required": ["model", "model_version", "results"],
+  "additionalProperties": false,
+  "definitions": {
+    "probability": {"type": "number", "minimum": 0, "maximum": 1},
+    "probabilities": {"type": "object", "minProperties": 2, "additionalProperties": {"$ref": "#/definitions/probability"}}
+  },
+  "properties": {
+    "model": {"type": "string", "minLength": 1},
+    "model_version": {"type": "string", "minLength": 1},
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "answers", "input_tokens"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "input_tokens": {"type": ["integer", "null"], "minimum": 0},
+          "answers": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": ["type", "noul"],
+                  "additionalProperties": false,
+                  "properties": {"type": {"const": "noul"}, "noul": {"$ref": "#/definitions/probability"}}
+                },
+                {
+                  "type": "object",
+                  "required": ["type", "choice", "probabilities", "confidence"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {"const": "choice"},
+                    "choice": {"type": "string"},
+                    "probabilities": {"$ref": "#/definitions/probabilities"},
+                    "confidence": {"$ref": "#/definitions/probability"}
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": ["type", "score", "legend", "probabilities", "confidence"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {"const": "score"},
+                    "score": {"type": "number", "minimum": 0},
+                    "legend": {"type": "object", "additionalProperties": {"type": "string"}},
+                    "probabilities": {"$ref": "#/definitions/probabilities"},
+                    "confidence": {"$ref": "#/definitions/probability"}
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

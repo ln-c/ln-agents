@@ -102,6 +102,7 @@ POLICY_PARSED = (
     "policy/approvers.yaml",
     "policy/ci.yaml",
     "policy/release.yaml",
+    "policy/triage.yaml",
 )
 
 
@@ -124,6 +125,7 @@ class PolicySnapshot:
     approvers: Mapping[str, Any]
     ci: Mapping[str, Any]
     release: Mapping[str, Any]
+    triage: Mapping[str, Any]
 
 
 def load_policy(root: Path) -> PolicySnapshot:
@@ -148,6 +150,7 @@ def load_policy(root: Path) -> PolicySnapshot:
             approvers=parsed["policy/approvers.yaml"],
             ci=parsed["policy/ci.yaml"],
             release=parsed["policy/release.yaml"],
+            triage=parsed["policy/triage.yaml"],
         )
     except (OSError, KeyError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         raise RunStateError(f"cannot read graph or policy: {type(exc).__name__}: {exc}") from exc

@@ -48,7 +48,18 @@ states:
     executor: model
     doc: >-
       Cross-critique, once (A critiques B, B critiques A); no self-critique. A blocking
-      finding is not routed back to A1: A3 must resolve or reject each one, and A4 checks.
+      finding is not routed back to A1: A3 must resolve or reject each valid one, and A4 checks.
+    edges:
+      - {to: A2J, guard: always}
+  A2J:
+    kind: model
+    executor: model
+    doc: >-
+      Finding triage by a local decision model of a third family: for every finding of both
+      critiques, the probability that the target proposal has the problem it describes. Code
+      applies the human-owned threshold (policy/triage.yaml); a waived finding is never deleted
+      and is listed at H1. Nothing is routed on the verdicts.
+    produces: finding_verdicts
     edges:
       - {to: A3, guard: always}
   A3:
@@ -63,7 +74,7 @@ states:
   A4:
     kind: decision
     executor: code
-    doc: Validation (schema, semantic, constraints, and a resolution for every blocking critique finding).
+    doc: Validation (schema, semantic, constraints, and a resolution for every blocking critique finding A2J judged valid).
     edges:
       - {to: A1, guard: proposal_invalid, budget: design}
       - {to: A3, guard: synthesis_invalid, budget: design}

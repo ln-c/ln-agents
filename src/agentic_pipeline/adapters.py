@@ -59,6 +59,7 @@ from agentic_pipeline.sandbox import (
     run_sandboxed,
 )
 from agentic_pipeline.sandbox_entry import SHIM_URL
+from agentic_pipeline.triage import decision_prompt, finding_requests, load_sealed
 
 PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent"
 PI_MOUNT = "/opt/pi"
@@ -638,6 +639,25 @@ def requests_from_inputs(grant: DispatchGrant) -> list[DecisionRequest]:
     return requests
 
 
+def triage_requests(grant: DispatchGrant) -> list[DecisionRequest]:
+    """A2J: one request per critique finding, built from the sealed proposals and critiques."""
+    return finding_requests(*load_sealed(grant.inputs))
+
+
+# The requests each decision operation sends; an operation not listed has no task to run.
+DECISION_TASKS: Mapping[str, Callable[[DispatchGrant], list[DecisionRequest]]] = {
+    "finding_verdicts": triage_requests,
+    "decision_probe": requests_from_inputs,  # conformance: the probe writes its own requests
+}
+
+
+def decision_requests(grant: DispatchGrant) -> list[DecisionRequest]:
+    task = DECISION_TASKS.get(grant.operation_id)
+    if task is None:
+        raise ValueError(f"no decision task for operation {grant.operation_id!r}")
+    return task(grant)
+
+
 @dataclass(slots=True)
 class DecisionAdapter:
     """One POST to llama-server's `/v1/systemone` per request, made from the host on loopback.
@@ -646,7 +666,8 @@ class DecisionAdapter:
     hash covers the questions asked. Answers are untrusted: each must answer exactly the
     questions asked, with probabilities in [0, 1], from the pinned model. The verdict file
     `<operation_id>.json` is written only when every request was answered; it holds the raw
-    probabilities so a threshold can be calibrated from them later.
+    probabilities so a threshold can be calibrated from them later. An empty request list (A2J
+    when neither critique has a finding) makes no call and writes an empty result.
 
     The server does not report its -b/-ub, which shift the probabilities slightly, so the
     identity pins the model file and llama.cpp build only (see the registry's launch flags).
@@ -655,7 +676,7 @@ class DecisionAdapter:
     model_id: str
     model_version: str
     upstream: Upstream
-    request_builder: Callable[[DispatchGrant], list[DecisionRequest]] = requests_from_inputs
+    request_builder: Callable[[DispatchGrant], list[DecisionRequest]] = decision_requests
     max_response_bytes: int = DECISION_MAX_RESPONSE_BYTES
     # No process and no tools: sealed inputs are verified by the dispatcher, and the model
     # sees only the request text.
@@ -686,15 +707,11 @@ class DecisionAdapter:
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         requests = self.request_builder(grant)
-        if not requests:
-            raise ValueError("no decision requests to send")
         if problems := [p for request in requests for p in request_problems(request)]:
             raise ValueError("; ".join(problems))
         if len({r["id"] for r in requests}) != len(requests):
             raise ValueError("request ids are not unique")
-        # Key order is kept, not sorted: it is the order the options are put to the model.
-        prompt = json.dumps(requests, separators=(",", ":"))
-        return PreparedCall(**asdict(self.identity()), prompt=prompt.encode("utf-8"))
+        return PreparedCall(**asdict(self.identity()), prompt=decision_prompt(requests))
 
     def _ask(self, request: DecisionRequest) -> tuple[dict[str, Any] | None, str]:
         """(the validated reply, "") or (None, why it was refused)."""
@@ -719,7 +736,10 @@ class DecisionAdapter:
         if status != 200:
             error = reply.get("error") if isinstance(reply, dict) else None
             message = error.get("message") if isinstance(error, dict) else None
-            return None, f"HTTP {status}: {str(message or raw[:200])[:200]}"
+            text = str(message or raw[:200])[:200]
+            if "too large" in text:  # the whole state must fit one physical batch
+                text += "; restart the decision server with larger -b/-ub (e.g. 8192)"
+            return None, f"HTTP {status}: {text}"
         if not isinstance(reply, dict) or reply.get("model") != self.model_id:
             return None, f"answered by {reply.get('model') if isinstance(reply, dict) else None!r}"
         if problems := answer_problems(request["questions"], reply.get("answers")):
@@ -741,4 +761,6 @@ class DecisionAdapter:
         document = {"model": self.model_id, "model_version": self.model_version, "results": results}
         output = grant.write_path / f"{grant.operation_id}.json"
         output.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")
+        if not results:
+            return AdapterResult("ok", "requests=0, no call made")
         return AdapterResult("ok", f"requests={len(results)} input_tokens={tokens}", self.model_id)

@@ -11,6 +11,7 @@ This repository's deterministic implementation remains authoritative. Agent spec
 | Fast-path criteria | `policy/fast_path.yaml` | A fast path cannot bypass hard vetoes or human approval. |
 | Hard vetoes | `policy/vetoes.yaml` | Fail closed; model output cannot clear a veto. |
 | MCDA weights and thresholds | `policy/weights.yaml` | Deterministic scoring; changes require policy review. |
+| Finding triage threshold | `policy/triage.yaml` | A model's probability is compared in code; a waived finding is shown at H1, never deleted. |
 | Data classes | `policy/data_classes.yaml` | Determines what may be sent to each execution backend. |
 | Escalation permissions | `policy/escalation.yaml` | Cloud escalation requires an allowed data class and explicit route. |
 | Exception routes | `policy/routing.yaml` | Model classifications are suggestions until validated by deterministic rules. |

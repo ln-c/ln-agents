@@ -1,4 +1,4 @@
-"""Deterministic design-side gates: A2, A4, B1, B2, B3, and DR.
+"""Deterministic design-side gates: A2, A2J, A4, B1, B2, B3, and DR.
 
 Each handler recomputes its facts from sealed artifacts and frozen policy, picks a guard,
 and writes an audit record under `gates/<NODE>/<input digest>.json`. Naming the record by
@@ -17,6 +17,11 @@ Rules these gates keep:
 * A2 reviews once and always returns `always`. A blocking finding is not routed back to A1;
   the synthesis must say what it did with it, and A4 refuses a synthesis that leaves one
   unanswered. An unusable critique still blocks: it is never read as "no flaws".
+* A2J reads the decision model's answer for every finding (triage.py) and applies the
+  human-owned threshold. It blocks unless the verdicts answer exactly the findings raised, the
+  logged prompt hash is that of the questions rebuilt from sealed state, and the judge ran on a
+  family other than every author and critic. A4 then requires a resolution only for blocking
+  findings judged valid; a waived one is listed at H1 with its probability, never dropped.
 * A4 never returns `design_spent` (the runner substitutes the spent route itself) or
   `constraint_sources_conflict` (no deterministic definition exists; reported as not
   evaluated).
@@ -60,6 +65,7 @@ from agentic_pipeline.manifest import (
 from agentic_pipeline.registry import backend_family
 from agentic_pipeline.run_state import PolicySnapshot
 from agentic_pipeline.schemas import ValidationError, validate
+from agentic_pipeline.triage import CRITIQUES, TriageError, decision_prompt, finding_requests, judge
 
 if TYPE_CHECKING:
     from agentic_pipeline.runner import HandlerContext
@@ -174,12 +180,17 @@ def design_problems(design: Design) -> dict[str, list[str]]:
 # ── A4 ───────────────────────────────────────────────────────────────────────
 
 
-def resolution_problems(synthesis: Mapping[str, Any], blocking: set[tuple[str, str]]) -> list[str]:
-    """Why S does not account for exactly the blocking findings of the A2 critiques.
+def resolution_problems(
+    synthesis: Mapping[str, Any],
+    blocking: set[tuple[str, str]],
+    required: set[tuple[str, str]],
+) -> list[str]:
+    """Why S does not account for the blocking findings of the A2 critiques.
 
-    `blocking` holds (sealed critique artifact, finding id). S must answer every one of them
-    once, and may answer nothing else, so a finding cannot be dropped without a trace and an
-    answer cannot refer to a finding that was never raised.
+    Keys are (sealed critique artifact, finding id). S must answer every `required` finding
+    (the blocking ones A2J judged valid) once, may also answer any other blocking finding, and
+    may answer nothing else, so a valid finding cannot be dropped without a trace and an answer
+    cannot refer to a finding that was never raised.
     """
     errors: list[str] = []
     answered: set[tuple[str, str]] = set()
@@ -192,14 +203,14 @@ def resolution_problems(synthesis: Mapping[str, Any], blocking: set[tuple[str, s
         answered.add(key)
     errors.extend(
         f"blocking finding {finding} of {critique} has no resolution"
-        for critique, finding in sorted(blocking - answered)
+        for critique, finding in sorted(required - answered)
     )
     return errors
 
 
 def validate_design(ctx: HandlerContext) -> str:
-    """A4: schema, `manifest_hash`, traceability, and a resolution for every blocking finding."""
-    _policy(ctx)
+    """A4: schema, `manifest_hash`, traceability, and resolutions for valid blocking findings."""
+    policy = _policy(ctx)
     design = Design(ctx)
     problems = design_problems(design)
     key = design.input_digest
@@ -208,18 +219,15 @@ def validate_design(ctx: HandlerContext) -> str:
     elif problems["synthesis_sealed"]:
         guard = "synthesis_invalid"
     else:
-        # Only a valid design reaches the critiques, which then belong to what the verdict
-        # depends on (and so to the record's name).
-        digest, docs = usable_critiques(ctx)
-        key = _digest({"design": key, "critiques": digest})
-        blocking = {
-            (f"{op}_sealed", finding["id"])
-            for op, doc in docs.items()
-            for finding in doc["findings"]
-            if finding["severity"] == "blocking"
-        }
+        # Only a valid design reaches the critiques and their verdicts, which then belong to
+        # what the verdict depends on (and so to the record's name).
+        digest, report = triage_report(ctx, policy)
+        key = _digest({"design": key, "triage": digest})
+        raised = [f for f in report["findings"] if f["severity"] == "blocking"]
+        blocking = {(f["critique"], f["finding_id"]) for f in raised}
+        required = {(f["critique"], f["finding_id"]) for f in raised if f["valid"]}
         problems["synthesis_sealed"] = resolution_problems(
-            design.docs["synthesis_sealed"], blocking
+            design.docs["synthesis_sealed"], blocking, required
         )
         guard = "synthesis_invalid" if problems["synthesis_sealed"] else "all_required_valid"
     _record(
@@ -233,12 +241,6 @@ def validate_design(ctx: HandlerContext) -> str:
 
 # ── A2 ───────────────────────────────────────────────────────────────────────
 
-# critique operation -> (the proposal it reviews, that proposal's producing operation)
-CRITIQUES = {
-    "critique_b_by_a": ("proposal_b_sealed", "proposal_b"),
-    "critique_a_by_b": ("proposal_a_sealed", "proposal_a"),
-}
-
 
 def _load_json(directory: Path, name: str) -> Any:
     try:
@@ -247,14 +249,19 @@ def _load_json(directory: Path, name: str) -> Any:
         raise GateError(f"{name}.json: {exc}") from exc
 
 
-def _backend(ctx: HandlerContext, stage: str, operation: str) -> str:
+def _operation(ctx: HandlerContext, stage: str, operation: str) -> Mapping[str, Any]:
+    """What the stage manifest recorded for one operation (backend, invocation id)."""
     try:
         doc = load_manifest(ctx.run_root, stage, ctx.run_id)
     except ManifestError as exc:
         raise GateError(f"{stage}: {exc}") from exc
     if doc is None or operation not in doc["operations"]:
         raise GateError(f"{stage}.{operation}: no recorded backend")
-    return str(doc["operations"][operation]["backend"])
+    return doc["operations"][operation]
+
+
+def _backend(ctx: HandlerContext, stage: str, operation: str) -> str:
+    return str(_operation(ctx, stage, operation)["backend"])
 
 
 def _family(ctx: HandlerContext, backend: str) -> str:
@@ -370,6 +377,64 @@ def assess_critiques(ctx: HandlerContext) -> str:
         for op, doc in docs.items()
     }
     _record(ctx, "A2", digest, {"guard": "always", "blocking_findings": blocking})
+    return "always"
+
+
+# ── A2J ──────────────────────────────────────────────────────────────────────
+
+VERDICTS = "finding_verdicts_sealed"
+JUDGE = ("A2J", "finding_verdicts")
+JUDGED = (("A1", "proposal_a"), ("A1", "proposal_b"), *(("A2", c) for c in CRITIQUES))
+
+
+def _judge_problems(ctx: HandlerContext, prompt: bytes, result: Mapping[str, Any]) -> list[str]:
+    """Why the sealed verdicts are not the judge's answers to these questions, by this judge."""
+    problems: list[str] = []
+    recorded = _operation(ctx, *JUDGE)
+    calls = [
+        e
+        for e in ctx.events()
+        if e.get("event") == "model_call" and e.get("invocation_id") == recorded["invocation_id"]
+    ]
+    expected = "sha256:" + hashlib.sha256(prompt).hexdigest()
+    if [e.get("prompt_hash") for e in calls] != [expected]:
+        problems.append("the logged judge call did not ask the questions rebuilt from sealed state")
+    model = (ctx.registry["models"].get(recorded["backend"]) or {}).get("model_id")
+    if result.get("model") != model:
+        problems.append(f"verdicts are from {result.get('model')!r}, not {model!r}")
+    for stage, operation in JUDGED:
+        if _same_model_family(ctx, JUDGE, (stage, operation)):
+            problems.append(f"judge shares a backend or model family with {stage}.{operation}")
+    return problems
+
+
+def triage_report(ctx: HandlerContext, policy: PolicySnapshot) -> tuple[str, dict[str, Any]]:
+    """(input digest, triage report) recomputed from the sealed critiques and verdicts.
+
+    Blocks (GateError) on an unusable critique, a verdict file that does not answer exactly
+    the findings raised, or a judge call that cannot be tied to these questions and this judge.
+    """
+    digest, critiques = usable_critiques(ctx)
+    paths = _sealed(ctx, [*(target for target, _ in CRITIQUES.values()), VERDICTS])
+    proposals = {target: _load_json(paths[target], op) for target, op in CRITIQUES.values()}
+    result = _load_json(paths[VERDICTS], JUDGE[1])
+    threshold = policy.triage["valid_threshold"]
+    try:
+        report = judge(critiques, result, threshold)
+    except TriageError as exc:
+        raise GateError(str(exc)) from exc
+    prompt = decision_prompt(finding_requests(proposals, critiques))
+    if problems := _judge_problems(ctx, prompt, result):
+        raise GateError("verdicts not usable: " + "; ".join(problems))
+    verdicts = digest_path(paths[VERDICTS])
+    key = _digest({"critiques": digest, "verdicts": verdicts, "threshold": threshold})
+    return key, report
+
+
+def judge_findings(ctx: HandlerContext) -> str:
+    """A2J: record every finding's verdict and each critique's valid ratio; nothing is routed."""
+    key, report = triage_report(ctx, _policy(ctx))
+    _record(ctx, "A2J", key, {"guard": "always", **report})
     return "always"
 
 
@@ -777,6 +842,7 @@ def record_decision(ctx: HandlerContext) -> str:
 
 GATE_HANDLERS: dict[str, Callable[[Any], str]] = {
     "A2": assess_critiques,
+    "A2J": judge_findings,
     "A4": validate_design,
     "B1": apply_vetoes,
     "B2": score_candidates,
@@ -795,6 +861,7 @@ def approval_evidence(ctx: HandlerContext, policy: PolicySnapshot) -> dict[str, 
     this at decision time, so any change to the design, reviews, vetoes or scores voids it.
     """
     design = Design(ctx)
+    _, triage = triage_report(ctx, policy)
     report = VetoReport(ctx)
     scores = build_scores(ctx, policy, report)
     return {
@@ -807,4 +874,10 @@ def approval_evidence(ctx: HandlerContext, policy: PolicySnapshot) -> dict[str, 
         "fired": report.fired,
         "undetermined": report.undetermined,
         "unevaluated": report.unevaluated,
+        "triage": _digest(triage),
+        "valid_ratios": triage["valid_ratios"],
+        "waived_blocking": [
+            {k: f[k] for k in ("critique", "finding_id", "probability")}
+            for f in triage["waived_blocking"]
+        ],
     }

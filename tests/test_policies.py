@@ -5,6 +5,9 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from agentic_pipeline.graph import load_yaml
 from agentic_pipeline.policies import (
@@ -14,6 +17,7 @@ from agentic_pipeline.policies import (
     check_escalation,
     check_fast_path,
     check_task_classes,
+    check_triage,
     check_vetoes,
     check_weights,
     validate_policies,
@@ -171,3 +175,21 @@ def test_context_manifest_schema_cannot_carry_free_form_content() -> None:
         "hash",
     }
     assert schema["properties"]["contract_versions"]["additionalProperties"] == {"type": "string"}
+
+
+@pytest.mark.parametrize(
+    ("threshold", "error"),
+    [
+        (0.1, None),
+        (0.999, None),
+        (0, "strictly between"),
+        (1, "strictly between"),
+        (-0.2, "strictly between"),
+        (True, "must be a number"),
+        ("0.1", "must be a number"),
+        (None, "must be a number"),
+    ],
+)
+def test_triage_threshold_is_a_probability_that_judges(threshold: Any, error: str | None) -> None:
+    errors = check_triage({"version": 1, "valid_threshold": threshold})
+    assert errors == [] if error is None else any(error in e for e in errors), errors

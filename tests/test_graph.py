@@ -135,6 +135,9 @@ def test_a_budgeted_edge_is_not_a_spent_route() -> None:
 def test_the_cross_critique_runs_once_and_always_goes_to_synthesis() -> None:
     graph = Graph.from_mapping(load_yaml(ROOT / "pipeline" / "graph.yaml"))
     assert [(e.guard, e.to, e.budget) for e in graph.edges if e.src == "A2"] == [
+        ("always", "A2J", None)
+    ]
+    assert [(e.guard, e.to, e.budget) for e in graph.edges if e.src == "A2J"] == [
         ("always", "A3", None)
     ]
 
@@ -142,7 +145,7 @@ def test_the_cross_critique_runs_once_and_always_goes_to_synthesis() -> None:
 def test_no_route_reaches_human_review_before_a_synthesis_exists() -> None:
     """H1 shows a human the sealed design, so it must not be reachable before A3 has run."""
     graph = Graph.from_mapping(load_yaml(ROOT / "pipeline" / "graph.yaml"))
-    before_synthesis = {"START", "G", "A1", "A2", "A3"}
+    before_synthesis = {"START", "G", "A1", "A2", "A2J", "A3"}
     assert {e.src for e in graph.edges if e.to == "H1"}.isdisjoint(before_synthesis)
 
 

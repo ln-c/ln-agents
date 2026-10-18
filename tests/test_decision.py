@@ -6,6 +6,7 @@ The model is a stand-in upstream: no test here needs a running llama-server.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import threading
@@ -102,7 +103,7 @@ def grant(tmp_path: Path, requests: list[Any] | None = None) -> DispatchGrant:
     return DispatchGrant(
         run_id="run-1",
         stage="CONFORMANCE",
-        operation_id="verdicts",
+        operation_id="decision_probe",
         backend="clef_flash_local",
         invocation_id="inv-1",
         role="judge",
@@ -173,7 +174,6 @@ def test_prepare_hashes_the_request_list_as_sent(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("requests", "error"),
     [
-        ([], "no decision requests"),
         ([{**REQUEST, "state": ""}], "state must be"),
         ([REQUEST, REQUEST], "not unique"),
     ],
@@ -183,6 +183,53 @@ def test_prepare_refuses_what_it_would_not_send(
 ) -> None:
     with pytest.raises(ValueError, match=error):
         adapter().prepare(grant(tmp_path, requests))
+
+
+def test_no_requests_means_no_call_and_an_empty_result(tmp_path: Path) -> None:
+    upstream = Upstream()
+    g = grant(tmp_path, [])
+    built = adapter(upstream)
+    result = built.invoke(g, built.prepare(g))
+    assert (result.status, result.detail, result.resolved_model) == (
+        "ok",
+        "requests=0, no call made",
+        None,
+    )
+    assert upstream.sent == []
+    assert json.loads((g.write_path / "decision_probe.json").read_text())["results"] == []
+
+
+def test_an_operation_without_a_decision_task_is_refused(tmp_path: Path) -> None:
+    g = dataclasses.replace(grant(tmp_path), operation_id="something_else")
+    with pytest.raises(ValueError, match="no decision task"):
+        adapter().prepare(g)
+
+
+def test_a2j_asks_one_question_per_finding_about_its_target_proposal(tmp_path: Path) -> None:
+    proposal = {"id": "P-A", "summary": "café"}
+    critique = {"findings": [{"id": "F1", "severity": "blocking", "description": "d"}]}
+    files = {
+        "proposal_a_sealed": ("proposal_a", proposal),
+        "proposal_b_sealed": ("proposal_b", {"id": "P-B"}),
+        "critique_a_by_b_sealed": ("critique_a_by_b", critique),
+        "critique_b_by_a_sealed": ("critique_b_by_a", {"findings": []}),
+    }
+    inputs = {}
+    for artifact, (operation, doc) in files.items():
+        (tmp_path / artifact).mkdir()
+        (tmp_path / artifact / f"{operation}.json").write_text(json.dumps(doc))
+        inputs[artifact] = tmp_path / artifact
+    g = dataclasses.replace(grant(tmp_path), operation_id="finding_verdicts", inputs=inputs)
+    call = adapter().prepare(g)
+    (request,) = json.loads(call.prompt)
+    assert request["id"] == "critique_a_by_b_sealed/F1"
+    assert request["state"] == (
+        'Proposal:\n{"id":"P-A","summary":"caf\\u00e9"}\n\n'
+        'Finding:\n{"id":"F1","severity":"blocking","description":"d"}'
+    )
+    assert request["questions"] == {
+        "valid": {"type": "noul", "instructions": "Is the finding substantiated?"}
+    }
 
 
 def test_requests_from_inputs_needs_a_requests_list(tmp_path: Path) -> None:
@@ -245,7 +292,7 @@ def test_invoke_sends_the_prepared_requests_and_writes_the_probabilities(tmp_pat
         "state": REQUEST["state"],
         "questions": QUESTIONS,
     }
-    document = json.loads((g.write_path / "verdicts.json").read_text())
+    document = json.loads((g.write_path / "decision_probe.json").read_text())
     assert document["model"] == MODEL and document["model_version"].startswith(MODEL)
     assert [r["id"] for r in document["results"]] == ["r1", "r2"]
     assert document["results"][0]["answers"]["q1"] == {"type": "noul", "noul": 0.9}
@@ -258,7 +305,7 @@ def test_invoke_sends_the_prepared_requests_and_writes_the_probabilities(tmp_pat
         (Upstream(raises=True), "ConnectionRefusedError"),
         (
             Upstream(400, {"error": {"code": 400, "message": "input too large"}}),
-            "HTTP 400: input too large",
+            "HTTP 400: input too large; restart the decision server with larger -b/-ub",
         ),
         (Upstream(500, b"oops"), "HTTP 500: not JSON"),
         (Upstream(reply={"model": "other", "answers": {}}), "answered by 'other'"),

@@ -1,0 +1,16 @@
+# A2J finding triage. Human-owned; a model never sets the threshold.
+# The local decision model (registry: design.finding_triage) is asked, for every finding of
+# both A2 critiques, the yes/no question pinned in src/agentic_pipeline/triage.py (QUESTION),
+# with the target proposal and the finding as its state. A finding is valid when the
+# probability of "yes" is at least `valid_threshold`. A4 requires a resolution in S only for
+# valid blocking findings; waived blocking findings are listed at H1 with their probability.
+#
+# Calibration (Clef-Flash Q4_K_M, llama.cpp b11429, -b/-ub 4096, that question):
+#   2026-10-17, n=15: fabricated findings <= 0.033, real findings >= 0.14.
+#   2026-10-18, n=21 (deploy-design run, 17 real + 4 fabricated): real 0.35-0.97, fabricated
+#   0.010-0.016.
+# No real *blocking* finding was in either set, so how a real blocking finding scores is not
+# measured. 0.5 would have waived real findings (0.14, 0.35); 0.1 waives only what scored like
+# the fabricated ones. Changing the question, the model, or its launch flags voids this.
+version: 1
+valid_threshold: 0.1

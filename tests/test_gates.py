@@ -1,8 +1,11 @@
-"""Design-side gates (A4, B1, B2, B3, DR) against sealed artifacts from a real grounding run."""
+"""Design-side gates (A2 to DR) against sealed artifacts from a real grounding run."""
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import hashlib
+import itertools
 import json
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,7 @@ from agentic_pipeline.manifest import build_manifest, publish_stage_manifest, re
 from agentic_pipeline.provenance import GENESIS_HASH
 from agentic_pipeline.runner import Outcome, Runner
 from agentic_pipeline.schemas import validate
+from agentic_pipeline.triage import decision_prompt, finding_requests, load_sealed
 
 # Recorded backend per operation (the registry's A1/A2 assignment): independent by design.
 BACKENDS = {
@@ -30,7 +34,14 @@ BACKENDS = {
     "critique_b_by_a": "claude_cli_default",
     "critique_a_by_b": "gemini_3_8_flash_high",
     "synthesis_review": "gemini_3_8_flash_high",  # the synthesis ran on claude_cli_default
+    "finding_verdicts": "clef_flash_local",
 }
+JUDGE_INPUTS = [
+    "proposal_a_sealed",
+    "proposal_b_sealed",
+    "critique_a_by_b_sealed",
+    "critique_b_by_a_sealed",
+]
 
 
 def proposal(pid: str, context_hash: str, *, synthesized: bool = False, **extra: Any) -> dict:
@@ -103,7 +114,14 @@ class Design:
         path = inputs["pinned_context_manifest"].path / "context_manifest.json"
         self.context_hash = json.loads(path.read_text())["hash"]
 
-    def seal(self, stage: str, artifacts: dict[str, tuple[str, dict | None]]) -> None:
+    _calls = itertools.count()
+
+    def seal(
+        self,
+        stage: str,
+        artifacts: dict[str, tuple[str, dict | None]],
+        invocation: str | None = None,
+    ) -> None:
         """artifacts: id -> (operation id, proposal doc or None for no file)."""
         built = {}
         for artifact, (operation, doc) in artifacts.items():
@@ -123,7 +141,11 @@ class Design:
             attempt="t",
             artifacts=built,
             operations={
-                op: {"backend": BACKENDS[op], "invocation_id": f"i-{op}", "status": "ok"}
+                op: {
+                    "backend": BACKENDS[op],
+                    "invocation_id": invocation or f"i-{op}",
+                    "status": "ok",
+                }
                 for op, _ in artifacts.values()
             },
             provenance_tip=GENESIS_HASH,
@@ -148,7 +170,10 @@ class Design:
             "A3", {"synthesis_sealed": ("synthesis", proposal("prop-s", h, synthesized=True))}
         )
 
-    def seal_critiques(self, a_on_b: dict | None = None, b_on_a: dict | None = None) -> None:
+    def seal_critiques(
+        self, a_on_b: dict | None = None, b_on_a: dict | None = None, judge: bool = True
+    ) -> None:
+        """Seal A2's critiques and, unless `judge` is off, A2J's verdicts on them (all valid)."""
         h = self.context_hash
         self.seal(
             "A2",
@@ -162,6 +187,66 @@ class Design:
                     b_on_a or critique("c2", "prop-a", h),
                 ),
             },
+        )
+        if judge:
+            with contextlib.suppress(KeyError, TypeError):  # a malformed critique gets none
+                self.seal_verdicts()
+
+    def seal_verdicts(
+        self,
+        probability: float = 0.9,
+        overrides: dict[str, float] | None = None,
+        *,
+        results: list | None = None,
+        prompt: bytes | None = None,
+        backend: str = "clef_flash_local",
+    ) -> None:
+        """Seal A2J as the judge would: one answer per finding, and its logged model_call.
+
+        `overrides` maps a request id (`<critique>_sealed/<finding id>`) to its probability;
+        `results`, `prompt` and `backend` replace what the judge returned, asked, or ran on.
+        """
+        inputs, errors = resolve_sealed_inputs(
+            self.rig.run_dir, "demo", self.runner.registry, JUDGE_INPUTS
+        )
+        assert not errors, errors
+        requests = finding_requests(*load_sealed({k: v.path for k, v in inputs.items()}))
+        if results is None:
+            results = [
+                {
+                    "id": r["id"],
+                    "answers": {
+                        "valid": {
+                            "type": "noul",
+                            "noul": (overrides or {}).get(r["id"], probability),
+                        }
+                    },
+                    "input_tokens": 100,
+                }
+                for r in requests
+            ]
+        document = {"model": "clef-flash", "model_version": "clef-flash@test", "results": results}
+        invocation = f"i-judge-{next(self._calls)}"
+        BACKENDS["finding_verdicts"] = backend
+        try:
+            self.seal(
+                "A2J", {"finding_verdicts_sealed": ("finding_verdicts", document)}, invocation
+            )
+        finally:
+            BACKENDS["finding_verdicts"] = "clef_flash_local"
+        sent = decision_prompt(requests) if prompt is None else prompt
+        self.runner.log.append(
+            {
+                "state": "A2J",
+                "event": "model_call",
+                "backend": backend,
+                "operation_id": "finding_verdicts",
+                "invocation_id": invocation,
+                "access_method": "test",
+                "model": "clef-flash",
+                "model_version": "clef-flash@test",
+                "prompt_hash": "sha256:" + hashlib.sha256(sent).hexdigest(),
+            }
         )
 
     def seal_reviews(
@@ -182,6 +267,11 @@ class Design:
                 )
             },
         )
+
+    def seal_reviews_only(self) -> None:
+        """Seal A3R's synthesis review alone, leaving the sealed critiques as they are."""
+        review = critique("c3", "prop-s", self.context_hash, scores=scores(4))
+        self.seal("A3R", {"synthesis_review_sealed": ("synthesis_review", review)})
 
     def guard(self, node: str) -> str:
         return GATE_HANDLERS[node](self.rig.ctx(self.runner, node))
@@ -631,7 +721,7 @@ def test_the_spent_route_is_never_chosen_by_a_gate(design: Design) -> None:
     design.seal_critiques()
     for node in ("A4", "B1", "B3"):
         assert design.guard(node) not in {"design_spent", "constraint_sources_conflict"}
-    assert copy.deepcopy(GATE_HANDLERS).keys() == {"A2", "A4", "B1", "B2", "B3", "DR"}
+    assert copy.deepcopy(GATE_HANDLERS).keys() == {"A2", "A2J", "A4", "B1", "B2", "B3", "DR"}
 
 
 # ── A2 critiques ─────────────────────────────────────────────────────────────
@@ -950,6 +1040,7 @@ def seal_reviews(d: Design, a_findings: list, s_findings: list | None = None) ->
             "critique_b_by_a_sealed": ("critique_b_by_a", critique("c-b", "prop-b", h)),
         },
     )
+    d.seal_verdicts()
     d.seal(
         "A3R",
         {
@@ -1128,3 +1219,153 @@ def test_a4_verdict_follows_the_critiques_it_was_judged_against(design: Design) 
     seal_for_a4(design, [])  # the same S, now against critiques with blocking findings
     assert design.guard("A4") == "synthesis_invalid"
     assert len(design.records("A4")) == 2
+
+
+# ── A2J: the decision model's verdicts on every finding ──────────────────────
+
+NOTE = {"id": "n1", "severity": "non_blocking", "description": "verbose naming"}
+
+
+def a2j_ready(design: Design, **verdicts: Any) -> None:
+    """Proposals, S, one blocking finding and one note against A, a clean critique of B."""
+    h = design.context_hash
+    design.seal_valid()
+    design.seal_critiques(
+        critique("c1", "prop-b", h),
+        critique("c2", "prop-a", h, [blocking("f2", "prop-a"), NOTE]),
+        judge=False,
+    )
+    design.seal_verdicts(**verdicts)
+
+
+def test_a2j_records_every_verdict_and_each_critiques_valid_ratio(design: Design) -> None:
+    a2j_ready(design, overrides={f"{A_BY_B}/n1": 0.04})
+    assert design.guard("A2J") == "always"
+    (record,) = design.records("A2J")
+    assert record["threshold"] == 0.1
+    assert record["question"] == "Is the finding substantiated?"
+    assert [(f["finding_id"], f["probability"], f["valid"]) for f in record["findings"]] == [
+        ("f2", 0.9, True),
+        ("n1", 0.04, False),
+    ]
+    assert record["valid_ratios"] == {B_BY_A: None, A_BY_B: 0.5}  # B's critique raised nothing
+    assert record["waived_blocking"] == []
+
+
+def test_a_probability_at_the_threshold_is_valid(design: Design) -> None:
+    a2j_ready(design, overrides={f"{A_BY_B}/f2": 0.1, f"{A_BY_B}/n1": 0.0999})
+    design.guard("A2J")
+    (record,) = design.records("A2J")
+    assert [f["valid"] for f in record["findings"]] == [True, False]
+
+
+def test_a2j_accepts_critiques_with_no_findings_at_all(design: Design) -> None:
+    design.seal_valid()
+    design.seal_critiques()  # no findings, so the judge was asked nothing
+    assert design.guard("A2J") == "always"
+    assert design.records("A2J")[0]["valid_ratios"] == {B_BY_A: None, A_BY_B: None}
+
+
+def _answer(rid: str, p: float = 0.9, **answers: Any) -> dict:
+    return {
+        "id": rid,
+        "answers": answers or {"valid": {"type": "noul", "noul": p}},
+        "input_tokens": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("verdicts", "error"),
+    [
+        ({"results": [_answer(f"{A_BY_B}/f2")]}, f"{A_BY_B}/n1 has no answer"),
+        (
+            {
+                "results": [
+                    _answer(f"{A_BY_B}/f2"),
+                    _answer(f"{A_BY_B}/f2"),
+                    _answer(f"{A_BY_B}/n1"),
+                ]
+            },
+            "answered twice",
+        ),
+        (
+            {"results": [_answer(f"{A_BY_B}/f2"), _answer(f"{A_BY_B}/n1"), _answer(f"{B_BY_A}/x")]},
+            "never raised",
+        ),
+        (
+            {
+                "results": [
+                    _answer(f"{A_BY_B}/f2", other={"type": "noul", "noul": 0.9}),
+                    _answer(f"{A_BY_B}/n1"),
+                ]
+            },
+            "not one yes/no answer",
+        ),
+        ({"results": [_answer(f"{A_BY_B}/f2", 1.5), _answer(f"{A_BY_B}/n1")]}, "schema"),
+        ({"prompt": b"[]"}, "did not ask the questions rebuilt from sealed state"),
+        ({"backend": "claude_cli_default"}, "shares a backend or model family with A1.proposal_a"),
+    ],
+    ids=["missing", "twice", "extra", "wrong-question", "not-a-probability", "prompt", "family"],
+)
+def test_a2j_blocks_on_verdicts_it_cannot_tie_to_the_findings(
+    design: Design, verdicts: dict, error: str
+) -> None:
+    a2j_ready(design, **verdicts)
+    with pytest.raises(GateError, match=error):
+        design.guard("A2J")
+    assert not (design.rig.run_dir / "gates" / "A2J").exists()
+
+
+def test_a2j_blocks_on_verdicts_from_another_model(design: Design) -> None:
+    a2j_ready(design)
+    verdicts = design.rig.run_dir / "design" / "finding_verdicts" / "finding_verdicts.json"
+    document = json.loads(verdicts.read_text())
+    design.seal(
+        "A2J", {"finding_verdicts_sealed": ("finding_verdicts", {**document, "model": "x"})}
+    )
+    with pytest.raises(GateError):  # a re-seal without a logged call, from the wrong model
+        design.guard("A2J")
+
+
+@pytest.mark.parametrize(
+    ("answers", "guard", "problems"),
+    [
+        ([(B_BY_A, "f1")], "all_required_valid", []),  # the waived f2 needs no answer
+        ([(B_BY_A, "f1"), (A_BY_B, "f2")], "all_required_valid", []),  # answering it is fine
+        ([(A_BY_B, "f2")], "synthesis_invalid", [UNANSWERED_F1]),  # f1 is still valid
+    ],
+    ids=["waived-unanswered", "waived-answered", "valid-unanswered"],
+)
+def test_a4_waives_a_blocking_finding_the_judge_did_not_substantiate(
+    design: Design, answers: list, guard: str, problems: list[str]
+) -> None:
+    seal_for_a4(design, [resolution(c, f) for c, f in answers])
+    design.seal_verdicts(overrides={f"{A_BY_B}/f2": 0.02})
+    assert design.guard("A4") == guard
+    record = next(r for r in design.records("A4") if r["guard"] == guard)
+    assert record["problems"]["synthesis_sealed"] == problems
+
+
+def test_a4_blocks_without_verdicts(design: Design) -> None:
+    h = design.context_hash
+    design.seal_valid()
+    design.seal_critiques(critique("c1", "prop-b", h), critique("c2", "prop-a", h), judge=False)
+    with pytest.raises(GateError, match="finding_verdicts_sealed"):
+        design.guard("A4")
+
+
+def test_h1_evidence_shows_the_ratios_and_every_waived_blocking_finding(design: Design) -> None:
+    from agentic_pipeline.gates import approval_evidence
+    from agentic_pipeline.run_state import load_policy
+
+    a2j_ready(design, overrides={f"{A_BY_B}/f2": 0.03})
+    design.seal_reviews_only()
+    evidence = approval_evidence(design.rig.ctx(design.runner, "H1"), load_policy(design.rig.repo))
+    assert evidence["valid_ratios"] == {B_BY_A: None, A_BY_B: 0.5}
+    assert evidence["waived_blocking"] == [
+        {"critique": A_BY_B, "finding_id": "f2", "probability": 0.03}
+    ]
+    assert evidence["triage"].isalnum() and len(evidence["triage"]) == 64
+    design.seal_verdicts(overrides={f"{A_BY_B}/f2": 0.5})
+    again = approval_evidence(design.rig.ctx(design.runner, "H1"), load_policy(design.rig.repo))
+    assert again["waived_blocking"] == [] and again["triage"] != evidence["triage"]

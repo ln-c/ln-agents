@@ -173,15 +173,15 @@ models:
     alias: Clef-flash
     family: clef
     capabilities: [classification]
-  # Cloudflare's Clef-Flash (post-trained from Qwen3.5-9B) on the local decision server. Nothing
-  # is claimed until an operation needs `decision`: `models test` derives its checks from the
-  # operations a model is bound to.
+  # Cloudflare's Clef-Flash (post-trained from Qwen3.5-9B) on the local decision server: the A2J
+  # finding judge. Its family differs from both design families, so it judges neither its own
+  # proposal nor its own critique.
   clef_flash_local:
     provider: llamacpp_decision
     model_id: clef-flash
     alias: Clef-Flash (llama.cpp)
     family: clef
-    capabilities: []
+    capabilities: [decision]
   # Served by OpenVINO Model Server under the Hugging Face repo name (the models in the local
   # Hugging Face cache). No capabilities are claimed yet: `models test` needs a bound role to
   # derive its checks from, so claim some, or bind one, before testing it.
@@ -223,6 +223,10 @@ agents:
     proposal_b:
       primary: gemini_3_8_flash_high
       isolation_group: design_b
+    # A2J: one decision call per critique finding, on the host's loopback only. Local, so no
+    # data-class egress; if the server is down the run pauses (no fallback).
+    finding_triage:
+      primary: clef_flash_local
     synthesis:
       primary: deterministic_orchestrator
       model_assistance: [claude_cli_default, gemini_3_8_flash_high]
@@ -340,6 +344,7 @@ artifacts:
   proposal_b_sealed: {sealed: true, producer: [A1.proposal_b]}
   critique_b_by_a_sealed: {sealed: true, producer: [A2.critique_b_by_a]}
   critique_a_by_b_sealed: {sealed: true, producer: [A2.critique_a_by_b]}
+  finding_verdicts_sealed: {sealed: true, producer: [A2J.finding_verdicts]}
   synthesis_sealed: {sealed: true, producer: [A3.synthesis]}
   synthesis_review_sealed: {sealed: true, producer: [A3R.synthesis_review]}
   design_decision_sealed: {sealed: true, producer: [DR]}
@@ -354,6 +359,7 @@ workspace_roots:
   proposal_b: design/proposal_b
   critique_b_by_a: design/critique_b_by_a
   critique_a_by_b: design/critique_a_by_b
+  finding_verdicts: design/finding_verdicts
   synthesis: design/synthesis
   synthesis_review: design/synthesis_review
   contracts: build/contracts
@@ -365,6 +371,8 @@ isolation_profiles:
   independent_proposals: [proposal_path_layout, sandbox_enforcement, session_separation]
   independent_cross_critique: [proposal_path_layout, sandbox_enforcement, session_separation, sealed_input_verification]
   sealed_inputs_only: [sandbox_enforcement, sealed_input_verification]
+  # A decision call runs no process and has no tools: the model sees only the request text.
+  decision_local: [sealed_input_verification]
   implementation_sandbox: [sandbox_enforcement, sealed_input_verification, protected_paths_read_only, network_disabled, broker_mediated_inference]
 
 # One entry per graph state whose executor includes `model`. `output_schema` (optional)
@@ -418,6 +426,23 @@ stage_requirements:
         write_root: critique_a_by_b
         isolation_profile: independent_cross_critique
         output_schema: critique
+  A2J:
+    mode: ordered_any_of
+    operations:
+      - id: finding_verdicts
+        agent: design.finding_triage
+        role: finding_judge
+        requires: [decision]
+        allowed_reads:
+          - proposal_a_sealed
+          - proposal_b_sealed
+          - critique_a_by_b_sealed
+          - critique_b_by_a_sealed
+        denied_reads: [proposal_a_scratch, proposal_b_scratch]
+        write_root: finding_verdicts
+        isolation_profile: decision_local
+        # No output_schema: that asks a text model for JSON. DecisionAdapter writes
+        # finding_verdicts.json itself (schemas/decision_result.schema.json); A2J validates it.
   A3:
     mode: ordered_any_of
     operations:
