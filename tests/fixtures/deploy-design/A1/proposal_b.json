@@ -1,0 +1,97 @@
+{
+  "author_model": "Gemini 3.8 Flash",
+  "constraints_addressed": [
+    "Adoption in other repositories: Pipeline engine distributed as a standalone CLI package (`uv tool install agentic-pipeline`); adopting repositories vendor only human-owned configuration files (`.agentic/` or root `policy/`, `pipeline/`, `schemas/`), preserving the immutable policy guarantee and frozen digest verification without source duplication.",
+    "Cross-platform OS portability: Preserves strict isolation requirements across Linux, macOS, and Windows. Uses native unprivileged user namespace bubblewrap (bwrap) on Linux; provides an OCI container/WSL2 virtualization backend on macOS and Windows to enforce mandatory filesystem bind isolation, network blackholing, and tmpfs credential separation.",
+    "Configuration TUI: Terminal-based interface using Python standard library primitives to inspect available models via `models discover`, validate agent mappings via `models test`, and output staging candidate diffs (`model_registry.candidate.yaml`) for human PR review without direct policy mutation.",
+    "Unattended CI integration: Supports Jenkins and GitLab CI pipelines by persisting `.runs/<id>` run state and provenance logs via native CI artifact passing, pausing at manual approval gates for cryptographically signed SSH approvals (`ssh-keygen -Y sign`) verified offline against `policy/approvers.yaml`.",
+    "Subscription-only compliance: Resolves the unattended CI interactive login conflict by supporting dedicated self-hosted runners pre-authenticated with vendor tools or a decoupled hybrid workflow where cloud design stages run on developer workstations and unattended build stages run in CI.",
+    "Minimal dependency footprint: Introduces zero third-party packages to the trusted pipeline base, relying entirely on the Python standard library and platform-native tools."
+  ],
+  "contracts_touched": [],
+  "data_flows": [
+    {
+      "data_class": "internal",
+      "destination": "third_party",
+      "id": "flow_claude_cli",
+      "purpose": "Transmits requirements specifications and design proposals to Claude CLI (`claude -p`) under interactive personal subscription."
+    },
+    {
+      "data_class": "internal",
+      "destination": "third_party",
+      "id": "flow_gemini_cli",
+      "purpose": "Transmits requirements specifications and design proposals to Gemini CLI (`agy -p`) under interactive personal subscription."
+    },
+    {
+      "data_class": "confidential",
+      "destination": "local",
+      "id": "flow_local_build_model",
+      "purpose": "Transmits confidential source tree and test files to local build worker (llama-server/Ollama) with network access disabled."
+    },
+    {
+      "data_class": "internal",
+      "destination": "internal_service",
+      "id": "flow_ci_run_state_persistence",
+      "purpose": "Persists run directories, provenance logs, sealed manifests, and signed approvals between pipeline stages via Jenkins/GitLab CI artifact storage."
+    }
+  ],
+  "dependencies": [],
+  "id": "proposal_b_containerized_runner",
+  "manifest_hash": "sha256:bf3ad158b67b0c0061c0e2c1409071cb96f27b743b727bcd533838b8ab79129f",
+  "synthesized": false,
+  "topology": {
+    "components": [
+      {
+        "description": "Standalone CLI distribution via `uv tool` or wheel package that executes external to target repositories, referencing adopting project root for policy, schemas, and git plumbing.",
+        "name": "packaging_and_distribution"
+      },
+      {
+        "description": "Human-owned policy, graph, and schema configuration stored within the target repository (`.agentic/` or root `policy/`), whose cryptographic digests are frozen and verified on run initialization.",
+        "name": "adopting_repository_policy_tree"
+      },
+      {
+        "description": "Abstracted sandbox execution layer that dispatches via native bwrap on Linux and via lightweight Linux container/WSL2 virtualization on macOS and Windows to enforce filesystem isolation and network restrictions.",
+        "name": "isolation_and_sandbox_manager"
+      },
+      {
+        "description": "Interactive terminal interface for role-to-model configuration that discovers host capabilities, runs live conformance checks, and outputs reviewable git patches rather than modifying policy directly.",
+        "name": "tui_configuration_engine"
+      },
+      {
+        "description": "CI integration module managing multi-stage job sequencing, artifact caching of `.runs/<id>` across jobs, and cryptographic verification of offline SSH-signed approval documents.",
+        "name": "ci_orchestration_adapter"
+      },
+      {
+        "description": "Manages interactive OAuth credentials for cloud vendor CLIs (`claude`, `agy`), isolating token files into private tmpfs mounts on dedicated runner environments while enforcing prohibition of API keys.",
+        "name": "credential_and_subscription_broker"
+      }
+    ],
+    "edges": [
+      {
+        "from": "packaging_and_distribution",
+        "relation": "reads and validates frozen policy digests during run initialization",
+        "to": "adopting_repository_policy_tree"
+      },
+      {
+        "from": "packaging_and_distribution",
+        "relation": "dispatches model calls through platform-appropriate isolation backend",
+        "to": "isolation_and_sandbox_manager"
+      },
+      {
+        "from": "tui_configuration_engine",
+        "relation": "generates candidate policy diffs for human code review",
+        "to": "adopting_repository_policy_tree"
+      },
+      {
+        "from": "isolation_and_sandbox_manager",
+        "relation": "mounts isolated vendor OAuth tokens into sandboxed tmpfs home",
+        "to": "credential_and_subscription_broker"
+      },
+      {
+        "from": "ci_orchestration_adapter",
+        "relation": "executes pipeline stages inside verified sandbox environments in CI jobs",
+        "to": "isolation_and_sandbox_manager"
+      }
+    ]
+  }
+}
