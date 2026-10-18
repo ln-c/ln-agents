@@ -19,7 +19,8 @@ R14  isolated operations use distinct model families; no critic reviews its own 
 R15  an operation's output_schema names a schema that exists in schemas/
 R16  every provider declares where its traffic goes, and it matches its access mode
 R17  every model provider declares family patterns; every model names a model provider, its
-     model_id matches a pattern, and its declared family agrees; (provider, model_id) are unique
+     model_id matches a pattern, and its declared family agrees; (provider, model_id) are unique;
+     only a model whose provider's adapter passes it on declares an `effort`
 R18  every model an operation may run on declares the capabilities the operation requires
 """
 
@@ -34,6 +35,7 @@ from agentic_pipeline.graph import Graph
 from agentic_pipeline.schemas import ValidationError, validator
 
 MODEL_ACCESS_MODES = frozenset({"subscription_tool", "local_inference", "free_allowance_only"})
+EFFORT_PROVIDERS = frozenset({"claude_pro"})  # ClaudeAdapter passes `effort` as claude --effort
 # Where each provider access mode's traffic goes. A mode not listed is rejected (R16), and
 # dispatch treats anything that is not `local` as leaving the host.
 ACCESS_MODE_LOCATION: Mapping[str, str] = {
@@ -220,6 +222,10 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
                 f"registry R17 models.{name}: same provider and model_id as {served[key]}"
             )
         served.setdefault(key, name)
+        if "effort" in model and model["provider"] not in EFFORT_PROVIDERS:
+            errors.append(
+                f"registry R17 models.{name}: `effort` is only passed to {sorted(EFFORT_PROVIDERS)}"
+            )
         matched = pattern_family(provider, model["model_id"])
         if matched is None:
             errors.append(

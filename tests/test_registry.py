@@ -349,6 +349,7 @@ def test_pattern_family_takes_the_first_matching_pattern() -> None:
 
 
 CLAUDE, GEMINI, QWEN = "claude_cli_default", "gemini_3_8_flash_high", "qwen3_5_9b"
+OPUS, ARGON, GPT_OSS = "claude_opus_5_5_high_cli", "gemini_4_argon_medium", "gpt_oss_120b_medium"
 
 
 def test_candidate_models_per_operation_are_pinned() -> None:
@@ -358,12 +359,12 @@ def test_candidate_models_per_operation_are_pinned() -> None:
         for stage, o in operations(REGISTRY["stage_requirements"])
     }
     assert got == {
-        "A1.proposal_a": [CLAUDE],
-        "A1.proposal_b": [GEMINI],
-        "A2.critique_b_by_a": [CLAUDE],
-        "A2.critique_a_by_b": [GEMINI],
+        "A1.proposal_a": [OPUS],
+        "A1.proposal_b": [ARGON],
+        "A2.critique_b_by_a": [OPUS],
+        "A2.critique_a_by_b": [ARGON],
         "A2J.finding_verdicts": ["clef_flash_local"],
-        "A3.synthesis": [CLAUDE, GEMINI],
+        "A3.synthesis": [GPT_OSS],
         "A3R.synthesis_review": [GEMINI, CLAUDE],
         "C1.module_decomposition": [QWEN],
         "D1.test_generation": [QWEN],
@@ -381,13 +382,27 @@ def test_each_candidates_resolved_properties_are_pinned() -> None:
             backend_location(REGISTRY, m),
             sorted(backend_capabilities(REGISTRY, m)),
         )
-        for m in (CLAUDE, GEMINI, QWEN)
+        for m in (CLAUDE, GEMINI, QWEN, OPUS, ARGON, GPT_OSS)
     }
     assert resolved == {
         CLAUDE: ("claude_pro", "cli-default", "claude", "cloud", ["code_generation", "design_reasoning"]),
         GEMINI: ("google_ai_pro", "gemini-3.8-flash-high", "gemini", "cloud", ["code_generation", "design_reasoning"]),
         QWEN: ("llamacpp_local", "qwen3.5-9b", "qwen3_5", "local", ["classification", "code_generation"]),
+        OPUS: ("claude_pro", "claude-opus-5-5", "claude", "cloud", ["design_reasoning"]),
+        ARGON: ("google_ai_pro", "gemini-4-argon-medium", "gemini", "cloud", ["design_reasoning"]),
+        GPT_OSS: ("google_ai_pro", "gpt-oss-120b-medium", "gpt_oss", "cloud", ["design_reasoning"]),
     }  # fmt: skip
+    assert REGISTRY["models"][OPUS]["effort"] == "high"
+
+
+def test_only_a_claude_cli_model_declares_an_effort() -> None:
+    registry = copy.deepcopy(REGISTRY)
+    registry["models"][ARGON]["effort"] = "high"
+    errors = validate_registry(registry, GRAPH, ROOT)
+    assert any(e.startswith(f"registry R17 models.{ARGON}: `effort`") for e in errors), errors
+    registry = copy.deepcopy(REGISTRY)
+    registry["models"][OPUS]["effort"] = "extreme"
+    assert validate_registry(registry, GRAPH, ROOT), "the schema names the levels"
 
 
 AGY_MODELS = {  # `agy models`, as listed by the tool
@@ -425,7 +440,7 @@ def test_known_but_unclaimed_models_cannot_be_bound() -> None:
     unclaimed = [m for m, v in REGISTRY["models"].items() if not v["capabilities"]]
     agy = [m for m, v in REGISTRY["models"].items() if v["provider"] == "google_ai_pro"]
     openvino = [m for m, v in REGISTRY["models"].items() if v["provider"] == "openvino_local"]
-    assert sorted(unclaimed) == sorted([*(set(agy) - {GEMINI}), *openvino])
+    assert sorted(unclaimed) == sorted([*(set(agy) - {GEMINI, ARGON, GPT_OSS}), *openvino])
     for model in unclaimed:
         registry = copy.deepcopy(REGISTRY)
         registry["agents"]["design"]["proposal_b"]["primary"] = model

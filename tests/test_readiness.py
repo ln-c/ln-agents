@@ -583,8 +583,8 @@ def test_all_verified_a1_eligible_with_role_backends() -> None:
     verdict = evaluate_stage("A1", ready_report())
     assert verdict.eligible, verdict.reasons
     assert verdict.backends == {
-        "proposal_a": "claude_cli_default",
-        "proposal_b": "gemini_3_8_flash_high",
+        "proposal_a": "claude_opus_5_5_high_cli",
+        "proposal_b": "gemini_4_argon_medium",
     }
 
 
@@ -593,14 +593,14 @@ def test_a1_blocked_when_one_cloud_agent_unavailable() -> None:
     _downgrade(report.providers["google_ai_pro"], "executable")
     verdict = evaluate_stage("A1", report)
     assert not verdict.eligible
-    assert "proposal_b: gemini_3_8_flash_high.executable UNVERIFIED" in verdict.reasons
+    assert "proposal_b: gemini_4_argon_medium.executable UNVERIFIED" in verdict.reasons
 
 
-def test_a3_falls_back_in_declared_order() -> None:
+def test_a3r_falls_back_in_declared_order() -> None:
     report = ready_report()
-    _downgrade(report.providers["claude_pro"], "executable")
-    verdict = evaluate_stage("A3", report)
-    assert verdict.eligible and verdict.backends == {"synthesis": "gemini_3_8_flash_high"}
+    _downgrade(report.providers["google_ai_pro"], "executable")
+    verdict = evaluate_stage("A3R", report)
+    assert verdict.eligible and verdict.backends == {"synthesis_review": "claude_cli_default"}
 
 
 def test_a_model_missing_from_the_local_inventory_blocks_build() -> None:

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_dispatch import DATA_CLASSES, GRAPH, REGISTRY, FakeAdapter, report, seed
+from test_dispatch import BINDABLE, DATA_CLASSES, GRAPH, REGISTRY, A, FakeAdapter, report, seed
 
 pytest.importorskip("a2a")
 from a2a.server.context import ServerCallContext  # noqa: E402
@@ -68,8 +68,7 @@ class Pipeline:
     def __init__(self, tmp_path: Path, handlers: Mapping[str, StateHandler] = TO_H1) -> None:
         self.runs_dir = tmp_path
         self.run_dir = tmp_path / RUN_ID
-        backends = ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_5_9b", "clef_flash_local")
-        self.adapters = {b: FakeAdapter() for b in backends}
+        self.adapters = {b: FakeAdapter() for b in BINDABLE}
         seed(self.run_dir, ("START", "G"))
         init_run(ROOT, self.run_dir, RUN_ID, "START")
         self.service = PipelineService(ROOT, tmp_path, self._factory, handlers)
@@ -282,7 +281,7 @@ def test_start_run_creates_the_run_then_advances_it(tmp_path: Path) -> None:
 
 def test_a_quota_pause_asks_for_auth(tmp_path: Path) -> None:
     pipe = Pipeline(tmp_path)
-    pipe.adapters["claude_cli_default"] = FakeAdapter(status="quota_exhausted")
+    pipe.adapters[A] = FakeAdapter(status="quota_exhausted")
     task = pipe.send({"skill": "advance", "run_id": RUN_ID})["result"]["task"]
     assert _state(task) == "TASK_STATE_AUTH_REQUIRED"
     assert "quota_exhausted" in _text(task) and "run resume" in _text(task)
