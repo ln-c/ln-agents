@@ -33,7 +33,7 @@ enum Commands {
         /// [default: uv run python -m agentic_pipeline].
         #[arg(long, env = "LN_HUB_PIPELINE")]
         pipeline: Option<String>,
-        /// The private key the human signs with [default: ~/.ssh/id_ed25519].
+        /// The private key the human approves with [default: ~/.ssh/id_ed25519_ln_approval].
         #[arg(long, env = "LN_HUB_SSH_KEY")]
         ssh_key: Option<PathBuf>,
         /// Where `/resume` finds runs [default: <session cwd>/.runs].

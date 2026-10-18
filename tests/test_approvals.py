@@ -372,7 +372,7 @@ def test_cli_approve_then_decide_round_trip(
     )
     assert run_cli.run_command(ns) == 0
     shown = capsys.readouterr().out
-    assert f"ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n {NAMESPACE} {out}" in shown
+    assert f"ssh-keygen -Y sign -f ~/.ssh/id_ed25519_ln_approval -n {NAMESPACE} {out}" in shown
     assert "proposal_b_sealed" in shown
     assert "critique_a_by_b_sealed: 50% of its findings judged valid" in shown
     assert "critique_b_by_a_sealed: no findings" in shown
