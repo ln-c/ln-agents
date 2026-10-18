@@ -1,0 +1,55 @@
+# CI on AppVeyor: the same checks as .github/workflows/ci.yml (which now runs only by hand).
+# One job per worker image; each runs ci/appveyor.sh (Linux, macOS) or ci/appveyor.ps1
+# (Windows), so a job can be reproduced locally with the same script and variables.
+#   PYTHON_VERSION  the interpreter uv runs the suite on (UV_PYTHON; overrides .python-version)
+#   LINT=1          ruff check and ruff format --check
+#   SANDBOX=1       install bubblewrap and allow user namespaces (Linux), so sandbox tests run
+#   RUST=1          ln-hub: cargo fmt, clippy, test and a release build
+version: "{build}"
+
+# Pushes to main and pull requests into main (for a PR the filter is its target branch).
+branches:
+  only:
+    - main
+skip_branch_with_pr: true
+
+build: off
+
+environment:
+  matrix:
+    - job_name: linux (3.13)
+      APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
+      PYTHON_VERSION: "3.13"
+      LINT: "1"
+      SANDBOX: "1"
+      RUST: "1"
+    - job_name: linux (3.14)
+      APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
+      PYTHON_VERSION: "3.14"
+      LINT: "1"
+      SANDBOX: "1"
+    # The control plane must work on Windows and macOS too. No bwrap there, so the sandbox
+    # tests skip and model stages stay blocked by readiness.
+    - job_name: windows
+      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2022
+      PYTHON_VERSION: "3.13"
+      RUST: "1"
+    - job_name: macos
+      APPVEYOR_BUILD_WORKER_IMAGE: macos-sonoma
+      PYTHON_VERSION: "3.13"
+      RUST: "1"
+
+matrix:
+  fast_finish: false
+
+for:
+  - matrix:
+      except:
+        - job_name: windows
+    test_script:
+      - sh: bash ci/appveyor.sh
+  - matrix:
+      only:
+        - job_name: windows
+    test_script:
+      - ps: ./ci/appveyor.ps1
