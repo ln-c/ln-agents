@@ -33,7 +33,7 @@ from typing import Any
 
 import yaml
 
-from agentic_pipeline.fsutil import O_BINARY, atomic_write_json, lock, unlock
+from agentic_pipeline.fsutil import O_BINARY, atomic_write_json, lock, retry_sharing, unlock
 from agentic_pipeline.graph import Graph, loads_yaml
 from agentic_pipeline.provenance import RUN_ID_RE, JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.schemas import ValidationError, validate
@@ -272,7 +272,8 @@ class RunStore:
 
     def load(self) -> RunState:
         try:
-            doc = json.loads(self.path.read_text(encoding="utf-8"))
+            # Read while a runner may be replacing it (the A2A server polls during `advance`).
+            doc = json.loads(retry_sharing(lambda: self.path.read_text(encoding="utf-8")))
         except FileNotFoundError as exc:
             raise RunStateError(f"no run state at {self.path}") from exc
         except (OSError, ValueError) as exc:
