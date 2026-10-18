@@ -26,7 +26,7 @@ Build status of every graph state, checked against `DEFAULT_HANDLERS` in `src/ag
 
 ## Getting started
 
-Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, `git`, and `ssh-keygen`. Local models run through a llama.cpp `llama-server` or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`). Start `llama-server` with `-dev Vulkan0` and an `--alias` equal to the catalog `model_id`, for example `llama-server -m Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080 -dev Vulkan0 -ngl 99 -c 16384 --jinja --parallel 1`: with `ggml-openvino` installed a bare `llama-server` picks the OpenVINO CPU backend. The decision model Clef-Flash runs in a second `llama-server` on port 8081 (`--alias clef-flash -b 4096 -ub 4096`, the full command is in the registry); it answers only on `/v1/systemone` and judges the critique findings at `A2J`, so start it before a design run reaches A2.
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/); `ln-hub` in `rust/` needs `rustup` (it installs the pinned toolchain). Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, `git`, and `ssh-keygen`. Local models run through a llama.cpp `llama-server` or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`). Start `llama-server` with `-dev Vulkan0` and an `--alias` equal to the catalog `model_id`, for example `llama-server -m Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080 -dev Vulkan0 -ngl 99 -c 16384 --jinja --parallel 1`: with `ggml-openvino` installed a bare `llama-server` picks the OpenVINO CPU backend. The decision model Clef-Flash runs in a second `llama-server` on port 8081 (`--alias clef-flash -b 4096 -ub 4096`, the full command is in the registry); it answers only on `/v1/systemone` and judges the critique findings at `A2J`, so start it before a design run reaches A2.
 
 ```bash
 uv sync --all-groups
@@ -34,6 +34,9 @@ uv sync --all-groups
 uv run pytest                                 # tests; the sandbox tests skip where bwrap is unusable
 uv run python -m agentic_pipeline validate    # graph, policy and model-registry invariants
 uv run ruff check . && uv run ruff format --check .
+
+# ln-hub (rust/, toolchain pinned in rust/rust-toolchain.toml); CI runs it on Linux, Windows and macOS
+cd rust && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
 ```
 
 ### Commands
@@ -115,6 +118,7 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 ├── agents/                    # role specifications (instructions, not a security boundary)
 ├── scripts/                   # MC/DC and mutation wrappers run by the CI checks
 ├── src/agentic_pipeline/      # runner, gates, adapters, sandbox, approvals, release
+├── rust/                      # ln-hub: ACP agent, A2A client, MCP tool loop, sandbox launcher (skeleton)
 └── tests/                     # invariant, policy, schema and runner tests
 ```
 

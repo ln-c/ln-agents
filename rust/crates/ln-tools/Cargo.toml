@@ -1,0 +1,11 @@
+[package]
+name = "ln-tools"
+description = "Built-in file tools and the MCP client used by ln-hub harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

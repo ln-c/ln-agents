@@ -1,0 +1,18 @@
+[package]
+name = "ln-hub"
+description = "One binary for ACP, A2A and MCP around the agentic pipeline orchestrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ln-hub"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+
+[lints]
+workspace = true

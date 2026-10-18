@@ -48,6 +48,9 @@ Thumbs.db
 .runs/
 mutants/
 
+# Rust build output (ln-hub)
+rust/target/
+
 # Model conformance results: host evidence written by `models test`, not policy
 .conformance/
 *.mdc

@@ -29,7 +29,7 @@ Act only in the phase and role explicitly assigned by the orchestrator. Do not c
 - Follow the accepted design, frozen contracts, and protected tests.
 - Modify only assigned implementation paths.
 - Never alter tests, contracts, policy, budgets, approvals, or release state to make a change pass.
-- Run the repository's required checks: `uv sync`, `uv run pytest`, `uv run python -m agentic_pipeline validate`, `uv run ruff check .`, and `uv run ruff format --check .`, where the corresponding project configuration is present and commands are permitted.
+- Run the repository's required checks: `uv sync`, `uv run pytest`, `uv run python -m agentic_pipeline validate`, `uv run ruff check .`, and `uv run ruff format --check .`, and for `rust/` (ln-hub) `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, and `cargo test --locked`, where the corresponding project configuration is present and commands are permitted.
 - If dependencies, sandbox guarantees, test commands, or allowed write paths are unavailable, report a blocked result instead of guessing.
 
 ## Subscription and local execution policy
