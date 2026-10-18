@@ -3,3 +3,5 @@
 /policy/               @ln-c
 /schemas/              @ln-c
 /.github/CODEOWNERS    @ln-c
+/appveyor.yml          @ln-c
+/ci/                   @ln-c
