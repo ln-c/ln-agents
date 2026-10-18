@@ -44,6 +44,35 @@ jobs:
       - name: Validate pipeline graph invariants
         run: uv run python -m agentic_pipeline validate
 
+  portable:
+    # The control plane (runner, gates, approvals, provenance) must work on Windows and macOS.
+    # No bwrap there, so the sandbox tests skip and model stages stay blocked by readiness.
+    name: portable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run test suite
+        run: uv run pytest
+
+      - name: Validate pipeline graph invariants
+        run: uv run python -m agentic_pipeline validate
+
   rust:
     # ln-hub must build and pass on every OS it ships for; the toolchain is pinned in
     # rust/rust-toolchain.toml.

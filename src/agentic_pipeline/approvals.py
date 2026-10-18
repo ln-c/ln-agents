@@ -150,6 +150,8 @@ def _verify_signature(
         except (OSError, subprocess.SubprocessError) as exc:
             raise ApprovalError(f"cannot run ssh-keygen to verify the signature: {exc}") from exc
     if done.returncode != 0:
+        if any(m in done.stderr for m in (b"illegal option", b"unknown option")):
+            raise ApprovalError("this ssh-keygen cannot verify signatures (-Y needs OpenSSH 8.2+)")
         raise ApprovalError("signature does not verify against the listed key")
 
 

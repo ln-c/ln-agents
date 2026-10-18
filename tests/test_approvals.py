@@ -484,3 +484,13 @@ def test_dr_on_the_fast_path_still_needs_a_scored_winner(tmp_path: Path) -> None
     runner = Rig(tmp_path).at("DR")  # not entered from H1
     result = runner.step()
     assert result.outcome is Outcome.BLOCKED and "none is ever invented" in result.detail
+
+
+def test_an_ssh_keygen_without_sign_support_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agentic_pipeline import approvals
+
+    old = subprocess.CompletedProcess([], 255, b"", b"ssh-keygen: illegal option -- Y\n")
+    monkeypatch.setattr(approvals.shutil, "which", lambda name: "/usr/bin/ssh-keygen")
+    monkeypatch.setattr(approvals.subprocess, "run", lambda *a, **k: old)
+    with pytest.raises(ApprovalError, match="OpenSSH 8.2"):
+        approvals._verify_signature(b"{}", "sig", {"id": "a", "public_key": "ssh-ed25519 A"}, "ns")

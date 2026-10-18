@@ -158,7 +158,8 @@ def test(root: Path, model: str, deps: Deps) -> int:
     path, digest = write_record(root, record)
     for check in record["checks"]:
         print(f"  {check['status']:<4}  {check['name']:<12}  {check['detail']}")
-    print(f"{'PASSED' if record['passed'] else 'FAILED'}: {path.relative_to(root)} {digest}")
+    shown = path.relative_to(root).as_posix()
+    print(f"{'PASSED' if record['passed'] else 'FAILED'}: {shown} {digest}")
     return 0 if record["passed"] else 1
 
 

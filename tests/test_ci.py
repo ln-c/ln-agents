@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ TOOLCHAIN: dict[str, Any] = {"kind": "none", "env": {}, "timeout_seconds": 30}
 
 def test_the_sandbox_is_usable_on_ci() -> None:
     """On CI the sandbox tests must run, not skip: a runner that cannot sandbox is a failure."""
-    if os.environ.get("CI"):
+    if os.environ.get("CI") and sys.platform.startswith("linux"):  # bwrap is Linux-only
         assert BWRAP_USABLE, "bwrap is unusable on this CI runner; fix the workflow step"
 
 
@@ -105,6 +106,7 @@ def test_a_timeout_is_a_failure(tree: Path) -> None:
     assert result["status"] == ci.FAILED and result["runs"][0]["timed_out"] is True
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the CI sandbox is Linux-only")
 def test_a_uv_managed_interpreter_outside_usr_is_bound_where_the_venv_names_it(
     tmp_path: Path,
 ) -> None:

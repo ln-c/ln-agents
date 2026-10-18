@@ -452,7 +452,8 @@ def remediate(ctx: HandlerContext) -> str:
     _record(
         ctx,
         "RM",
-        f"{cause}-{denials[-1]['issued_at']}",
+        # A colon is not allowed in a Windows file name, so the timestamp keeps digits only.
+        f"{cause}-{denials[-1]['issued_at'].replace(':', '')}",
         {"guard": cause, "reason": denials[-1]["reason"]},
     )
     return cause

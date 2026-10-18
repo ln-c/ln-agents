@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -83,6 +84,7 @@ class Host:
     environ: Mapping[str, str]
     home: Path
     proc_root: Path = Path("/proc")
+    platform: str = sys.platform  # selects the listener probe: linux, darwin, win32
     which: Callable[[str], str | None] = shutil.which
     run: RunFn = _run
     run_sandbox: Callable[[SandboxSpec, InferenceBroker, str], SandboxResult] = run_sandboxed
@@ -94,8 +96,10 @@ class Host:
     def child_env(self) -> dict[str, str]:
         """Allowlisted environment for child processes (registry child_process_env)."""
         env = {"HOME": str(self.home), "LANG": "C.UTF-8"}
-        if "PATH" in self.environ:
-            env["PATH"] = self.environ["PATH"]
+        # Windows programs such as netstat need SYSTEMROOT to start.
+        for name in ("PATH", "SYSTEMROOT"):
+            if name in self.environ:
+                env[name] = self.environ[name]
         return env
 
 
@@ -341,8 +345,12 @@ def _is_loopback(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return addr.is_loopback or (mapped is not None and mapped.is_loopback)
 
 
-def probe_listeners(port: int, proc_root: Path) -> Check:
-    listeners: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+type Address = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+
+def _proc_listeners(port: int, proc_root: Path) -> list[Address]:
+    """Linux: TCP listeners on `port` from /proc/net/tcp and tcp6."""
+    listeners: list[Address] = []
     for table in ("tcp", "tcp6"):
         try:
             lines = (proc_root / "net" / table).read_text(encoding="ascii").splitlines()[1:]
@@ -355,6 +363,62 @@ def probe_listeners(port: int, proc_root: Path) -> Check:
             addr_hex, port_hex = fields[1].split(":")
             if int(port_hex, 16) == port:
                 listeners.append(_decode_proc_addr(addr_hex))
+    return listeners
+
+
+def _split_host_port(endpoint: str) -> tuple[Address, int]:
+    """`127.0.0.1:8080`, `[::1]:8080`, `*:8080` (all interfaces) or `[fe80::1%5]:8080`."""
+    host, _, port = endpoint.rpartition(":")
+    host = host.strip("[]").split("%")[0]
+    return ipaddress.ip_address("0.0.0.0" if host == "*" else host), int(port)  # noqa: S104
+
+
+def _lsof_listeners(port: int, host: Host) -> list[Address]:
+    """macOS: `lsof -Fn` field output; one `n<address>:<port>` line per listening socket."""
+    tool = host.which("lsof")
+    if tool is None:
+        raise LookupError("lsof not found on PATH")
+    argv = [tool, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fn"]
+    code, out = host.run(argv, host.child_env())
+    if code not in (0, 1):  # 1 means nothing matched
+        raise LookupError(f"lsof exited {code}")
+    return [_split_host_port(line[1:])[0] for line in out.splitlines() if line.startswith("n")]
+
+
+def _netstat_listeners(port: int, host: Host) -> list[Address]:
+    """Windows: `netstat -ano`. A listening row has the foreign address `0.0.0.0:0` or `[::]:0`;
+    the state column is localized, so it is not read."""
+    tool = host.which("netstat")
+    if tool is None:
+        raise LookupError("netstat not found on PATH")
+    code, out = host.run([tool, "-ano", "-p", "TCP"], host.child_env())
+    code6, out6 = host.run([tool, "-ano", "-p", "TCPv6"], host.child_env())
+    if code != 0 or code6 != 0:
+        raise LookupError(f"netstat exited {code or code6}")
+    listeners: list[Address] = []
+    for line in (out + "\n" + out6).splitlines():
+        fields = line.split()
+        if len(fields) < 3 or fields[0] != "TCP" or fields[2] not in ("0.0.0.0:0", "[::]:0"):
+            continue
+        address, bound = _split_host_port(fields[1])
+        if bound == port:
+            listeners.append(address)
+    return listeners
+
+
+def probe_listeners(port: int, host: Host) -> Check:
+    """Is every listener on `port` bound to loopback only? Read per OS; unreadable is UNVERIFIED."""
+    try:
+        if host.platform.startswith("linux"):
+            listeners = _proc_listeners(port, host.proc_root)
+        elif host.platform == "darwin":
+            listeners = _lsof_listeners(port, host)
+        elif host.platform == "win32":
+            listeners = _netstat_listeners(port, host)
+        else:
+            return Check("listener_binding", Status.UNVERIFIED, f"no probe for {host.platform}")
+    except (LookupError, ValueError) as exc:
+        return Check("listener_binding", Status.UNVERIFIED, f"listener table unreadable: {exc}")
     exposed = sorted(str(a) for a in listeners if not _is_loopback(a))
     if exposed:
         return Check("listener_binding", Status.FAILED, f"port {port} bound on {exposed}")
@@ -531,7 +595,7 @@ def run_preflight(
             }
             probe = {"llamacpp": probe_llamacpp, "ovms": probe_ovms}[spec["protocol"]]
             daemon, inventory = probe(spec, tags)
-            report.providers[name] = [*daemon, probe_listeners(spec["port"], host.proc_root)]
+            report.providers[name] = [*daemon, probe_listeners(spec["port"], host)]
             for model, check in inventory.items():
                 report.models[model] = [check]
 

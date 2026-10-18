@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import shutil
@@ -13,6 +12,7 @@ import pytest
 
 from agentic_pipeline import run_cli
 from agentic_pipeline.cli import main
+from agentic_pipeline.fsutil import O_BINARY, lock, unlock
 from agentic_pipeline.graph import REPO_ROOT, load_yaml
 from agentic_pipeline.run_state import PauseCause, RunStore, Status
 
@@ -332,9 +332,14 @@ def test_copied_run_directory_is_refused(
 def test_acquire_waits_out_a_momentary_holder(tmp_path: Path) -> None:
     assert run("init", "demo", runs_dir=tmp_path) == 0
     store = RunStore(tmp_path / "demo")
-    fd = os.open(tmp_path / "demo" / "state.lock", os.O_RDWR)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    threading.Timer(0.2, os.close, args=(fd,)).start()  # e.g. `run status` probing
+    fd = os.open(tmp_path / "demo" / "state.lock", os.O_RDWR | O_BINARY)
+    lock(fd, blocking=True)
+
+    def let_go() -> None:
+        unlock(fd)
+        os.close(fd)
+
+    threading.Timer(0.2, let_go).start()  # e.g. `run status` probing
     store.acquire()  # waits instead of failing
     store.release()
 

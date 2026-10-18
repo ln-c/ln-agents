@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,14 @@ from agentic_pipeline.sandbox_entry import SHIM_URL
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "qwen3.5-9b"
+
+
+@pytest.fixture(autouse=True)
+def _node_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Pi sandbox is Linux-only, and so is its rule that node lives under /usr. Elsewhere
+    (macOS with Homebrew in /opt) the unit tests use a stand-in path; nothing runs it."""
+    if not sys.platform.startswith("linux"):
+        monkeypatch.setattr("agentic_pipeline.adapters.find_sandbox_node", lambda: "/usr/bin/node")
 
 
 def fake_package(root: Path, name: str = "@earendil-works/pi-coding-agent", js: str = "") -> Path:
@@ -568,6 +577,7 @@ def test_agy_from_registry_requires_a_token_and_takes_its_model_from_the_catalog
 # ── find_sandbox_node ────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the Pi sandbox is Linux-only")
 def test_node_under_usr_local_is_found_by_absolute_path() -> None:
     assert find_sandbox_node(lambda name: "/usr/local/bin/node") == "/usr/local/bin/node"
 
