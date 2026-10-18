@@ -1,0 +1,143 @@
+{
+  "candidates": {
+    "proposal_a_sealed": {
+      "contested": false,
+      "reasons": [],
+      "unscored_criteria": [],
+      "weighted": 0.7875
+    },
+    "proposal_b_sealed": {
+      "contested": false,
+      "reasons": [],
+      "unscored_criteria": [],
+      "weighted": 0.575
+    },
+    "synthesis_sealed": {
+      "contested": false,
+      "reasons": [],
+      "unscored_criteria": [],
+      "weighted": 0.9624999999999999
+    }
+  },
+  "flags": {
+    "high_uncertainty": false,
+    "near_tie": false
+  },
+  "ranking": [
+    "synthesis_sealed",
+    "proposal_a_sealed",
+    "proposal_b_sealed"
+  ],
+  "scored": true,
+  "values": [
+    {
+      "candidate": "proposal_a_sealed",
+      "criterion": "cost",
+      "type": "criterion_score",
+      "value": 4
+    },
+    {
+      "candidate": "proposal_a_sealed",
+      "criterion": "maintainability",
+      "type": "criterion_score",
+      "value": 4
+    },
+    {
+      "candidate": "proposal_a_sealed",
+      "criterion": "reliability",
+      "type": "criterion_score",
+      "value": 3
+    },
+    {
+      "candidate": "proposal_a_sealed",
+      "criterion": "scalability",
+      "type": "criterion_score",
+      "value": 2
+    },
+    {
+      "candidate": "proposal_a_sealed",
+      "criterion": "security",
+      "type": "criterion_score",
+      "value": 3
+    },
+    {
+      "candidate": "proposal_a_sealed",
+      "criterion": "all",
+      "type": "uncertainty",
+      "value": 0.0
+    },
+    {
+      "candidate": "proposal_b_sealed",
+      "criterion": "cost",
+      "type": "criterion_score",
+      "value": 3
+    },
+    {
+      "candidate": "proposal_b_sealed",
+      "criterion": "maintainability",
+      "type": "criterion_score",
+      "value": 3
+    },
+    {
+      "candidate": "proposal_b_sealed",
+      "criterion": "reliability",
+      "type": "criterion_score",
+      "value": 2
+    },
+    {
+      "candidate": "proposal_b_sealed",
+      "criterion": "scalability",
+      "type": "criterion_score",
+      "value": 2
+    },
+    {
+      "candidate": "proposal_b_sealed",
+      "criterion": "security",
+      "type": "criterion_score",
+      "value": 2
+    },
+    {
+      "candidate": "proposal_b_sealed",
+      "criterion": "all",
+      "type": "uncertainty",
+      "value": 0.0
+    },
+    {
+      "candidate": "synthesis_sealed",
+      "criterion": "cost",
+      "type": "criterion_score",
+      "value": 4
+    },
+    {
+      "candidate": "synthesis_sealed",
+      "criterion": "maintainability",
+      "type": "criterion_score",
+      "value": 4
+    },
+    {
+      "candidate": "synthesis_sealed",
+      "criterion": "reliability",
+      "type": "criterion_score",
+      "value": 4
+    },
+    {
+      "candidate": "synthesis_sealed",
+      "criterion": "scalability",
+      "type": "criterion_score",
+      "value": 3
+    },
+    {
+      "candidate": "synthesis_sealed",
+      "criterion": "security",
+      "type": "criterion_score",
+      "value": 4
+    },
+    {
+      "candidate": "synthesis_sealed",
+      "criterion": "all",
+      "type": "uncertainty",
+      "value": 0.0
+    }
+  ],
+  "weights_version": "1"
+}

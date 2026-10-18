@@ -1,0 +1,57 @@
+{
+  "run_id": "deploy-design",
+  "commit_sha": "2bdf97ee1108a523e3244228023eef7be892b0c1",
+  "context_hash": "sha256:bf3ad158b67b0c0061c0e2c1409071cb96f27b743b727bcd533838b8ab79129f",
+  "note": "Model outputs of the deploy-design run (2026-10-17), recorded at 2bdf97e before A2J existed. A2J/finding_verdicts.json was recorded on 2026-10-18 by the real DecisionAdapter over the same sealed proposals and critiques (local Clef-Flash, -b/-ub 4096). gates/ holds that run's B1 and B3 records and B2 scores.",
+  "calls": {
+    "A1/proposal_a": {
+      "backend": "claude_cli_default",
+      "model": "claude_pro:cli-default",
+      "model_version": "claude-code 2.1.302",
+      "access_method": "subscription_tool via claude -p in bwrap (text-only)",
+      "resolved_model": "claude-opus-5-5"
+    },
+    "A1/proposal_b": {
+      "backend": "gemini_3_8_flash_high",
+      "model": "google_ai_pro:gemini-3.8-flash-high",
+      "model_version": "agy 1.4.0",
+      "access_method": "subscription_tool via agy -p in bwrap (tools auto-denied)",
+      "resolved_model": null
+    },
+    "A2/critique_b_by_a": {
+      "backend": "claude_cli_default",
+      "model": "claude_pro:cli-default",
+      "model_version": "claude-code 2.1.302",
+      "access_method": "subscription_tool via claude -p in bwrap (text-only)",
+      "resolved_model": "claude-opus-5-5"
+    },
+    "A2/critique_a_by_b": {
+      "backend": "gemini_3_8_flash_high",
+      "model": "google_ai_pro:gemini-3.8-flash-high",
+      "model_version": "agy 1.4.0",
+      "access_method": "subscription_tool via agy -p in bwrap (tools auto-denied)",
+      "resolved_model": null
+    },
+    "A3/synthesis": {
+      "backend": "claude_cli_default",
+      "model": "claude_pro:cli-default",
+      "model_version": "claude-code 2.1.302",
+      "access_method": "subscription_tool via claude -p in bwrap (text-only)",
+      "resolved_model": "claude-opus-5-5"
+    },
+    "A3R/synthesis_review": {
+      "backend": "gemini_3_8_flash_high",
+      "model": "google_ai_pro:gemini-3.8-flash-high",
+      "model_version": "agy 1.4.0",
+      "access_method": "subscription_tool via agy -p in bwrap (tools auto-denied)",
+      "resolved_model": null
+    },
+    "A2J/finding_verdicts": {
+      "backend": "clef_flash_local",
+      "model": "clef-flash",
+      "model_version": "clef-flash@sha256:3626116623ca8d89641952471fac9ce12af84fb3517520029a2ac6f5146868a2 (llama.cpp b11429-d812350493)",
+      "access_method": "local_inference via llama-server /v1/systemone (decisions only)",
+      "resolved_model": "clef-flash"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "guard": "otherwise",
+  "require_all": {
+    "contracts_and_protected_tests_intact": "passed",
+    "no_active_veto": "passed",
+    "no_cross_service_boundary": "not_evaluated",
+    "no_high_uncertainty": "passed",
+    "no_mandatory_approval": "not_evaluated",
+    "no_near_tie": "passed",
+    "no_new_dependency": "not_evaluated",
+    "no_security_tag": "not_evaluated",
+    "no_unresolved_material_exception": "not_evaluated",
+    "task_class_on_allowlist": "failed"
+  }
+}

@@ -1,0 +1,176 @@
+{
+  "model": "clef-flash",
+  "model_version": "clef-flash@sha256:3626116623ca8d89641952471fac9ce12af84fb3517520029a2ac6f5146868a2 (llama.cpp b11429-d812350493)",
+  "results": [
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.8748600890676358,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F1",
+      "input_tokens": 1417
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9370751657562824,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F2",
+      "input_tokens": 1380
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9295878779771771,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F3",
+      "input_tokens": 1347
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.8996944829375607,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F4",
+      "input_tokens": 1379
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9434583899423588,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F5",
+      "input_tokens": 1381
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9293117386966969,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F6",
+      "input_tokens": 1340
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9395477348517588,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F7",
+      "input_tokens": 1403
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.94590948849031,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F8",
+      "input_tokens": 1322
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9717238932128958,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F9",
+      "input_tokens": 1291
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9700425169767196,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F10",
+      "input_tokens": 1231
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.8229338451628211,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F11",
+      "input_tokens": 1236
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.8828972278450199,
+          "type": "noul"
+        }
+      },
+      "id": "critique_b_by_a_sealed/F12",
+      "input_tokens": 1247
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9513037721350063,
+          "type": "noul"
+        }
+      },
+      "id": "critique_a_by_b_sealed/critique-f1-unattended-ci-split",
+      "input_tokens": 2951
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.3495967568414908,
+          "type": "noul"
+        }
+      },
+      "id": "critique_a_by_b_sealed/critique-f2-ci-confidential-storage",
+      "input_tokens": 2964
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.8501561154589057,
+          "type": "noul"
+        }
+      },
+      "id": "critique_a_by_b_sealed/critique-f3-vm-network-isolation",
+      "input_tokens": 2964
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9392694523538971,
+          "type": "noul"
+        }
+      },
+      "id": "critique_a_by_b_sealed/critique-f4-external-vm-prerequisite",
+      "input_tokens": 2962
+    },
+    {
+      "answers": {
+        "valid": {
+          "noul": 0.9076397823347145,
+          "type": "noul"
+        }
+      },
+      "id": "critique_a_by_b_sealed/critique-f5-lockfile-synchronization",
+      "input_tokens": 2948
+    }
+  ]
+}

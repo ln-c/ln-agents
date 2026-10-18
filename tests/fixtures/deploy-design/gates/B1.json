@@ -1,0 +1,25 @@
+{
+  "evaluated": [
+    "contract_break",
+    "data_class_violation",
+    "known_vulnerable_dependency",
+    "schema_invalid"
+  ],
+  "fired": {
+    "proposal_a_sealed": [],
+    "proposal_b_sealed": [],
+    "synthesis_sealed": []
+  },
+  "guard": "at_least_one_survivor",
+  "survivors": [
+    "proposal_a_sealed",
+    "proposal_b_sealed",
+    "synthesis_sealed"
+  ],
+  "undetermined": {
+    "proposal_a_sealed": [],
+    "proposal_b_sealed": [],
+    "synthesis_sealed": []
+  },
+  "unevaluated": []
+}

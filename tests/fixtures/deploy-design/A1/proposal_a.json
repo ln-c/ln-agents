@@ -1,0 +1,136 @@
+{
+  "author_model": "claude-opus-5-5",
+  "constraints_addressed": [
+    "Human-owned policy guarantee survives: policy lives in the adopter's .agentic/ under reviewed change, and digests are frozen from the pinned commit",
+    "Run, manifest, provenance and approval formats unchanged",
+    "No isolation weakened: OSes without bwrap refuse model stages natively and run them via WSL2 or a Linux VM, verified per run",
+    "No API keys or paid endpoints; the subscription and unattended-CI conflict is stated, not hidden",
+    "Confidential source and tests never reach a cloud service",
+    "CI and models cannot approve; signatures are made offline by humans and bound to the log tip",
+    "Vendor credentials are visible only to their own sandbox",
+    "No new third-party dependency; standard library only; installable without root via uv"
+  ],
+  "contracts_touched": [],
+  "data_flows": [
+    {
+      "data_class": "internal",
+      "destination": "cloud_service",
+      "id": "df-spec-to-cloud-design",
+      "purpose": "Task specification, requirements, applicable contracts and design proposals go to Claude and Gemini through the vendors' CLIs from a signed-in developer environment."
+    },
+    {
+      "data_class": "confidential",
+      "destination": "local",
+      "id": "df-source-to-local-build",
+      "purpose": "Pinned source tree and protected tests go only to the local model (llama-server or Ollama) on the same machine or self-hosted runner, with no network in the sandbox."
+    },
+    {
+      "data_class": "confidential",
+      "destination": "internal_service",
+      "id": "df-run-state-ci-storage",
+      "purpose": "The run directory, which includes sealed inputs that may contain the source tree, plus provenance and approvals, is exported between CI jobs to Jenkins or GitLab artifact storage or adopter-chosen internal storage on self-hosted infrastructure. It must not be stored on a cloud service; the adopter configures this."
+    },
+    {
+      "data_class": "internal",
+      "destination": "internal_service",
+      "id": "df-approval-evidence-to-approver",
+      "purpose": "The evidence digest and log tip are published in the CI job for the human to sign, and the signature file is uploaded back to CI."
+    },
+    {
+      "data_class": "internal",
+      "destination": "local",
+      "id": "df-config-proposal-local",
+      "purpose": "The config TUI writes the proposed model registry and validation report under .runs/config-proposals on the local host."
+    }
+  ],
+  "dependencies": [],
+  "id": "A1-proposal-a-pkg-overlay",
+  "manifest_hash": "sha256:bf3ad158b67b0c0061c0e2c1409071cb96f27b743b727bcd533838b8ab79129f",
+  "synthesized": false,
+  "topology": {
+    "components": [
+      {
+        "description": "Recommended adoption design (option 1): the pipeline is a versioned Python distribution, installed without root through `uv tool install agentic-pipeline==<pinned>` or a uv-managed project environment, and never copied into the adopting repository. The adopting repository holds a `.agentic/` directory with graph.yaml, policy/*.yaml and an optional schemas override. A `.agentic/pipeline.lock` file pins the package version and the sha256 of every shipped default file. The repository's CODEOWNERS or branch-protection rule (GitHub, GitLab, Bitbucket) puts `.agentic/` under reviewed change. Run state lives outside the repository in `<repo>/.runs/<id>` (gitignored) or in the CI storage the adopter chooses. Rejected alternative (option 2): a git submodule or subtree of the pipeline source plus policy in a separate policy repository. This keeps code next to policy, but it copies source into the adopter, splits the review process across two repositories, and makes digest freezing depend on submodule state. Option 1 is preferred because it needs one review rule, ships code immutably by version and hash, and keeps run digests unchanged.",
+        "name": "adoption_model"
+      },
+      {
+        "description": "Resolves graph, policy and schemas from the adopting repository's `.agentic/` at the pinned commit. Files come from the git tree at commit_sha, not from the working tree. Package defaults are used only when the lock file names them and their hashes match. The resolver freezes the digests into the run exactly as today, and drift still stops the run. A new `--root` and `--config-dir` separate the target repository from the pipeline install. The run directory format, sealed manifests, provenance chain and approval documents are unchanged.",
+        "name": "layered_config_resolver"
+      },
+      {
+        "description": "`python -m agentic_pipeline` plus an `agentic` console script with the same subcommands, and new `config` (TUI), `ci {export-state,import-state}` and `doctor` commands. Existing subcommands keep their behaviour and output formats.",
+        "name": "cli"
+      },
+      {
+        "description": "The sandbox launcher becomes a backend interface whose result is a verified capability report consumed by the existing dispatcher checks. The checks themselves are not changed. Linux: bwrap as today. Windows: there is no native equivalent with verifiable equal guarantees, so every model-dispatching stage refuses natively. Supported route: run the pipeline inside WSL2 (a Linux kernel with unprivileged user namespaces), where bwrap runs unchanged and preflight verifies it per run. macOS: sandbox-exec is deprecated and cannot provide private mount namespaces equivalent to bwrap, so model stages refuse natively. Supported route: a Linux VM (Lima or UTM, adopter-installed) running the pipeline with bwrap, verified per run by preflight. Native Windows and macOS can still run non-dispatching commands: validate, run status, approve and decide signature verification, config TUI, and models discover in a read-only listing. Preflight reports each check as pass, fail or unsupported, and never reports pass when no backend is available.",
+        "name": "isolation_backend_layer"
+      },
+      {
+        "description": "Linux: everything works as is (bwrap, ssh-keygen -Y, git plumbing, file lock via fcntl, Ollama or llama-server, Node Pi agent). Windows native: git plumbing works through git for Windows. The file lock is replaced by msvcrt.locking behind a small stdlib lock abstraction. Approval signing uses OpenSSH for Windows ssh-keygen (8.x+ supports -Y), verified with the same offline check. POSIX path handling moves to pathlib. bwrap has no replacement, so grounding, design, synthesis, review and build model stages cannot run natively; they run under WSL2. macOS native: git, fcntl locking and ssh-keygen -Y work as is. bwrap has no replacement, so model stages cannot run natively; they run in a Linux VM. The local model servers (Ollama, llama-server, OVMS) may run on the host but are reached only from inside the VM or WSL sandbox, with network isolation verified there. F1 independent CI runs on all three because it is outside the sandbox by design.",
+        "name": "os_portability_matrix"
+      },
+      {
+        "description": "`agentic config` is a terminal UI built only on the Python standard library: a line-oriented menu wizard with optional curses rendering where curses is importable. It works over SSH and in Windows terminals. It reads policy/model_registry.yaml, agent roles from graph.yaml and the policy schemas, the output of `models discover`, and the result of `models test`. It writes only a proposed registry file under `.runs/config-proposals/<timestamp>/model_registry.yaml` with a diff and a JSON validation report. It never opens a policy path for writing; writes go through a guard that rejects any path inside the resolved policy, graph or schema directories. Validation rejects a mapping when: it fails the registry schema; design A and design B share a model family; a confidential-input role (build, or any role receiving source or tests) maps to a non-local model; a binding needs a prohibited credential variable or an API endpoint; or conformance tests have not passed for that binding on this host. The changed mapping reaches policy only when the human copies or commits the proposal into `.agentic/policy/` through the adopting repository's normal reviewed change. The tool can print the git commands and a commit message; it does not run them or push.",
+        "name": "config_tui"
+      },
+      {
+        "description": "Generic `agentic ci` entry points plus templates: a Jenkinsfile (shared library step) and a GitLab CI include. CI runs only on self-hosted Linux agents or runners that meet bwrap requirements. Each job runs `run resume` for one or more steps, then `ci export-state`. That command tars the run directory, writes a sha256 manifest, and stores it as a Jenkins stash or archived artifact, or as GitLab job artifacts or a cache keyed by run id, or in adopter-chosen internal storage. The next job runs `ci import-state`, which verifies the hash chain, the sealed manifests and the frozen digests before any step, so tampering or drift stops the run. The file lock is re-acquired per job, and a concurrency group (GitLab resource_group, Jenkins lock()) serialises jobs per run id.",
+        "name": "ci_adapter_jenkins_gitlab"
+      },
+      {
+        "description": "At H1, H2 and H3 the CI job stops in a waiting state (GitLab manual job or a pipeline that ends awaiting an artifact; Jenkins input step with timeout). It publishes the exact evidence digest and log tip to be signed. A human signs offline on their own machine with `ssh-keygen -Y sign` and uploads the signature file as a pipeline variable file, input-step file parameter or merge-request attachment. The resume job verifies it offline against policy/approvers.yaml as today, bound to the evidence and log tip. A replayed signature fails because the log tip has advanced. CI holds no signing key, and the approver key must never be stored as a CI secret; preflight fails if an approver private key is found in the job environment or workspace. Clicking the GitLab 'play' button or Jenkins 'Proceed' only resumes the job and is never an approval.",
+        "name": "approval_collection"
+      },
+      {
+        "description": "Unresolved conflict, stated openly: the Claude and Gemini design stages require an interactively signed-in personal subscription, and API keys are forbidden. A fully unattended CI run therefore cannot execute design A/B, synthesis or cloud review without a policy change, and this design does not propose one. Supported split: (a) cloud-model stages run on a developer machine (Linux, WSL2 or a Linux VM) where the vendor tool is signed in. Their run directory is exported and imported into CI. (b) CI runs grounding checks, scoring, local-model build on a self-hosted runner with local llama-server or Ollama, F1 CI, and approval verification. (c) Signing a vendor tool in on a self-hosted runner under a personal subscription is not proposed: it puts a personal credential on shared infrastructure and likely conflicts with vendor terms. It is listed as a question for the human at H1. If the human accepts a policy change, the change must go through policy review and is out of scope here.",
+        "name": "subscription_conflict_statement"
+      },
+      {
+        "description": "Unchanged: each cloud tool's OAuth file is copied into a private tmpfs home only for that tool's sandbox. In WSL2 and VMs the credential lives inside the Linux environment only. CI jobs never receive vendor credentials, and the eight prohibited credential variables are still checked.",
+        "name": "credential_isolation"
+      },
+      {
+        "description": "Git plumbing is unchanged and host-agnostic (GitHub, GitLab, Bitbucket, Gitea). Pull or merge request creation stays out of scope for the first release: the pipeline still never pushes. A later optional step after H2 could print host-specific commands for a human to run.",
+        "name": "git_host_integration"
+      },
+      {
+        "description": "Tests: (1) a per-OS isolation truthfulness check in a CI matrix (ubuntu, windows, macos) asserting that preflight reports bwrap-dependent checks as unsupported or fail on Windows and macOS native, and pass only on Linux and WSL2 where verified. (2) Config TUI tests feed invalid mappings (same family for A and B, a cloud model for build, a missing conformance result, a schema violation) and assert refusal. They also assert that no file under the policy, graph or schema directories changes mtime or hash, and that the write guard raises on policy paths. (3) A CI dry run with stub models spans three jobs with export and import. It asserts that resume succeeds and the hash chain verifies, that tampered state is refused, and that re-submitting an earlier approval signature after the log advances is rejected. Quality gates: the existing suite passes unchanged on Linux, and a policy-drift test runs against `.agentic/` overrides.",
+        "name": "verification_tests"
+      }
+    ],
+    "edges": [
+      {
+        "from": "cli",
+        "to": "layered_config_resolver"
+      },
+      {
+        "from": "layered_config_resolver",
+        "to": "adoption_model"
+      },
+      {
+        "from": "cli",
+        "to": "isolation_backend_layer"
+      },
+      {
+        "from": "cli",
+        "to": "config_tui"
+      },
+      {
+        "from": "ci_adapter_jenkins_gitlab",
+        "to": "cli"
+      },
+      {
+        "from": "ci_adapter_jenkins_gitlab",
+        "to": "approval_collection"
+      },
+      {
+        "from": "isolation_backend_layer",
+        "to": "credential_isolation"
+      },
+      {
+        "from": "config_tui",
+        "to": "isolation_backend_layer"
+      }
+    ]
+  }
+}
