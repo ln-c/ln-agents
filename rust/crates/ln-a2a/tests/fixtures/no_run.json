@@ -1,0 +1,16 @@
+{
+ "error": {
+  "code": -32602,
+  "message": "no run 'nope'",
+  "data": [
+   {
+    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+    "reason": "INVALID_PARAMS",
+    "domain": "a2a-protocol.org",
+    "metadata": {}
+   }
+  ]
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

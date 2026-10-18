@@ -89,6 +89,23 @@ Each skill calls the same code as `run`. **None of them signs, decides or resume
 
 Tasks are stored under `<runs-dir>/.a2a/tasks` and answered from the run's own state after a restart.
 
+`ln-hub acp` puts those skills in an editor that speaks ACP (Zed, JetBrains, Neovim plugins). The editor starts it and talks JSON-RPC over stdio. It calls the A2A server above, which must be running.
+
+```bash
+cd rust && cargo build --release      # target/release/ln-hub (about 1.7 MB; about 6 MB resident when idle)
+ln-hub acp [--a2a-url http://127.0.0.1:8420/a2a/jsonrpc] [--token-file F]
+```
+
+The token file defaults to `<session cwd>/.runs/.a2a/token`, the server's default when the editor opens this repository. You can also set it, and the URL, through `LN_HUB_TOKEN_FILE` and `LN_HUB_A2A_URL`. The URL must be a literal loopback address, and on Unix a token file that others can read is refused. To use it from Zed, add it under `agent_servers` with the command `ln-hub` and the arguments `["acp"]`.
+
+Every prompt is a slash command that runs as code; free text gets the help.
+- `/runs`, `/status [run]` and `/evidence [run]` work in either mode.
+- `/start <run> <entry_spec.json>`, `/advance [run]` and `/approval-doc <decision> <approver> <reason>` need the `design` mode. A session starts in the read-only `status` mode.
+- `/approval-doc` asks the editor once (allow or reject, never "always") before writing the unsigned document. It then shows the `ssh-keygen` and `run decide` commands.
+- `/approve`, `/decide` and `/resume` only explain that a human does these in a terminal.
+
+While a run advances, the editor shows each state as a plan entry and each model call as a tool call. When the run stops, it shows the evidence. Cancelling ends the turn at once and cancels the task, and the run stops after its current step. The session list holds the runs driven over A2A (`run/<id>`), and loading one shows its status. MCP servers that the editor offers are ignored: pipeline tools are policy.
+
 ### Human decisions
 
 A human state (`H1` design, `R1` merge, `R2` deploy) stops the run. The decision is a signed document, not a command-line flag:
@@ -141,7 +158,7 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 ├── agents/                    # role specifications (instructions, not a security boundary)
 ├── scripts/                   # MC/DC and mutation wrappers run by the CI checks
 ├── src/agentic_pipeline/      # runner, gates, adapters, sandbox, approvals, release
-├── rust/                      # ln-hub: ACP agent, A2A client, MCP tool loop, sandbox launcher (skeleton)
+├── rust/                      # ln-hub: ACP agent and A2A client; MCP tool loop and sandbox launcher to come
 └── tests/                     # invariant, policy, schema and runner tests
 ```
 

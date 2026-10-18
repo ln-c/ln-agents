@@ -1,0 +1,50 @@
+{
+ "result": {
+  "message": {
+   "messageId": "45f0a873-3089-4388-bc56-eeeab1d6949e",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "paused_reason": null,
+      "status": "awaiting_human",
+      "ledger": {
+       "reserved": {},
+       "consumed": {}
+      },
+      "steps": 11.0,
+      "runner_active": false,
+      "resumes": [],
+      "skill": "status",
+      "updated_at": "2026-10-18T07:59:11.988286+00:00",
+      "run_id": "deploy-design",
+      "entering": null,
+      "version": 1.0,
+      "pause_cause": null,
+      "current": "H1",
+      "policy": {
+       "policy/ci.yaml": "sha256:713ab8913a54761bba00b8e257875ea2e016f4093c24ad45905e029e9b2e6d8a",
+       "policy/vetoes.yaml": "sha256:511e53761ee874d19af1a36fb6906fc22a79b91de64b6cb7b76d26a7d1e5f592",
+       "policy/model_registry.yaml": "sha256:251d1d694937f8370f2a4fa03424e00a4109051f49111108d238838c594921cd",
+       "policy/approvers.yaml": "sha256:c420d137a9575d2f3182ecd83ba884f6b56c715ba60a40ecce47f20a0700a14b",
+       "pipeline/graph.yaml": "sha256:a76830c9f3bff5c041ef2e6f111159791ecb4b814dc5f01b8346197325d1c58b",
+       "policy/routing.yaml": "sha256:0506d223a225299d60746dfa641ee03029609cd8c2d4d43bba903fddd5ac97be",
+       "policy/weights.yaml": "sha256:a6196cc64998e574fbe4b9217f6308c7e17c8a3d8f3737a52fc1e29d6358bd17",
+       "policy/triage.yaml": "sha256:14bdf209ba7103b1c2fc698dbafd7f420364d36b8f10336dd9ac9530ea4d3ede",
+       "policy/data_classes.yaml": "sha256:f7a5ac5147c0795b504c0a28a6db0ce60a07689d3a6743516dac5c9ca74f93c4",
+       "policy/budgets.yaml": "sha256:7f619d181e89262fd5dc722722a6faff6e2fbcd6c1211fe13b85b32f66f6b1d2",
+       "policy/model_test_profiles.yaml": "sha256:3b3c89230b101b1d8b49049f1935bbbfd7f2e571e11a211ee1f2e85365471eec",
+       "policy/task_classes.yaml": "sha256:9c3e3589d2d8ef5aae91673cdb3b4d871689d41d3fd85cf137c8c2f143ae0f47",
+       "policy/escalation.yaml": "sha256:c81cd17ef1eeccb797fbba6ea26dbf2e14f553b04476e10afaf27d617fb8390f",
+       "policy/release.yaml": "sha256:9e9184a1d42ced9d8bfa26174240724a1fb26a54dd9480fe608d1ec0a22f3e38",
+       "policy/fast_path.yaml": "sha256:c82c89502b8895437a10c67387ff8d7bb0eab6bccea435f82df8bbe8814b9701",
+       "policy/advisories.yaml": "sha256:d36b0986844978ba37d309786231833330482c471e140ffd5435a8158a27199d"
+      }
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

@@ -13,7 +13,16 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+a2a-lf = "=0.4.2"
+# Typed ACP v1 messages only; ln-acp runs its own small JSON-RPC loop over stdio.
+agent-client-protocol-schema = { version = "=1.12.0", default-features = false }
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "env", "error-context"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Loopback HTTP only: no TLS, no compression.
+ureq = { version = "3.4.2", default-features = false, features = ["json"] }
+ln-a2a = { path = "crates/ln-a2a" }
+ln-acp = { path = "crates/ln-acp" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
