@@ -16,6 +16,7 @@ import argparse
 import copy
 import sys
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -180,29 +181,68 @@ def _step(args: argparse.Namespace, run_dir: Path) -> int:
     return {Outcome.BLOCKED: 1, Outcome.PAUSED: 2}.get(result.outcome, 0)
 
 
-def _approve(args: argparse.Namespace, run_dir: Path) -> int:
-    """Write the approval document for the human to sign; nothing about the run changes."""
-    runner = open_run(args.root, run_dir, _dispatcher_factory(args.root, run_dir))
+@dataclass(frozen=True, slots=True)
+class ApprovalDraft:
+    """An unsigned approval document written to disk, with what the approver needs to see."""
+
+    node: str
+    evidence: dict[str, Any]
+    path: Path
+    namespace: str  # the ssh-keygen -Y namespace to sign it under
+
+
+def write_approval_document(
+    root: Path,
+    run_dir: Path,
+    *,
+    decision: str,
+    approver: str,
+    reason: str,
+    candidate: str | None = None,
+    remediation_cause: str | None = None,
+    out: Path | None = None,
+) -> ApprovalDraft:
+    """Write the approval document a human then signs; nothing about the run changes.
+
+    Shared by `run approve` and the A2A `approval_document` skill. It never signs or decides.
+    """
+    runner = open_run(root, run_dir, _dispatcher_factory(root, run_dir))
     try:
         node = runner.state.current
         evidence = runner.approval_evidence()
         document = build_document(
             run_id=runner.state.run_id,
             node=node,
-            guard=args.decision,
-            approver=args.approver,
-            candidate=args.candidate,
-            reason=args.reason,
+            guard=decision,
+            approver=approver,
+            candidate=candidate,
+            reason=reason,
             evidence=evidence,
             issued_at=datetime.now(UTC).isoformat(),
-            remediation_cause=args.remediation_cause,
+            remediation_cause=remediation_cause,
         )
-        namespace = load_policy(args.root).approvers["namespace"]
+        namespace = load_policy(root).approvers["namespace"]
     finally:
         runner.close()
-    out = args.out or run_dir / "approvals" / f"{node}-{args.decision}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(document)
+    path = out or run_dir / "approvals" / f"{node}-{decision}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(document)
+    return ApprovalDraft(node, evidence, path, namespace)
+
+
+def _approve(args: argparse.Namespace, run_dir: Path) -> int:
+    """Write the approval document for the human to sign; nothing about the run changes."""
+    draft = write_approval_document(
+        args.root,
+        run_dir,
+        decision=args.decision,
+        approver=args.approver,
+        reason=args.reason,
+        candidate=args.candidate,
+        remediation_cause=args.remediation_cause,
+        out=args.out,
+    )
+    node, evidence, out, namespace = draft.node, draft.evidence, draft.path, draft.namespace
     print(f"approval for {args.run_id} at {node}: {args.decision}")
     if node == "R2":
         print(f"  merged SHA {evidence['merged_sha']} on {evidence['target_branch']}")

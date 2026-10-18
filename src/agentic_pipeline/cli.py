@@ -1,4 +1,4 @@
-"""Command line: `python -m agentic_pipeline {validate,preflight,models,run} ...`."""
+"""Command line: `python -m agentic_pipeline {validate,preflight,models,run,serve} ...`."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from agentic_pipeline.graph import REPO_ROOT
 from agentic_pipeline.models_cli import add_parser as add_models_parser
 from agentic_pipeline.models_cli import models_command
 from agentic_pipeline.readiness import Check, Report, evaluate_stage, run_preflight
+from agentic_pipeline.run_cli import DEFAULT_RUNS_DIR, run_command
 from agentic_pipeline.run_cli import add_parser as add_run_parser
-from agentic_pipeline.run_cli import run_command
 from agentic_pipeline.validation import validate_repo
 
 
@@ -58,6 +58,41 @@ def _preflight(root: Path, stage: str | None) -> int:
     return 1
 
 
+def _add_serve_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    serve = sub.add_parser("serve", help="serve the pipeline to other agents")
+    kinds = serve.add_subparsers(dest="serve_command", required=True)
+    a2a = kinds.add_parser("a2a", help="A2A server on loopback (needs the `a2a` extra)")
+    a2a.add_argument("--root", type=Path, default=REPO_ROOT)
+    a2a.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
+    a2a.add_argument("--host", default="127.0.0.1", help="a literal loopback address")
+    a2a.add_argument("--port", type=int, default=8420)
+    a2a.add_argument(
+        "--token-file",
+        type=Path,
+        help="bearer token (created 0600 if missing); default: <runs-dir>/.a2a/token",
+    )
+
+
+def _serve(args: argparse.Namespace) -> int:
+    # Imported here so the core install works without the optional `a2a` extra.
+    try:
+        from agentic_pipeline.a2a_server import ServeError, serve
+    except ImportError as exc:
+        print(
+            f"ERROR: the A2A server needs the `a2a` extra ({exc.name} missing): "
+            "uv sync --extra a2a",
+            file=sys.stderr,
+        )
+        return 1
+    token_file = args.token_file or args.runs_dir / ".a2a" / "token"
+    try:
+        serve(args.root, args.runs_dir, args.host, args.port, token_file)
+    except (ServeError, OSError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentic_pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -68,8 +103,11 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--stage", help="exit 1 unless this stage is eligible for dispatch")
     add_models_parser(sub)
     add_run_parser(sub)
+    _add_serve_parser(sub)
     args = parser.parse_args(argv)
 
+    if args.command == "serve":
+        return _serve(args)
     if args.command == "run":
         return run_command(args)
     if args.command == "models":

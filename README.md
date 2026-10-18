@@ -66,6 +66,29 @@ uv run python -m agentic_pipeline run resume  <run_id> --by WHO --reason TEXT   
 
 A run that dispatches a model stage and fails (quota, auth, an adapter error) pauses; `resume` records a human decision to continue. `step` reports when it blocked and why.
 
+`serve a2a` exposes the same runs to other agents (such as `ln-hub`) as the A2A agent `ln-pipeline`. It needs the `a2a` extra (`uv sync --extra a2a`), binds a literal loopback address only, and gates everything but the agent card behind a bearer token (created with mode 0600 if missing).
+
+```bash
+uv run python -m agentic_pipeline serve a2a [--runs-dir D] [--host 127.0.0.1] [--port 8420] [--token-file F]
+```
+
+A request is one A2A message with one data part naming a skill:
+- `start_run` (`run_id`, `entry_spec`);
+- `advance` (`run_id`, or the task's run);
+- `status`;
+- `evidence`;
+- `approval_document` (`decision`, `approver`, `reason`).
+
+Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume`.
+
+`advance` streams every provenance event as a WORKING status update, then ends in one of these states:
+- `TASK_STATE_INPUT_REQUIRED` when the run awaits a human, with the evidence attached as an artifact;
+- `TASK_STATE_AUTH_REQUIRED` when the run paused on `auth_failed` or `quota_exhausted`;
+- `TASK_STATE_INPUT_REQUIRED` when the run is otherwise paused, blocked or out of steps (it is resumable);
+- `TASK_STATE_COMPLETED` at a terminal state.
+
+Tasks are stored under `<runs-dir>/.a2a/tasks` and answered from the run's own state after a restart.
+
 ### Human decisions
 
 A human state (`H1` design, `R1` merge, `R2` deploy) stops the run. The decision is a signed document, not a command-line flag:

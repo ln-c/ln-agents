@@ -28,6 +28,7 @@ APPROVED = {
     "release.py": frozenset({"subprocess"}),  # git plumbing for the candidate tree and M1's branch
     "broker.py": frozenset({"http"}),  # the only route from a worker to a model
     "sandbox_entry.py": frozenset({"subprocess", "http", "urllib"}),  # runs inside bwrap only
+    "a2a_server.py": frozenset({"socket"}),  # binds the loopback-only A2A listener
 }
 
 
