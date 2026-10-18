@@ -213,7 +213,7 @@ models:
   gemini_4_argon_medium: {provider: google_ai_pro, model_id: gemini-4-argon-medium, alias: "Gemini 4 Argon (Medium)", family: gemini, capabilities: [design_reasoning]}
   gemini_4_argon_high: {provider: google_ai_pro, model_id: gemini-4-argon-high, alias: "Gemini 4 Argon (High)", family: gemini, capabilities: []}
   gemini_4_argon_low: {provider: google_ai_pro, model_id: gemini-4-argon-low, alias: "Gemini 4 Argon (Low)", family: gemini, capabilities: []}
-  gemini_3_8_flash_high: {provider: google_ai_pro, model_id: gemini-3.8-flash-high, alias: "Gemini 3.8 Flash (High)", family: gemini, capabilities: [code_generation, design_reasoning]}
+  gemini_3_8_flash_high: {provider: google_ai_pro, model_id: gemini-3.8-flash-high, alias: "Gemini 3.8 Flash (High)", family: gemini, capabilities: [code_generation, coordination, design_reasoning]}
   gemini_3_8_flash_medium: {provider: google_ai_pro, model_id: gemini-3.8-flash-medium, alias: "Gemini 3.8 Flash (Medium)", family: gemini, capabilities: []}
   gemini_3_8_flash_low: {provider: google_ai_pro, model_id: gemini-3.8-flash-low, alias: "Gemini 3.8 Flash (Low)", family: gemini, capabilities: []}
   claude_opus_5_5_low: {provider: google_ai_pro, model_id: claude-opus-5-5-low, alias: "Claude Opus 5.5 (Low)", family: claude, capabilities: []}

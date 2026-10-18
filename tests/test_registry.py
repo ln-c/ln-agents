@@ -407,7 +407,7 @@ def test_each_candidates_resolved_properties_are_pinned() -> None:
     }
     assert resolved == {
         CLAUDE: ("claude_pro", "cli-default", "claude", "cloud", ["code_generation", "design_reasoning"]),
-        GEMINI: ("google_ai_pro", "gemini-3.8-flash-high", "gemini", "cloud", ["code_generation", "design_reasoning"]),
+        GEMINI: ("google_ai_pro", "gemini-3.8-flash-high", "gemini", "cloud", ["code_generation", "coordination", "design_reasoning"]),
         QWEN: ("llamacpp_local", "qwen3.5-9b", "qwen3_5", "local", ["classification", "code_generation"]),
         OPUS: ("claude_pro", "claude-opus-5-5", "claude", "cloud", ["design_reasoning"]),
         ARGON: ("google_ai_pro", "gemini-4-argon-medium", "gemini", "cloud", ["design_reasoning"]),

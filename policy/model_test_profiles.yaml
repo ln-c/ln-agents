@@ -9,3 +9,4 @@ profiles:
   code_generation: [identity, file_output]
   decision: [identity, decision_probe]
   classification: [identity, json_reply]
+  coordination: [identity]

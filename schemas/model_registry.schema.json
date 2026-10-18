@@ -9,7 +9,7 @@
     "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
     "id_list": {"type": "array", "items": {"$ref": "#/definitions/id"}, "uniqueItems": true},
     "stage_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9-]*$"},
-    "capability": {"enum": ["classification", "code_generation", "decision", "design_reasoning"]},
+    "capability": {"enum": ["classification", "code_generation", "coordination", "decision", "design_reasoning"]},
     "capability_list": {"type": "array", "items": {"$ref": "#/definitions/capability"}, "uniqueItems": true},
     "version_triple": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 3, "maxItems": 3},
     "operation": {
