@@ -251,6 +251,20 @@ def llamacpp_model_version(spec: Mapping[str, Any], model_id: str) -> str:
     return f"{model_id}@sha256:{digest} (llama.cpp {build})"
 
 
+def llamacpp_output_modalities(spec: Mapping[str, Any], model_id: str) -> frozenset[str]:
+    """What the served model says it outputs (`text`, or `decisions` for a decision model)."""
+    status, body = _local_get(spec, LLAMACPP_MODELS)
+    if status != 200:
+        raise LookupError(f"GET {LLAMACPP_MODELS} returned HTTP {status}")
+    try:
+        entry = next(m for m in json.loads(body)["data"] if m["id"] == model_id)
+        return frozenset(map(str, entry["architecture"]["output_modalities"]))
+    except StopIteration:
+        raise LookupError(f"{model_id} is not served") from None
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LookupError(f"malformed {LLAMACPP_MODELS} response") from exc
+
+
 OVMS_READY = "/v2/health/ready"  # KServe health endpoint
 OVMS_MODELS = "/v3/models"  # OpenAI-compatible model list
 

@@ -50,10 +50,16 @@ DEFAULT_RUNS_DIR = REPO_ROOT / ".runs"
 
 def _adapter_factories() -> dict[str, Callable[[Mapping[str, Any], str], BackendAdapter]]:
     """Adapter constructors by provider id; each is called with the registry and a model id."""
-    from agentic_pipeline.adapters import AgyAdapter, ClaudeAdapter, PiQwenAdapter
+    from agentic_pipeline.adapters import (
+        AgyAdapter,
+        ClaudeAdapter,
+        DecisionAdapter,
+        PiQwenAdapter,
+    )
 
     return {
         "llamacpp_local": PiQwenAdapter.from_registry,  # type: ignore[dict-item]
+        "llamacpp_decision": DecisionAdapter.from_registry,  # type: ignore[dict-item]
         "openvino_local": PiQwenAdapter.from_registry,  # type: ignore[dict-item]
         "claude_pro": ClaudeAdapter.from_registry,  # type: ignore[dict-item]
         "google_ai_pro": AgyAdapter.from_registry,  # type: ignore[dict-item]

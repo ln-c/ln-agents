@@ -7,4 +7,5 @@ version: 1
 profiles:
   design_reasoning: [identity, json_reply]
   code_generation: [identity, file_output]
+  decision: [identity, decision_probe]
   classification: [identity, json_reply]

@@ -26,7 +26,7 @@ Build status of every graph state, checked against `DEFAULT_HANDLERS` in `src/ag
 
 ## Getting started
 
-Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, `git`, and `ssh-keygen`. Local models run through a llama.cpp `llama-server` or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`). Start `llama-server` with `-dev Vulkan0` and an `--alias` equal to the catalog `model_id`, for example `llama-server -m Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080 -dev Vulkan0 -ngl 99 -c 16384 --jinja --parallel 1`: with `ggml-openvino` installed a bare `llama-server` picks the OpenVINO CPU backend.
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, `git`, and `ssh-keygen`. Local models run through a llama.cpp `llama-server` or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`). Start `llama-server` with `-dev Vulkan0` and an `--alias` equal to the catalog `model_id`, for example `llama-server -m Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080 -dev Vulkan0 -ngl 99 -c 16384 --jinja --parallel 1`: with `ggml-openvino` installed a bare `llama-server` picks the OpenVINO CPU backend. The decision model Clef-Flash runs in a second `llama-server` on port 8081 (`--alias clef-flash -b 4096 -ub 4096`, the full command is in the registry); it answers only on `/v1/systemone` and nothing is bound to it yet.
 
 ```bash
 uv sync --all-groups

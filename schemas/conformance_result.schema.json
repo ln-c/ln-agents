@@ -27,7 +27,7 @@
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": {"enum": ["identity", "json_reply", "file_output"]}
+      "items": {"enum": ["identity", "json_reply", "file_output", "decision_probe"]}
     },
     "checks": {
       "type": "array",
@@ -37,7 +37,7 @@
         "required": ["name", "status", "detail"],
         "additionalProperties": false,
         "properties": {
-          "name": {"enum": ["identity", "json_reply", "file_output"]},
+          "name": {"enum": ["identity", "json_reply", "file_output", "decision_probe"]},
           "status": {"enum": ["pass", "fail"]},
           "detail": {"type": "string"}
         }
