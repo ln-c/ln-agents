@@ -362,6 +362,7 @@ def test_candidate_models_per_operation_are_pinned() -> None:
         "A1.proposal_b": [GEMINI],
         "A2.critique_b_by_a": [CLAUDE],
         "A2.critique_a_by_b": [GEMINI],
+        "A2J.finding_verdicts": ["clef_flash_local"],
         "A3.synthesis": [CLAUDE, GEMINI],
         "A3R.synthesis_review": [GEMINI, CLAUDE],
         "C1.module_decomposition": [QWEN],
@@ -424,7 +425,7 @@ def test_known_but_unclaimed_models_cannot_be_bound() -> None:
     unclaimed = [m for m, v in REGISTRY["models"].items() if not v["capabilities"]]
     agy = [m for m, v in REGISTRY["models"].items() if v["provider"] == "google_ai_pro"]
     openvino = [m for m, v in REGISTRY["models"].items() if v["provider"] == "openvino_local"]
-    assert sorted(unclaimed) == sorted([*(set(agy) - {GEMINI}), *openvino, "clef_flash_local"])
+    assert sorted(unclaimed) == sorted([*(set(agy) - {GEMINI}), *openvino])
     for model in unclaimed:
         registry = copy.deepcopy(REGISTRY)
         registry["agents"]["design"]["proposal_b"]["primary"] = model

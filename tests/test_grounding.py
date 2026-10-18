@@ -100,6 +100,7 @@ class Rig:
             root=self.repo,
             policy_digests=runner.state.policy,
             provenance_tip=runner.log.tip,
+            events=runner.log.records,
         )
 
     def manifest(self, stage: str) -> dict[str, Any] | None:

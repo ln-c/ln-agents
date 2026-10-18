@@ -42,6 +42,7 @@ Before A1:
 
 - **A1 — Independent Proposal Generation**
 - **A2 — Cross-Critique**, once
+- **A2J — Finding Triage** by a local decision model (deterministic threshold, no routing)
 - **A3 — Traceable Synthesis of Candidate S**
 - **A4 — Handoff Validation**
 - **H1 — Human Authority Routing**, for the approval decision, an unresolved constraint conflict, or an exhausted validation budget
@@ -158,6 +159,7 @@ The critique runs once. Two model families rarely converge on one design, so a b
 - Every blocking finding of either critique must receive exactly one entry in the synthesis's `resolutions`: `resolved` (the synthesis fixes it; say how) or `rejected` (it does not; the reason is required). A4 refuses a synthesis that leaves one unanswered, answers one twice, or answers a finding that was never raised.
 - If a constraint conflict is inherently incompatible, or a finding cannot be resolved from available evidence, say so in a `rejected` resolution; the reviewer of S (A3R) can then contest S, which raises uncertainty and sends the run to a human decision at H1.
 - If a blocking finding is shown to be unsupported, record the evidence and disposition in the resolution; do not simply delete the finding.
+- A2J asks a local decision model (a third model family) whether each finding is substantiated by its target proposal, and code applies the threshold in `policy/triage.yaml`. A4 requires a resolution only for blocking findings judged valid; a waived one may still be answered, and is listed with its probability at H1 together with each critique's share of valid findings. The synthesis is not shown the verdicts, so answering every blocking finding always passes.
 - Non-blocking and informational findings must be preserved for A3 and the final decision record.
 
 Record the critique ID, reviewer role, target proposal ID/version, manifest SHA-256, finding counts, and review completion status.
@@ -197,7 +199,7 @@ Validate Candidate S before formatting the handoff. All of the following are req
 - The input manifest SHA-256 is verified and matches the digest in the output.
 - All referenced proposals and critiques exist and their IDs, versions, and manifest digests match.
 - Both cross-critiques are complete for the exact proposal versions used in synthesis.
-- Every blocking critique finding has exactly one resolution, and every resolution names a blocking finding.
+- Every blocking critique finding judged valid at A2J has exactly one resolution, and every resolution names a blocking finding.
 - The constraint-coverage record includes every applicable mandatory constraint and acceptance criterion from the Context Manifest.
 - Every material architecture item, decision, contract, and data flow contains valid provenance.
 - API/contract and data-flow entries satisfy the output schema and include the required versioning/classification details.

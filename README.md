@@ -11,7 +11,7 @@ Build status of every graph state, checked against `DEFAULT_HANDLERS` in `src/ag
 | Phase | States | Status |
 |---|---|---|
 | Grounding | `START`, `G` | Built. `G` is one state: it pins the commit, classifies data, indexes the source tree and seals the context manifest in a single stage manifest. |
-| Design | `A1`–`A4`, `A3R` | Built. `A1`–`A3` and `A3R` dispatch to models; `A2` checks the critiques once (no repair loop) and `A4` validates, requiring the synthesis to answer every blocking finding. |
+| Design | `A1`–`A4`, `A2J`, `A3R` | Built. `A1`–`A3` and `A3R` dispatch to models; `A2` checks the critiques once (no repair loop), `A2J` has a local decision model judge every finding against a human-owned threshold, and `A4` validates, requiring the synthesis to answer every blocking finding judged valid. |
 | Scoring | `B1`–`B3` | Built. Deterministic vetoes, MCDA scoring and the fast-path check. The fast path stays closed: its allowlist is empty, so every run goes to `H1`. |
 | Human design approval | `H1`, `DR` | Built. `H1` is a signed approval (see below); `DR` then seals the approved candidate as the design decision the build reads. `DR` reached from the fast path needs a scored winner and blocks, because none is ever invented. |
 | BENCH, CHILD | `BENCH`, `CHILD` | **Not built.** A run blocks here. |
@@ -26,7 +26,7 @@ Build status of every graph state, checked against `DEFAULT_HANDLERS` in `src/ag
 
 ## Getting started
 
-Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, `git`, and `ssh-keygen`. Local models run through a llama.cpp `llama-server` or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`). Start `llama-server` with `-dev Vulkan0` and an `--alias` equal to the catalog `model_id`, for example `llama-server -m Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080 -dev Vulkan0 -ngl 99 -c 16384 --jinja --parallel 1`: with `ggml-openvino` installed a bare `llama-server` picks the OpenVINO CPU backend. The decision model Clef-Flash runs in a second `llama-server` on port 8081 (`--alias clef-flash -b 4096 -ub 4096`, the full command is in the registry); it answers only on `/v1/systemone` and nothing is bound to it yet.
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, `git`, and `ssh-keygen`. Local models run through a llama.cpp `llama-server` or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`). Start `llama-server` with `-dev Vulkan0` and an `--alias` equal to the catalog `model_id`, for example `llama-server -m Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b --host 127.0.0.1 --port 8080 -dev Vulkan0 -ngl 99 -c 16384 --jinja --parallel 1`: with `ggml-openvino` installed a bare `llama-server` picks the OpenVINO CPU backend. The decision model Clef-Flash runs in a second `llama-server` on port 8081 (`--alias clef-flash -b 4096 -ub 4096`, the full command is in the registry); it answers only on `/v1/systemone` and judges the critique findings at `A2J`, so start it before a design run reaches A2.
 
 ```bash
 uv sync --all-groups
@@ -109,7 +109,8 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 │   ├── advisories.yaml        # dependency advisories
 │   ├── approvers.yaml         # who may sign which human decision
 │   ├── ci.yaml                # E2 and F1 checks, toolchain, thresholds
-│   └── release.yaml           # merge branch rules and protected paths
+│   ├── release.yaml           # merge branch rules and protected paths
+│   └── triage.yaml            # A2J threshold for a valid critique finding
 ├── schemas/                   # JSON Schema (Draft-07) for artifacts and provenance events
 ├── agents/                    # role specifications (instructions, not a security boundary)
 ├── scripts/                   # MC/DC and mutation wrappers run by the CI checks
@@ -122,7 +123,7 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 The graph has eight groups of states:
 
 1. **Grounding** (`START`, `G`): an immutable context manifest pinning the commit, contract versions and data classes.
-2. **Design** (`A1`–`A4`): independent proposals from two providers, one cross-critique, synthesis that answers every blocking finding, validation.
+2. **Design** (`A1`–`A4`): independent proposals from two providers, one cross-critique, a local judge of every finding (`A2J`), synthesis that answers every valid blocking finding, validation.
 3. **Scoring** (`B1`–`B3`, `DR`): hard vetoes, MCDA scoring, authorization.
 4. **Human authority** (`H1`, `DR`, `BENCH`, `CHILD`): design approval and its sealed record, benchmarking, child runs.
 5. **Build** (`C1`–`E4`): decomposition, frozen contract tests, sandboxed implementation, escalation.

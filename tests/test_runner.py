@@ -43,7 +43,13 @@ class Rig:
         self.root = root
         self.run_dir = tmp_path / RUN_ID  # state.run_id must match the directory
         self.adapters = {
-            b: FakeAdapter() for b in ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_5_9b")
+            b: FakeAdapter()
+            for b in (
+                "claude_cli_default",
+                "gemini_3_8_flash_high",
+                "qwen3_5_9b",
+                "clef_flash_local",
+            )
         }
         self.unready: tuple[str, ...] = ()
         seed(self.run_dir, PRE_MODEL)
@@ -144,9 +150,9 @@ def test_walks_grounding_into_model_stages(rig: Rig) -> None:
     assert (result.outcome, result.node) == (Outcome.BLOCKED, "A4")  # A4 has no handler yet
     assert "no handler registered for A4" in result.detail
     assert [e["state"] for e in rig.events() if e["event"] == "enter"] == [
-        "START", "G", "A1", "A2", "A3", "A4",
+        "START", "G", "A1", "A2", "A2J", "A3", "A4",
     ]  # fmt: skip
-    assert stored(rig).steps == 5
+    assert stored(rig).steps == 6
     assert verify_provenance_chain(rig.log.path).ok
     assert {g.operation_id for g in rig.adapters["claude_cli_default"].grants} >= {"proposal_a"}
 

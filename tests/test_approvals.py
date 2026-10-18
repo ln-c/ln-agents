@@ -45,6 +45,11 @@ EVIDENCE: dict[str, Any] = {
     "fired": {"proposal_a_sealed": ["data_class_violation"], "proposal_b_sealed": []},
     "undetermined": {"proposal_a_sealed": [], "proposal_b_sealed": ["known_vulnerable_dependency"]},
     "unevaluated": [],
+    "triage": "7" * 64,
+    "valid_ratios": {"critique_b_by_a_sealed": None, "critique_a_by_b_sealed": 0.5},
+    "waived_blocking": [
+        {"critique": "critique_a_by_b_sealed", "finding_id": "f2", "probability": 0.03}
+    ],
     "provenance_tip": "sha256:" + "5" * 64,
     "policy": {"pipeline/graph.yaml": "sha256:" + "6" * 64},
 }
@@ -369,6 +374,9 @@ def test_cli_approve_then_decide_round_trip(
     shown = capsys.readouterr().out
     assert f"ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n {NAMESPACE} {out}" in shown
     assert "proposal_b_sealed" in shown
+    assert "critique_a_by_b_sealed: 50% of its findings judged valid" in shown
+    assert "critique_b_by_a_sealed: no findings" in shown
+    assert "waived blocking finding f2 of critique_a_by_b_sealed (p=0.030)" in shown
     out.with_name("doc.json.sig").write_text(signer.sign(out.read_bytes()))
     decide = argparse.Namespace(**common, approval=out, signature=None, run_command="decide")
     assert run_cli.run_command(decide) == 0

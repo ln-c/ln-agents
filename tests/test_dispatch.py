@@ -86,7 +86,10 @@ def report(*, unready: tuple[str, ...] = (), credential: Status = Status.VERIFIE
     return Report(
         static_errors=[],
         global_checks=[Check("credential_env_absent", credential, "")],
-        providers={p: checks(p) for p in ("claude_pro", "google_ai_pro", "llamacpp_local")},
+        providers={
+            p: checks(p)
+            for p in ("claude_pro", "google_ai_pro", "llamacpp_local", "llamacpp_decision")
+        },
         isolation={n: Check(n, Status.VERIFIED, "") for n in ISOLATION},
         registry=REGISTRY,
     )
@@ -135,7 +138,10 @@ def allow_all(edge: Edge, ctx: Mapping[str, Any]) -> bool:
 
 @pytest.fixture
 def adapters() -> dict[str, FakeAdapter]:
-    return {b: FakeAdapter() for b in ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_5_9b")}
+    return {
+        b: FakeAdapter()
+        for b in ("claude_cli_default", "gemini_3_8_flash_high", "qwen3_5_9b", "clef_flash_local")
+    }
 
 
 def make(
@@ -262,7 +268,7 @@ def test_non_ok_result_pauses_without_fallback(tmp_path: Path, adapters: dict, s
     adapters["claude_cli_default"].status = status
     d = make(tmp_path, adapters)
     with pytest.raises(RunPaused, match=status):
-        d.dispatch_stage("A2", "always", "A3", {})
+        d.dispatch_stage("A2J", "always", "A3", {})
     assert (
         adapters["gemini_3_8_flash_high"].grants == []
     )  # no in-flight fallback to the next backend
@@ -283,7 +289,7 @@ def test_ordered_any_of_uses_first_ready_backend(tmp_path: Path, adapters: dict)
     d = make(
         tmp_path, adapters, reports=iter(lambda: report(unready=("claude_cli_default",)), None)
     )
-    outcome = d.dispatch_stage("A2", "always", "A3", {})
+    outcome = d.dispatch_stage("A2J", "always", "A3", {})
     assert set(outcome.results) == {"synthesis"}
     assert (
         adapters["claude_cli_default"].grants == []
@@ -458,7 +464,7 @@ def test_outputs_inherit_most_restrictive_input_class(tmp_path: Path, adapters: 
 def test_resolved_model_recorded_in_provenance(tmp_path: Path, adapters: dict) -> None:
     adapters["claude_cli_default"].resolved_model = "claude-opus-5-5"
     d = make(tmp_path, adapters)
-    d.dispatch_stage("A2", "always", "A3", {})
+    d.dispatch_stage("A2J", "always", "A3", {})
     results = [json.loads(line) for line in d.log.path.read_text().splitlines()]
     assert [r.get("model") for r in results if r["event"] == "model_result"] == ["claude-opus-5-5"]
 

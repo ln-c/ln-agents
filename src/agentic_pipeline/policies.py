@@ -32,6 +32,7 @@ POLICY_FILES = (
     "routing",
     "release",
     "model_test_profiles",
+    "triage",
 )
 
 
@@ -312,6 +313,16 @@ def check_test_profiles(doc: Mapping[str, Any], capabilities: list[str]) -> list
     return errors
 
 
+def check_triage(doc: Mapping[str, Any]) -> list[str]:
+    """valid_threshold is a probability strictly between 0 and 1 (0 or 1 would judge nothing)."""
+    threshold = doc.get("valid_threshold")
+    if isinstance(threshold, bool) or not isinstance(threshold, int | float):
+        return ["triage: valid_threshold must be a number"]
+    if not 0 < threshold < 1:
+        return ["triage: valid_threshold must be strictly between 0 and 1"]
+    return []
+
+
 TASK_CLASS_ID = re.compile(r"[a-z][a-z0-9_]*")
 
 
@@ -345,4 +356,5 @@ def validate_policies(docs: Mapping[str, Mapping[str, Any]]) -> list[str]:
         *check_approvers(docs["approvers"]),
         *check_ci(docs["ci"], docs["routing"]),
         *check_release(docs["release"]),
+        *check_triage(docs["triage"]),
     ]
