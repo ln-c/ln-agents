@@ -45,6 +45,8 @@ impl Turn {
                 if status.state == TaskState::Working {
                     return match data {
                         Some(event) => self.provenance(event, &text),
+                        // The server's own progress line (such as "writing the summary").
+                        None if !text.is_empty() => vec![message(format!("\n_{text}…_\n"))],
                         None => vec![],
                     };
                 }
@@ -165,11 +167,64 @@ fn stopped_text(state: &TaskState, run_status: Option<&str>, text: &str) -> Stri
 fn artifact(artifact: &Artifact) -> Vec<SessionUpdate> {
     match (artifact.name.as_deref(), ln_a2a::data(&artifact.parts)) {
         (Some("evidence"), Some(view)) => view_updates(view),
+        (Some("summary"), Some(summary)) => summary_updates(summary),
         (name, _) => vec![message(format!(
             "\nArtifact {}\n",
             name.unwrap_or("(unnamed)")
         ))],
     }
+}
+
+/// The coordinator's summary of a stop (the `summary` artifact): its Markdown as the message, then
+/// a link that opens the file. The file's leading HTML comment is for tools, not for the chat.
+pub fn summary_updates(summary: &Value) -> Vec<SessionUpdate> {
+    let Some(markdown) = summary.get("markdown").and_then(Value::as_str) else {
+        return vec![message("\nSummary\n")];
+    };
+    let body: Vec<&str> = markdown
+        .lines()
+        .skip_while(|line| line.trim_start().starts_with("<!--"))
+        .collect();
+    let mut updates = vec![message(format!("\n{}\n", body.join("\n")))];
+    if let Some(path) = summary.get("path").and_then(Value::as_str) {
+        updates.extend(link_updates(path, "This summary as a file: "));
+    }
+    updates
+}
+
+/// A resource link that opens `path` in the editor, after a one-line lead-in.
+fn link_updates(path: &str, lead: &str) -> Vec<SessionUpdate> {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string());
+    let link = ResourceLink::new(name, format!("file://{path}"))
+        .mime_type("text/markdown".to_string())
+        .title("Open the file".to_string());
+    vec![
+        message(lead),
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::ResourceLink(link))),
+        message("\n"),
+    ]
+}
+
+/// An `ask` skill reply: the coordinator's text, and which of the run's files it was given.
+pub fn answer_text(reply: &Value) -> String {
+    let answer = reply
+        .get("answer")
+        .and_then(Value::as_str)
+        .unwrap_or("(no answer)");
+    let sources: Vec<&str> = reply
+        .get("sources")
+        .and_then(Value::as_array)
+        .map(|s| s.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let from = if sources.is_empty() {
+        String::new()
+    } else {
+        format!("\n_From: {}_\n", sources.join(", "))
+    };
+    format!("\n{answer}\n{from}")
 }
 
 /// The sections of the report shown in the chat; the rest is one click away in the file.
@@ -191,20 +246,10 @@ pub fn view_updates(view: &Value) -> Vec<SessionUpdate> {
     }
     let mut updates = vec![message(text)];
     if let Some(path) = view.get("path").and_then(Value::as_str) {
-        let name = std::path::Path::new(path)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string());
-        let link = ResourceLink::new(name, format!("file://{path}"))
-            .mime_type("text/markdown".to_string())
-            .title("The full evidence report".to_string());
-        updates.push(message(
+        updates.extend(link_updates(
+            path,
             "The full report, with every finding and what you sign: ",
         ));
-        updates.push(SessionUpdate::AgentMessageChunk(ContentChunk::new(
-            ContentBlock::ResourceLink(link),
-        )));
-        updates.push(message("\n"));
     }
     updates
 }

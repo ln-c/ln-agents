@@ -1,0 +1,23 @@
+{
+ "result": {
+  "message": {
+   "messageId": "ef0fb585-4a30-4047-a914-c15a90dce450",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "skill": "ask",
+      "sources": [
+       "STOP-001-H1.md",
+       "H1-evidence.md",
+       "A3-synthesis.md"
+      ],
+      "answer": "The synthesis ranks first (1.00 against 0.96 for Design A and 0.70 for Design B) because its review scored it highest on every criterion."
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

@@ -105,11 +105,12 @@ The token file defaults to `<session cwd>/.runs/.a2a/token`, the server's defaul
 
 Every prompt is a slash command that runs as code; free text gets the help.
 - `/runs`, `/status [run]` and `/evidence [run]` work in either mode.
+- Anything you type that is not a slash command is a question for the coordinator model (see [The coordinator](#the-coordinator)), asked about the session's run. The answer is text, from the run's Markdown views; it starts, advances, signs and resumes nothing, and `/help` or `help` shows the commands.
 - `/start <run> <entry_spec.json>`, `/advance [run]` and `/approval-doc <decision>[:<candidate>] <approver> <reason>` need the `design` mode. A design approval names its candidate, e.g. `approve_design_and_no_security_veto:synthesis_sealed`. A session starts in the read-only `status` mode.
 - `/approval-doc` asks the editor once (allow or reject, never "always") before writing the unsigned document. It then shows the `ssh-keygen` and `run decide` commands.
 - `/approve`, `/decide` and `/resume` only explain that a human does these in a terminal.
 
-While a run advances, the editor shows each state as a plan entry and each model call as a tool call. When the run stops for a human, and on `/evidence`, it shows the choices and the candidates at a glance, with a link that opens the full report. Cancelling ends the turn at once and cancels the task, and the run stops after its current step. The session list holds the runs driven over A2A (`run/<id>`), and loading one shows its status. MCP servers that the editor offers are ignored: pipeline tools are policy.
+While a run advances, the editor shows each state as a plan entry and each model call as a tool call. When the run stops for a human, and on `/evidence`, it shows the choices and the candidates at a glance, with a link that opens the full report. When a run stops, it also shows the coordinator's summary of the stop, with a link that opens the file. Cancelling ends the turn at once and cancels the task, and the run stops after its current step. The session list holds the runs driven over A2A (`run/<id>`), and loading one shows its status. MCP servers that the editor offers are ignored: pipeline tools are policy.
 
 ### Human decisions
 

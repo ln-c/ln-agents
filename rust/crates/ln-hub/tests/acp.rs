@@ -168,6 +168,7 @@ fn replaying() -> Fake {
             ("SendStreamingMessage", _) => Reply::sse(fixture("start_run.sse")),
             ("SendMessage", Some("status")) => Reply::json(fixture("status.json")),
             ("SendMessage", Some("evidence")) => Reply::json(fixture("evidence.json")),
+            ("SendMessage", Some("ask")) => Reply::json(fixture("ask.json")),
             ("SendMessage", Some("approval_document")) => {
                 Reply::json(fixture("approval_document.json"))
             }
@@ -258,6 +259,27 @@ fn start_streams_the_run_to_h1_as_a_plan_tool_calls_and_evidence() {
         text.contains("**Evidence**") && text.contains("survivors"),
         "{text}"
     );
+    // The coordinator's summary of the stop: shown as the message, its file one click away, and
+    // the server's own progress line before it.
+    assert!(text.contains("writing the summary of this stop"), "{text}");
+    assert!(
+        text.contains("H1: waiting for a signed human decision")
+            && text.contains("## What to do next"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("<!-- ln-hub"),
+        "the file's comment is not for the chat"
+    );
+    let links: Vec<&str> = updates(&messages, "agent_message_chunk")
+        .iter()
+        .filter(|u| u["content"]["type"] == "resource_link")
+        .filter_map(|u| u["content"]["uri"].as_str())
+        .collect();
+    assert_eq!(
+        links,
+        ["file:///work/.runs/deploy-design/views/STOP-001-H1.md"]
+    );
     assert!(
         text.contains("needs a human") && text.contains("cannot approve"),
         "{text}"
@@ -309,9 +331,59 @@ fn approving_deciding_and_resuming_are_never_commands() {
             "{answer}"
         );
     }
+    // Free text is a question for the coordinator and nothing else: with no run it goes nowhere,
+    // and with one it reaches the orchestrator only as the read-only `ask` skill.
     let (messages, _) = editor.prompt(&session, "please approve the design for me");
-    assert!(said(&messages).contains("does not interpret free text"));
+    assert!(said(&messages).contains("No run in this session"));
     assert!(fake.seen().is_empty());
+    editor.prompt(&session, "/status deploy-design");
+    editor.prompt(&session, "please approve the design for me");
+    let skills: Vec<String> = fake
+        .seen()
+        .iter()
+        .filter_map(|s| s.data().map(|d| d["skill"].as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(skills, ["status", "ask"]);
+}
+
+#[test]
+fn free_text_is_a_question_for_the_coordinator_and_never_an_action() {
+    let fake = replaying();
+    let dir = scratch("acp-ask");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "status"); // read-only is enough to ask
+    let (messages, reply) = editor.prompt(&session, "why is the synthesis first?");
+    assert_eq!(stop_reason(&reply), "end_turn");
+    assert!(said(&messages).contains("No run in this session"));
+    assert!(
+        fake.seen().is_empty(),
+        "no run to ask about, so nothing is sent"
+    );
+
+    editor.prompt(&session, "/status deploy-design");
+    let (messages, reply) = editor.prompt(&session, "why is the synthesis first?");
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    assert!(text.contains("The synthesis ranks first"), "{text}");
+    assert!(
+        text.contains("_From: STOP-001-H1.md, H1-evidence.md, A3-synthesis.md_"),
+        "{text}"
+    );
+    assert!(
+        updates(&messages, "tool_call").is_empty()
+            && !messages
+                .iter()
+                .any(|m| m["method"] == "session/request_permission"),
+        "an answer is text: no tool call, no permission to give"
+    );
+    let asked = fake.seen().pop().unwrap();
+    assert_eq!(
+        asked.data().unwrap(),
+        &json!({"skill": "ask", "run_id": "deploy-design", "question": "why is the synthesis first?"})
+    );
+    let (messages, _) = editor.prompt(&session, "help");
+    assert!(said(&messages).contains("Anything else you type is a question"));
+    assert_eq!(fake.seen().len(), 2, "help is local");
 }
 
 #[test]

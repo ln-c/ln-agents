@@ -25,10 +25,16 @@ fn every_captured_reply_deserializes() {
             "advance",
             "status",
             "evidence",
+            "ask",
             "approval_document"
         ]
     );
-    for name in ["status.json", "evidence.json", "approval_document.json"] {
+    for name in [
+        "status.json",
+        "evidence.json",
+        "ask.json",
+        "approval_document.json",
+    ] {
         let reply: SendMessageResponse = serde_json::from_value(result(name)).unwrap();
         assert!(matches!(reply, SendMessageResponse::Message(_)), "{name}");
     }
@@ -118,7 +124,7 @@ fn a_token_file_others_can_read_is_refused() {
 }
 
 #[test]
-fn a_request_is_one_data_part_naming_one_of_the_five_skills() {
+fn a_request_is_one_data_part_naming_one_of_the_six_skills() {
     let message = Request::approval_document(
         "r",
         "approve_design_and_no_security_veto",
@@ -140,11 +146,17 @@ fn a_request_is_one_data_part_naming_one_of_the_five_skills() {
                 "decision": "approve_design_and_no_security_veto", "approver": "ln-c", "reason": "ok",
                 "candidate": "synthesis_sealed"})
     );
+    assert_eq!(
+        Request::ask(Some("r"), "why?").message().parts.len(),
+        1,
+        "a question is one data part too"
+    );
     let skills: Vec<&str> = [
         Request::start_run("r", json!({})),
         Request::advance("r"),
         Request::status("r"),
         Request::evidence("r"),
+        Request::ask(None, "why?"),
         Request::approval_document("r", "d", "a", "why", None),
     ]
     .iter()
@@ -175,7 +187,10 @@ fn calls_carry_the_token_and_version_and_never_a_task() {
         .stream(&Request::advance("deploy-design"))
         .unwrap()
         .count();
-    assert_eq!(streamed, 29);
+    assert_eq!(
+        streamed, 31,
+        "the 29 of the run, the progress line and the summary"
+    );
     assert_eq!(client.list_tasks().unwrap().len(), 1);
     let refused = client.get_task("x").unwrap_err();
     assert!(
