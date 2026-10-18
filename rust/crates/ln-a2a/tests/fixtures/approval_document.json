@@ -1,0 +1,22 @@
+{
+ "result": {
+  "message": {
+   "messageId": "9f922bd0-3e76-4054-af6e-9abcfd1b9059",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "node": "H1",
+      "sign": "ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n agentic-pipeline-approval /work/runs/deploy-design/approvals/H1-approve_design_and_no_security_veto.json",
+      "then": "python -m agentic_pipeline run decide deploy-design --approval /work/runs/deploy-design/approvals/H1-approve_design_and_no_security_veto.json",
+      "decision": "approve_design_and_no_security_veto",
+      "document": "/work/runs/deploy-design/approvals/H1-approve_design_and_no_security_veto.json",
+      "skill": "approval_document"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}
