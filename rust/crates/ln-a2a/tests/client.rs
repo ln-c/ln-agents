@@ -119,9 +119,14 @@ fn a_token_file_others_can_read_is_refused() {
 
 #[test]
 fn a_request_is_one_data_part_naming_one_of_the_five_skills() {
-    let message =
-        Request::approval_document("r", "approve_design_and_no_security_veto", "ln-c", "ok")
-            .message();
+    let message = Request::approval_document(
+        "r",
+        "approve_design_and_no_security_veto",
+        "ln-c",
+        "ok",
+        Some("synthesis_sealed"),
+    )
+    .message();
     assert!(message.task_id.is_none() && message.context_id.is_none());
     let [part] = message.parts.as_slice() else {
         panic!("one part")
@@ -132,14 +137,15 @@ fn a_request_is_one_data_part_naming_one_of_the_five_skills() {
     assert_eq!(
         data,
         &json!({"skill": "approval_document", "run_id": "r",
-                "decision": "approve_design_and_no_security_veto", "approver": "ln-c", "reason": "ok"})
+                "decision": "approve_design_and_no_security_veto", "approver": "ln-c", "reason": "ok",
+                "candidate": "synthesis_sealed"})
     );
     let skills: Vec<&str> = [
         Request::start_run("r", json!({})),
         Request::advance("r"),
         Request::status("r"),
         Request::evidence("r"),
-        Request::approval_document("r", "d", "a", "why"),
+        Request::approval_document("r", "d", "a", "why", None),
     ]
     .iter()
     .map(Request::skill)

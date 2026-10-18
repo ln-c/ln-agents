@@ -475,12 +475,10 @@ impl Prompt {
             }
             Command::Evidence { run } => {
                 let run = self.the_run(run)?;
-                let evidence = skill_reply(&client()?, &Request::evidence(&run)).map_err(a2a)?;
-                let full = serde_json::to_string_pretty(&evidence).unwrap_or_default();
-                self.say(format!(
-                    "{}\n```json\n{full}\n```\n",
-                    render::evidence_text(&evidence)
-                ));
+                let view = skill_reply(&client()?, &Request::evidence(&run)).map_err(a2a)?;
+                for update in render::view_updates(&view) {
+                    self.agent.update(&self.session_id, update);
+                }
             }
             Command::Start { run, entry_spec } => {
                 let spec = read_entry_spec(&self.cwd, &entry_spec)?;
@@ -492,6 +490,7 @@ impl Prompt {
             }
             Command::ApprovalDoc {
                 decision,
+                candidate,
                 approver,
                 reason,
             } => {
@@ -500,7 +499,13 @@ impl Prompt {
                     self.say("Not written.\n");
                     return Ok(Ended::Done);
                 }
-                let request = Request::approval_document(&run, &decision, &approver, &reason);
+                let request = Request::approval_document(
+                    &run,
+                    &decision,
+                    &approver,
+                    &reason,
+                    candidate.as_deref(),
+                );
                 let reply = skill_reply(&client()?, &request).map_err(a2a)?;
                 self.say(render::approval_text(&reply));
             }

@@ -95,7 +95,11 @@ from starlette.responses import JSONResponse
 
 from agentic_pipeline.fsutil import WINDOWS, atomic_write_json
 from agentic_pipeline.provenance import JsonlProvenanceLog
-from agentic_pipeline.run_cli import _dispatcher_factory, write_approval_document
+from agentic_pipeline.run_cli import (
+    _dispatcher_factory,
+    save_evidence_report,
+    write_approval_document,
+)
 from agentic_pipeline.run_state import RunLocked, RunStateError, RunStore, Status, validate_run_id
 from agentic_pipeline.runner import (
     MakeDispatcher,
@@ -130,7 +134,10 @@ SKILL_TEXT = {
     "start_run": "Create a run from an entry spec at START, then advance it.",
     "advance": "Advance a run until it needs a human, pauses, finishes or runs out of steps.",
     "status": "The run's state: where it is, its status, budget and pause reason.",
-    "evidence": "The evidence a human signs at H1, R1 or R2, recomputed from sealed state.",
+    "evidence": (
+        "What a human decides on at H1, R1 or R2: the evidence they sign, the choices, who may "
+        "sign, and a readable Markdown report (written to the run's approvals/ folder)."
+    ),
     "approval_document": (
         "Write the unsigned approval document and return the ssh-keygen and `run decide` "
         "commands. The human signs and decides; nothing here approves."
@@ -209,12 +216,14 @@ class PipelineService:
         return {**store.load().to_dict(), "runner_active": store.is_locked()}
 
     def evidence(self, run_id: str) -> dict[str, Any]:
+        """The approval view (evidence, choices, approvers, Markdown) and the report's path."""
         run_dir = self.run_dir(run_id)
         runner = open_run(self.root, run_dir, self.make_dispatcher(self.root, run_dir))
         try:
-            return runner.approval_evidence()
+            view = runner.approval_view()
         finally:
             runner.close()
+        return {**view, "path": str(save_evidence_report(run_dir, view).resolve())}
 
     def approval_document(self, run_id: str, **fields: Any) -> dict[str, Any]:
         from agentic_pipeline.approvals import signing_command

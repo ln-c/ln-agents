@@ -230,6 +230,35 @@ def write_approval_document(
     return ApprovalDraft(node, evidence, path, namespace)
 
 
+def save_evidence_report(run_dir: Path, view: Mapping[str, Any]) -> Path:
+    """Write the view's Markdown report next to the approval documents and return its path.
+
+    The report is regenerated from sealed state each time; it is never signed.
+    """
+    path = run_dir / "approvals" / f"{view['node']}-evidence.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(view["markdown"], encoding="utf-8")
+    return path
+
+
+def evidence_report(root: Path, run_dir: Path) -> tuple[dict[str, Any], Path]:
+    """The approval view of a run awaiting a human, with its report written to disk."""
+    runner = open_run(root, run_dir, _dispatcher_factory(root, run_dir))
+    try:
+        view = runner.approval_view()
+    finally:
+        runner.close()
+    return view, save_evidence_report(run_dir, view)
+
+
+def _evidence(args: argparse.Namespace, run_dir: Path) -> int:
+    view, path = evidence_report(args.root, run_dir)
+    print(f"{args.run_id} at {view['node']}: {len(view['choices'])} choices; report: {path}")
+    for choice in view["choices"]:
+        print(f"  {choice['label']}")
+    return 0
+
+
 def _approve(args: argparse.Namespace, run_dir: Path) -> int:
     """Write the approval document for the human to sign; nothing about the run changes."""
     draft = write_approval_document(
@@ -270,6 +299,10 @@ def _approve(args: argparse.Namespace, run_dir: Path) -> int:
                 f"(p={waived['probability']:.3f}); S did not have to answer it"
             )
     print(f"written: {out}")
+    try:
+        print(f"readable report: {evidence_report(args.root, run_dir)[1]}")
+    except ApprovalError as exc:  # the document above is complete; only the view is missing
+        print(f"readable report unavailable: {exc}", file=sys.stderr)
     print("Review it, then sign it as the approver (writes the .sig file next to it):")
     print(f"  {signing_command(out, namespace)}")
     print(f"then: run decide {args.run_id} --approval {out}")
@@ -383,6 +416,11 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
     step = commands.add_parser("step", parents=[common], help="advance until blocked or stopped")
     step.add_argument("--max-steps", type=_positive_int, default=100)
     commands.add_parser("status", parents=[common], help="show run state")
+    commands.add_parser(
+        "evidence",
+        parents=[common],
+        help="write the readable evidence report of a run awaiting a human",
+    )
     approve = commands.add_parser(
         "approve", parents=[common], help="write the approval document a human then signs"
     )
@@ -415,6 +453,7 @@ def run_command(args: argparse.Namespace) -> int:
         "init": _init,
         "step": _step,
         "status": _status,
+        "evidence": _evidence,
         "resume": _resume,
         "approve": _approve,
         "decide": _decide,

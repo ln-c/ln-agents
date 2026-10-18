@@ -58,6 +58,7 @@ uv run python -m agentic_pipeline models test --model M [--root R]
 uv run python -m agentic_pipeline run init   <run_id> [--entry START] [--entry-spec FILE]
 uv run python -m agentic_pipeline run step   <run_id> [--max-steps N]   # advance until blocked, paused or awaiting a human
 uv run python -m agentic_pipeline run status <run_id>
+uv run python -m agentic_pipeline run evidence <run_id>                  # write the readable report of a run awaiting a human
 uv run python -m agentic_pipeline run approve <run_id> --decision G --approver ID --reason TEXT \
     [--candidate C] [--remediation-cause code_defect|test_defect|design_issue] [--out FILE]
 uv run python -m agentic_pipeline run decide  <run_id> --approval FILE [--signature FILE]
@@ -76,8 +77,8 @@ A request is one A2A message with one data part naming a skill:
 - `start_run` (`run_id`, `entry_spec`);
 - `advance` (`run_id`, or the task's run);
 - `status`;
-- `evidence`;
-- `approval_document` (`decision`, `approver`, `reason`).
+- `evidence`: the evidence, the choices a human can sign, who may sign, and the readable report (its Markdown and the path it was written to);
+- `approval_document` (`decision`, `approver`, `reason`, and `candidate` for a design approval).
 
 Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume`.
 
@@ -104,17 +105,17 @@ The token file defaults to `<session cwd>/.runs/.a2a/token`, the server's defaul
 
 Every prompt is a slash command that runs as code; free text gets the help.
 - `/runs`, `/status [run]` and `/evidence [run]` work in either mode.
-- `/start <run> <entry_spec.json>`, `/advance [run]` and `/approval-doc <decision> <approver> <reason>` need the `design` mode. A session starts in the read-only `status` mode.
+- `/start <run> <entry_spec.json>`, `/advance [run]` and `/approval-doc <decision>[:<candidate>] <approver> <reason>` need the `design` mode. A design approval names its candidate, e.g. `approve_design_and_no_security_veto:synthesis_sealed`. A session starts in the read-only `status` mode.
 - `/approval-doc` asks the editor once (allow or reject, never "always") before writing the unsigned document. It then shows the `ssh-keygen` and `run decide` commands.
 - `/approve`, `/decide` and `/resume` only explain that a human does these in a terminal.
 
-While a run advances, the editor shows each state as a plan entry and each model call as a tool call. When the run stops, it shows the evidence. Cancelling ends the turn at once and cancels the task, and the run stops after its current step. The session list holds the runs driven over A2A (`run/<id>`), and loading one shows its status. MCP servers that the editor offers are ignored: pipeline tools are policy.
+While a run advances, the editor shows each state as a plan entry and each model call as a tool call. When the run stops for a human, and on `/evidence`, it shows the choices and the candidates at a glance, with a link that opens the full report. Cancelling ends the turn at once and cancels the task, and the run stops after its current step. The session list holds the runs driven over A2A (`run/<id>`), and loading one shows its status. MCP servers that the editor offers are ignored: pipeline tools are policy.
 
 ### Human decisions
 
 A human state (`H1` design, `R1` merge, `R2` deploy) stops the run. The decision is a signed document, not a command-line flag:
 
-1. `run approve` prints the evidence the human is deciding on and writes an approval document that binds the decision to that evidence, including the run's provenance tip, so an approval is single-use.
+1. `run evidence` (or `run approve`, or `/evidence` in the editor) writes a readable report to `.runs/<run>/approvals/<node>-evidence.md`. It lists every choice, each candidate's components, data flows, dependencies, vetoes and scores, and every finding with its judged probability and the synthesis's answer. It ends with the digests a signature binds to. The report is a view, rebuilt from sealed state each time, and model text in it is escaped so it cannot turn into links or HTML. `run approve` writes an approval document that binds the decision to that evidence, including the run's provenance tip, so an approval is single-use.
 2. The human signs it: `ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n agentic-pipeline-approval <document>`.
 3. `run decide` verifies the signature offline against `policy/approvers.yaml`, recomputes the evidence and takes the edge only if it still matches.
 
