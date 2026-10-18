@@ -64,10 +64,10 @@ providers:
       version_pattern: '^(\d+)\.(\d+)\.(\d+)$'
       min_version: [1, 3, 1]
   # llama.cpp's llama-server on loopback, one process per model (`model_id` is the server's
-  # --alias). Start it with `-dev Vulkan0`: when ggml-openvino is installed a bare llama-server
-  # picks the OpenVINO CPU backend instead. Example:
-  #   llama-server -m ~/models/gguf/Qwen3.5-9B-Q4_K_M.gguf --alias qwen3.5-9b --host 127.0.0.1 \
-  #     --port 8080 -dev Vulkan0 -ngl 99 -c 16384 --jinja --parallel 1
+  # --alias). `launch` is how dispatch starts it when a stage needs it and it is not running,
+  # and stops it after the stage (R19: it must bind the host and port readiness checks).
+  # `-dev Vulkan0` matters: when ggml-openvino is installed a bare llama-server picks the
+  # OpenVINO CPU backend instead.
   llamacpp_local:
     access_mode: local_inference
     location: local
@@ -80,13 +80,18 @@ providers:
       host: 127.0.0.1
       port: 8080
       timeout_seconds: 1.0
+    launch:
+      argv: [llama-server, -m, ~/models/gguf/Qwen3.5-9B-Q4_K_M.gguf, --alias, qwen3.5-9b,
+             --host, 127.0.0.1, --port, "8080", -dev, Vulkan0, -ngl, "99", -c, "16384",
+             --jinja, --parallel, "1"]
+      ready_timeout_seconds: 120
   # A second llama-server for decision models (Clef-Flash), which answer only on /v1/systemone:
   # one probability per question option from a single forward pass, no generated text. The
   # whole request must fit one physical batch, and the probabilities shift slightly with -b/-ub,
-  # so start it with exactly these flags (the server does not report -b/-ub, so nothing checks
-  # them):
-  #   llama-server -m ~/models/gguf/Clef-Flash-Q4_K_M.gguf --alias clef-flash --host 127.0.0.1 \
-  #     --port 8081 -dev Vulkan0 -ngl 99 -c 16384 -b 4096 -ub 4096 --parallel 1
+  # so it starts with exactly these flags (the server does not report -b/-ub, so nothing else
+  # checks them). A2J requests reach about 6k tokens, so the batch is 8192 (4096 refused a
+  # 5,779-token finding on 2026-10-18); policy/triage.yaml's threshold was calibrated at 4096
+  # and should be recalibrated at 8192.
   llamacpp_decision:
     access_mode: local_inference
     location: local
@@ -99,6 +104,11 @@ providers:
       host: 127.0.0.1
       port: 8081
       timeout_seconds: 1.0
+    launch:
+      argv: [llama-server, -m, ~/models/gguf/Clef-Flash-Q4_K_M.gguf, --alias, clef-flash,
+             --host, 127.0.0.1, --port, "8081", -dev, Vulkan0, -ngl, "99", -c, "16384",
+             -b, "8192", -ub, "8192", --parallel, "1"]
+      ready_timeout_seconds: 90
   # OpenVINO Model Server on loopback (Intel CPU/GPU/NPU). It serves an OpenAI-compatible API
   # under /v3, which the broker reaches by rewriting the sandbox's /v1 path on the host. OVMS
   # reports no build digest, so a model's provenance records "no build digest reported".

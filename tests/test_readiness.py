@@ -675,3 +675,18 @@ def test_preflight_evaluates_the_registry_it_is_given(tmp_path: Path) -> None:
     assert report.registry is frozen
     verdict = evaluate_stage("A3", report)
     assert not verdict.eligible and "frozen for this run" in verdict.reasons[0]
+
+
+def test_a_launchable_server_that_is_down_is_started_on_demand_not_failed(tmp_path: Path) -> None:
+    frozen = copy.deepcopy(REGISTRY)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]  # closed again: nothing listens there
+    decision = frozen["providers"]["llamacpp_decision"]
+    decision["readiness"]["port"] = port
+    del frozen["providers"]["llamacpp_local"]["launch"]
+    frozen["providers"]["llamacpp_local"]["readiness"]["port"] = port
+    report = run_preflight(ROOT, Host(environ={}, home=tmp_path, which=lambda name: None), frozen)
+    daemon = report.providers["llamacpp_decision"][0]
+    assert (daemon.status, "on demand" in daemon.detail) == (Status.UNVERIFIED, True)
+    assert report.providers["llamacpp_local"][0].status is Status.FAILED  # no launch: as before
