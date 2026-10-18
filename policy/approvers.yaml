@@ -8,9 +8,13 @@
 # calibration (HR). Design, merge and deploy are wired up; calibration is not.
 # Revoke a key by removing the entry; a run that started earlier then refuses to reopen
 # (policy drift) until it is re-run under the new policy.
+#
+# The key is a dedicated approval key (~/.ssh/id_ed25519_ln_approval, the default of
+# `run approve`'s signing command and of ln-hub's /decide): not the approver's login or
+# git-signing key, protected by a passphrase, and never loaded into an ssh-agent.
 version: 1
 namespace: agentic-pipeline-approval
 approvers:
   - id: ln-c
-    public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIADAUmWc+eZHH6bFKMM9rWh7O8MRMDOWAChmRS9TRewO"
+    public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILbfYbf1qFChSrKpmLLHfTCITjZPLf4g4EjJ+vrQ2Y5v"
     decisions: [design, merge, deploy, calibration]

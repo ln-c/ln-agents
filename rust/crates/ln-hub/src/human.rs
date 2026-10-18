@@ -121,7 +121,7 @@ pub struct Decision<'a> {
     pub run: &'a str,
     pub approval: &'a Path,
     pub namespace: &'a str,
-    /// `None`: `~/.ssh/id_ed25519`.
+    /// `None`: `~/.ssh/id_ed25519_ln_approval`, the approval key (`policy/approvers.yaml`).
     pub key: Option<&'a Path>,
     pub runs_dir: &'a Path,
     pub pipeline: &'a [String],
@@ -134,7 +134,7 @@ fn finish(console: &mut dyn Console, code: i32) -> i32 {
 
 fn home_key() -> PathBuf {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    PathBuf::from(home.unwrap_or_default()).join(".ssh/id_ed25519")
+    PathBuf::from(home.unwrap_or_default()).join(".ssh/id_ed25519_ln_approval")
 }
 
 fn pipeline_run(pipeline: &[String], tail: Vec<String>) -> Option<(String, Vec<String>)> {

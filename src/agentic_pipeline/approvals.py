@@ -112,8 +112,13 @@ def build_document(
     )
 
 
+# The approver's own key, kept apart from their login and git-signing keys: only the key in
+# policy/approvers.yaml can approve, so it should do nothing else and never sit in an agent.
+APPROVAL_KEY = "~/.ssh/id_ed25519_ln_approval"
+
+
 def signing_command(document: Path, namespace: str) -> str:
-    return f"ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n {namespace} {document}"
+    return f"ssh-keygen -Y sign -f {APPROVAL_KEY} -n {namespace} {document}"
 
 
 def _verify_signature(
