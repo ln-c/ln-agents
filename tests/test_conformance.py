@@ -387,7 +387,7 @@ def test_models_test_records_and_reports_a_failure(
     [
         ("qwen3_5_9b", report(env=Status.FAILED), FakeAdapter(), "credential_env_absent"),
         ("qwen3_5_9b", report(network_disabled=Status.UNVERIFIED), FakeAdapter(), "network_disabled"),
-        ("claude_cli_default", report(session_separation=Status.FAILED), FakeAdapter(), "session_separation"),
+        ("claude_opus_5_5_high_cli", report(session_separation=Status.FAILED), FakeAdapter(), "session_separation"),
         ("qwen3_5_9b", report(drop="network_disabled"), FakeAdapter(), "network_disabled not reported"),
         ("qwen3_5_9b", None, None, "no adapter for qwen3_5_9b"),
         ("clef_flash", None, FakeAdapter(), "not bound"),

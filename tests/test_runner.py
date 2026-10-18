@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_dispatch import DATA_CLASSES, GRAPH, REGISTRY, FakeAdapter, report, seed
+from test_dispatch import BINDABLE, DATA_CLASSES, GRAPH, REGISTRY, A, B, FakeAdapter, report, seed
 
 from agentic_pipeline.dispatch import Dispatcher
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
@@ -42,15 +42,7 @@ class Rig:
     def __init__(self, tmp_path: Path, root: Path = ROOT) -> None:
         self.root = root
         self.run_dir = tmp_path / RUN_ID  # state.run_id must match the directory
-        self.adapters = {
-            b: FakeAdapter()
-            for b in (
-                "claude_cli_default",
-                "gemini_3_8_flash_high",
-                "qwen3_5_9b",
-                "clef_flash_local",
-            )
-        }
+        self.adapters = {b: FakeAdapter() for b in BINDABLE}
         self.unready: tuple[str, ...] = ()
         seed(self.run_dir, PRE_MODEL)
         init_run(root, self.run_dir, RUN_ID, "START")
@@ -154,7 +146,7 @@ def test_walks_grounding_into_model_stages(rig: Rig) -> None:
     ]  # fmt: skip
     assert stored(rig).steps == 6
     assert verify_provenance_chain(rig.log.path).ok
-    assert {g.operation_id for g in rig.adapters["claude_cli_default"].grants} >= {"proposal_a"}
+    assert {g.operation_id for g in rig.adapters[A].grants} >= {"proposal_a"}
 
 
 def test_a_stage_with_several_edges_needs_a_handler(rig: Rig) -> None:
@@ -229,14 +221,14 @@ def test_max_steps_bounds_a_run(rig: Rig) -> None:
 
 
 def test_unready_backend_blocks_without_pausing(rig: Rig) -> None:
-    rig.unready = ("gemini_3_8_flash_high",)
+    rig.unready = (B,)
     runner = rig.at("G", GROUNDING)
     result = runner.step()
-    assert result.outcome is Outcome.BLOCKED and "gemini_3_8_flash_high.executable" in result.detail
+    assert result.outcome is Outcome.BLOCKED and f"{B}.executable" in result.detail
     state = stored(rig)
     assert (state.status, state.current, state.entering) == (Status.RUNNING, "G", None)
     assert state.ledger == {"consumed": {}, "reserved": {}}
-    assert not rig.adapters["claude_cli_default"].grants
+    assert not rig.adapters[A].grants
 
 
 def test_models_cannot_choose_guards_without_a_handler(rig: Rig) -> None:
@@ -256,7 +248,7 @@ def test_marker_and_reservation_are_durable_before_any_model_call(rig: Rig) -> N
         doc = json.loads((rig.run_dir / "state.json").read_text())
         seen.append({"entering": doc["entering"], "ledger": doc["ledger"]})
 
-    rig.adapters["claude_cli_default"].side_effect = watch
+    rig.adapters[A].side_effect = watch
     runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     assert runner.step().outcome is Outcome.ADVANCED
     # While the adapter was running: marker set, unit already spent on disk.
@@ -313,7 +305,7 @@ def test_unpersistable_ledger_blocks_dispatch_and_spends_nothing(rig: Rig) -> No
     result = runner.step()
     assert result.outcome is Outcome.BLOCKED and "cannot persist budget ledger" in result.detail
     assert runner.ledger.consumed == {} and runner.ledger.reserved == {"design": 0}
-    assert not rig.adapters["claude_cli_default"].grants
+    assert not rig.adapters[A].grants
     assert all(e["event"] != "model_call" for e in rig.events())
 
 
@@ -321,7 +313,7 @@ def test_unpersistable_ledger_blocks_dispatch_and_spends_nothing(rig: Rig) -> No
 
 
 def paused_rig(rig: Rig) -> Runner:
-    rig.adapters["claude_cli_default"].status = "quota_exhausted"
+    rig.adapters[A].status = "quota_exhausted"
     runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     assert runner.step().outcome is Outcome.PAUSED
     return runner
@@ -333,16 +325,16 @@ def test_quota_exhaustion_pauses_and_keeps_the_spent_budget(rig: Rig) -> None:
     assert state.status is Status.PAUSED and "quota_exhausted" in state.paused_reason
     assert (state.current, state.entering) == ("A4", None)
     assert state.ledger["consumed"] == {"design": 1}
-    assert not rig.adapters["gemini_3_8_flash_high"].grants  # no fallback to another provider
+    assert not rig.adapters[B].grants  # no fallback to another provider
 
 
 def test_paused_run_refuses_to_step_even_after_reopening(rig: Rig) -> None:
     paused_rig(rig).close()
-    calls = len(rig.adapters["claude_cli_default"].grants)
+    calls = len(rig.adapters[A].grants)
     again = rig.open({"A4": lambda ctx: "proposal_invalid"})
     result = again.step()
     assert result.outcome is Outcome.PAUSED and "quota_exhausted" in result.detail
-    assert len(rig.adapters["claude_cli_default"].grants) == calls
+    assert len(rig.adapters[A].grants) == calls
 
 
 def test_resume_is_recorded_and_the_edge_is_charged_again(rig: Rig) -> None:
@@ -359,7 +351,7 @@ def test_resume_is_recorded_and_the_edge_is_charged_again(rig: Rig) -> None:
     assert state.resumes[0]["identity"] == "self-asserted"
     assert state.resumes[0]["provenance_tip"] == decisions[-1]["event_hash"]
 
-    rig.adapters["claude_cli_default"].status = "ok"
+    rig.adapters[A].status = "ok"
     again = rig.open({"A4": lambda ctx: "proposal_invalid"})
     assert again.step().outcome is Outcome.ADVANCED
     assert again.ledger.consumed == {"design": 2}
@@ -397,7 +389,7 @@ def crash_after_model_call(rig: Rig) -> None:
             "model": "fake",
             "model_version": "1",
             "prompt_hash": "sha256:" + "a" * 64,
-            "backend": "claude_cli_default",
+            "backend": A,
             "access_method": "subscription_tool",
             "operation_id": "proposal_a",
             "invocation_id": "inv-crash",
@@ -504,14 +496,14 @@ def test_save_failure_after_a_finished_stage_pauses_then_recovers_forward(rig: R
     runner.store.save = fail_final  # type: ignore[method-assign]
     result = runner.step()
     assert result.outcome is Outcome.PAUSED and "state_save_failed" in result.detail
-    calls = len(rig.adapters["claude_cli_default"].grants)
+    calls = len(rig.adapters[A].grants)
     runner.close()
 
     reopened = rig.open()  # disk: marker still set, enter event logged
     state = reopened.state
     assert (state.status, state.current, state.entering) == (Status.RUNNING, "A1", None)
     assert state.ledger["consumed"] == {"design": 1}  # charged once, not twice
-    assert len(rig.adapters["claude_cli_default"].grants) == calls  # nothing re-run
+    assert len(rig.adapters[A].grants) == calls  # nothing re-run
 
 
 def test_crash_after_enter_event_recovers_forward(rig: Rig) -> None:
@@ -597,7 +589,7 @@ def test_spent_budget_takes_the_spent_route(rig: Rig) -> None:
     state = stored(rig)
     assert (state.current, state.entering, state.status) == ("H1", None, Status.RUNNING)
     assert state.ledger["consumed"] == {"design": 2}  # nothing more spent
-    assert not rig.adapters["claude_cli_default"].grants
+    assert not rig.adapters[A].grants
     assert runner.step().outcome is Outcome.AWAITING_HUMAN
 
 
@@ -621,7 +613,7 @@ def test_spent_budget_without_a_route_pauses_with_a_typed_cause(rig: Rig) -> Non
 
 
 def test_pauses_record_their_cause(rig: Rig) -> None:
-    rig.adapters["claude_cli_default"].status = "quota_exhausted"
+    rig.adapters[A].status = "quota_exhausted"
     rig.at("A4", {"A4": lambda ctx: "proposal_invalid"}).step()
     assert stored(rig).pause_cause is PauseCause.DISPATCH_PAUSED
 
@@ -691,7 +683,7 @@ def test_error_after_spending_still_pauses(rig: Rig) -> None:
     def explode() -> None:
         raise ValueError("adapter bug after the call was logged")
 
-    rig.adapters["claude_cli_default"].side_effect = explode
+    rig.adapters[A].side_effect = explode
     runner = rig.at("A4", {"A4": lambda ctx: "proposal_invalid"})
     result = runner.step()
     assert result.outcome is Outcome.PAUSED

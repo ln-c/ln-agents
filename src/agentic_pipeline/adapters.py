@@ -252,6 +252,7 @@ class PiQwenAdapter:
 # ── Claude (subscription, text-only) ─────────────────────────────────────────
 
 CLAUDE_MOUNT = "/opt/claude/claude"
+CLAUDE_CLI_DEFAULT = "cli-default"  # the registry model_id for "whatever the CLI resolves"
 CLAUDE_CONFIG_DIR = f"{HOME}/.claude"
 CLAUDE_FLAGS = (
     "-p",
@@ -339,6 +340,8 @@ class ClaudeAdapter:
     binary: Path  # resolved native `claude` executable, mounted read-only
     cli_version: str
     credentials: Path  # host OAuth credentials file, bound read-write for token refresh
+    model_id: str = CLAUDE_CLI_DEFAULT  # passed as --model unless it is the CLI's default
+    effort: str | None = None  # passed as --effort (the registry model's `effort`)
     task_builder: Callable[[DispatchGrant], str] = default_task
     limits: SandboxLimits = field(default_factory=SandboxLimits)
     timeout: float = 1800.0
@@ -355,13 +358,21 @@ class ClaudeAdapter:
         credentials = host.home / ".claude" / ".credentials.json"
         if not credentials.is_file():
             raise LookupError(f"{credentials} not found; sign in with `claude` first")
+        model = registry["models"][backend]
+        overrides.setdefault("model_id", model["model_id"])
+        overrides.setdefault("effort", model.get("effort"))
         return cls(Path(path).resolve(), version, credentials, **overrides)
 
+    def model_flags(self) -> list[str]:
+        flags = [] if self.model_id == CLAUDE_CLI_DEFAULT else ["--model", self.model_id]
+        return flags + (["--effort", self.effort] if self.effort else [])
+
     def identity(self) -> Identity:
+        flags = " ".join(["-p", *self.model_flags()])
         return Identity(
-            model="claude_pro:cli-default",  # the provider-resolved model is recorded after
+            model=f"claude_pro:{self.model_id}",  # the provider-resolved model is recorded after
             model_version=f"claude-code {self.cli_version}",
-            access_method="subscription_tool via claude -p in bwrap (text-only)",
+            access_method=f"subscription_tool via claude {flags} in bwrap (text-only)",
         )
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
@@ -373,7 +384,13 @@ class ClaudeAdapter:
     def sandbox_spec(self, call: PreparedCall) -> SandboxSpec:
         prompt = json.loads(call.prompt)
         return SandboxSpec(
-            argv=[CLAUDE_MOUNT, *CLAUDE_FLAGS, "--system-prompt", prompt["system"]],
+            argv=[
+                CLAUDE_MOUNT,
+                *CLAUDE_FLAGS,
+                *self.model_flags(),
+                "--system-prompt",
+                prompt["system"],
+            ],
             network="host",
             ro_binds={CLAUDE_MOUNT: self.binary},
             rw_binds={f"{CLAUDE_CONFIG_DIR}/.credentials.json": self.credentials},

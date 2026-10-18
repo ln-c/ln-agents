@@ -4,7 +4,8 @@ It is not in `src/` or the registry, and nothing in the real run path can build 
 inject it as the dispatcher's adapters mapping, so the real Runner, Dispatcher, gates and
 provenance log run over a recorded design without calling a model.
 
-Outputs are keyed by stage and operation (`<stage>/<operation>.json` under the fixture).
+Outputs are keyed by stage and operation (`<stage>/<operation>.json` under the fixture), and a
+replay binds the design roles to the backends they were recorded on (`pin_bindings`).
 Replaying one changes exactly one field: a design document's `manifest_hash` names the
 context manifest it was written against, which covers the commit and the policy digests, so
 it is rebound from the recorded hash to the replay run's own. Anything else in the document
@@ -18,6 +19,8 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from agentic_pipeline.adapters import DECISION_TASKS, decision_requests, default_task, embed_inputs
 from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, PreparedCall
@@ -58,6 +61,22 @@ class Recording:
 
     def output(self, key: str) -> dict[str, Any]:
         return json.loads((self.root / f"{key}.json").read_text(encoding="utf-8"))
+
+    def pin_bindings(self, root: Path) -> None:
+        """Bind the design roles in `root`'s registry to the backends the recording ran on, so a
+        replay dispatches each call where it was recorded, whatever the current policy binds."""
+        path = root / "policy" / "model_registry.yaml"
+        registry = yaml.safe_load(path.read_text(encoding="utf-8"))
+        ran_on = {key: call["backend"] for key, call in self.calls.items()}
+        assert ran_on["A2/critique_b_by_a"] == ran_on["A1/proposal_a"]  # one binding per side
+        assert ran_on["A2/critique_a_by_b"] == ran_on["A1/proposal_b"]
+        design = registry["agents"]["design"]
+        design["proposal_a"]["primary"] = ran_on["A1/proposal_a"]
+        design["proposal_b"]["primary"] = ran_on["A1/proposal_b"]
+        design["finding_triage"]["primary"] = ran_on["A2J/finding_verdicts"]
+        design["synthesis"]["model_assistance"] = [ran_on["A3/synthesis"]]
+        design["synthesis_review"]["model_assistance"] = [ran_on["A3R/synthesis_review"]]
+        path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
 
     def adapters(self) -> dict[str, PlaybackAdapter]:
         """One adapter per recorded backend: the mapping a test hands the Dispatcher."""

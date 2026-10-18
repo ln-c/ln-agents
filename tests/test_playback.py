@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from playback import FIXTURES, PlaybackAdapter, Recording
-from test_grounding import repo  # noqa: F401  (a fixture)
+from test_grounding import git, repo  # noqa: F401  (repo is a fixture)
 
 from agentic_pipeline.dispatch import Dispatcher
 from agentic_pipeline.readiness import Check, Report, Status
@@ -46,6 +46,8 @@ class Replay:
         self.recording = recording
         self.adapters = recording.adapters()
         self.run_dir = tmp_path / "runs" / recording.run_id
+        recording.pin_bindings(repo)
+        git(repo, "commit", "-q", "-am", "bind the recorded backends")
         init_run(repo, self.run_dir, recording.run_id, "START", recording.entry_spec)
 
     def open(self) -> Runner:

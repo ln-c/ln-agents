@@ -141,7 +141,8 @@
           "alias": {"type": "string", "minLength": 1},
           "family": {"$ref": "#/definitions/id"},
           "capabilities": {"$ref": "#/definitions/capability_list"},
-          "chat_template_kwargs": {"type": "object", "description": "Merged into every chat request the broker forwards for this model; they override the request's own values."}
+          "chat_template_kwargs": {"type": "object", "description": "Merged into every chat request the broker forwards for this model; they override the request's own values."},
+          "effort": {"enum": ["low", "medium", "high", "xhigh", "max"], "description": "The reasoning effort the provider's CLI runs this model at (claude --effort); only claude_pro models take it."}
         }
       }
     },
