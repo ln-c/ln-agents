@@ -35,7 +35,7 @@ uv run pytest                                 # tests; the sandbox tests skip wh
 uv run python -m agentic_pipeline validate    # graph, policy and model-registry invariants
 uv run ruff check . && uv run ruff format --check .
 
-# ln-hub (rust/, toolchain pinned in rust/rust-toolchain.toml); CI runs it on Linux, Windows and macOS
+# ln-hub (rust/, toolchain pinned in rust/rust-toolchain.toml)
 cd rust && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
 ```
 
