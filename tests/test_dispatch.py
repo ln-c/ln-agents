@@ -43,6 +43,12 @@ B = DESIGN["proposal_b"]["primary"]  # Design B
 SYNTHESIZER = DESIGN["synthesis"]["model_assistance"][0]
 REVIEWERS = DESIGN["synthesis_review"]["model_assistance"]  # in preference order
 BINDABLE = tuple(name for name, model in REGISTRY["models"].items() if model["capabilities"])
+# A recorded reply of each output schema, which a fake writes so the output check passes.
+RECORDED = ROOT / "tests" / "fixtures" / "deploy-design"
+SCHEMA_REPLIES = {
+    "proposal": RECORDED / "A1" / "proposal_a.json",
+    "critique": RECORDED / "A2" / "critique_a_by_b.json",
+}
 ISOLATION = (
     "sandbox_enforcement",
     "protected_paths_read_only",
@@ -111,6 +117,7 @@ class FakeAdapter:
         self.grants: list[DispatchGrant] = []
         self.side_effect: Any = None
         self.resolved_model: str | None = None
+        self.malformed: list[bytes | None] = []  # replies before a good one; None: no JSON
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         return PreparedCall("fake-model", "1.0", "subscription_tool", grant.operation_id.encode())
@@ -120,6 +127,11 @@ class FakeAdapter:
         if self.raise_on_invoke:
             raise ConnectionError("provider unreachable")
         (grant.write_path / "output.md").write_text(f"{grant.operation_id}\n")
+        if grant.output_schema is not None:
+            good = SCHEMA_REPLIES[grant.output_schema].read_bytes()
+            reply = self.malformed.pop(0) if self.malformed else good
+            if reply is not None:
+                (grant.write_path / f"{grant.operation_id}.json").write_bytes(reply)
         if self.side_effect:
             self.side_effect()
         return AdapterResult(self.status, resolved_model=self.resolved_model)  # type: ignore[arg-type]
@@ -474,3 +486,70 @@ def test_missing_adapter_reason_is_surfaced(tmp_path: Path, adapters: dict) -> N
     explained = Explained({k: v for k, v in adapters.items() if k != B})
     with pytest.raises(DispatchBlocked, match=f"{B}: LookupError: not signed in"):
         make(tmp_path, explained).dispatch_stage("G", "always", "A1", {})
+
+
+def reasons(d: Dispatcher) -> list[str]:
+    records = [json.loads(line) for line in d.log.path.read_text().splitlines()]
+    return [r["reason_code"] for r in records if r["event"] == "model_result"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [None, b'{"findings": [}', b'{"id": "not a critique"}'],
+    ids=["no-json", "broken-json", "wrong-shape"],
+)
+def test_a_malformed_reply_is_asked_again_and_only_the_good_one_sealed(
+    tmp_path: Path, adapters: dict, reply: bytes | None
+) -> None:
+    adapters[B].malformed = [reply]
+    d = make(tmp_path, adapters)
+    outcome = d.dispatch_stage("A1", "always", "A2", {})
+    assert not outcome.provisional and outcome.results["critique_a_by_b"].status == "ok"
+    assert [g.operation_id for g in adapters[A].grants] == ["critique_b_by_a"]  # not re-asked
+    bad, good = adapters[B].grants
+    assert bad.invocation_id != good.invocation_id and bad.write_path == good.write_path
+    assert reasons(d) == ["ok", "invalid_output", "ok"]
+    assert verify_provenance_chain(d.log.path).ok
+    manifest = load_manifest(d.run_root, "A2", "run-1")
+    assert manifest["operations"]["critique_a_by_b"]["invocation_id"] == good.invocation_id
+    assert manifest["artifacts"]["critique_a_by_b_sealed"]["digest"] == digest_path(good.write_path)
+    rejected = d.run_root / "attempts" / good.attempt / "rejected"
+    assert [p.name for p in rejected.iterdir()] == [f"critique_a_by_b-{bad.invocation_id}"]
+
+
+def test_a_re_ask_charges_no_budget(tmp_path: Path, adapters: dict) -> None:
+    adapters[A].malformed = [None, None]
+    d = make(tmp_path, adapters)
+    d.dispatch_stage("A4", "proposal_invalid", "A1", {})
+    assert len(adapters[A].grants) == 3 and d.ledger.consumed == {"design": 1}
+
+
+def test_re_asks_are_capped_then_the_run_pauses(tmp_path: Path, adapters: dict) -> None:
+    adapters[SYNTHESIZER].malformed = [None] * (dispatch.OUTPUT_RETRIES + 1)
+    d = make(tmp_path, adapters)
+    with pytest.raises(RunPaused, match=f"invalid_output in {dispatch.OUTPUT_RETRIES + 1} "):
+        d.dispatch_stage("A2J", "always", "A3", {})
+    assert len(adapters[SYNTHESIZER].grants) == dispatch.OUTPUT_RETRIES + 1
+    assert reasons(d) == ["invalid_output"] * (dispatch.OUTPUT_RETRIES + 1)
+    assert load_manifest(d.run_root, "A3", "run-1")["attempt"] == "A3-seed"  # nothing sealed
+    assert not adapters[SYNTHESIZER].grants[-1].write_path.exists()  # all set aside
+    assert verify_provenance_chain(d.log.path).ok
+
+
+def test_a_re_ask_rechecks_the_sealed_inputs(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters)
+    target = d.run_root / "seed" / "proposal_a_sealed" / "content.txt"
+    adapters[B].malformed = [None]
+    adapters[B].side_effect = lambda: target.write_text("swapped before the re-ask\n")
+    with pytest.raises(RunPaused, match="sealed input changed"):
+        d.dispatch_stage("A1", "always", "A2", {})
+    assert len(adapters[B].grants) == 1
+    assert events(d)[-1] == "exception"
+
+
+def test_an_operation_without_an_output_schema_is_not_checked(
+    tmp_path: Path, adapters: dict
+) -> None:
+    d = make(tmp_path, adapters)
+    d.dispatch_stage("E0", "always", "E1", {})  # writes no JSON at all
+    assert reasons(d) == ["ok"]

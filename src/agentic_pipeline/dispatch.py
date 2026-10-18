@@ -22,8 +22,17 @@ Order of operations for `dispatch_stage` (failure handling in brackets):
    c. append + fsync model_call                  [release budget if first call]
    d. commit the reservation (first call only)   [RunPaused: budget_commit_failed]
    e. adapter.invoke                             [exception event; RunPaused]
-   f. append + fsync model_result                [ProvenanceIncomplete]
-   g. non-ok result (quota, auth, error)         [RunPaused; no in-flight fallback]
+   f. output check: an operation with an
+      `output_schema` must have written one JSON
+      object of that shape, read as the gates read
+      it; if not, its model_result is
+      `invalid_output`, the output is set aside and
+      the operation (only it) is asked again in a
+      fresh invocation, up to OUTPUT_RETRIES times,
+      re-checking readiness and inputs first      [RunPaused once the re-asks are spent;
+                                                  no budget is charged for a re-ask]
+   g. append + fsync model_result                [ProvenanceIncomplete]
+   h. non-ok result (quota, auth, error)         [RunPaused; no in-flight fallback]
 7. Publish manifests/<STAGE>.json atomically     [RunPaused: manifest_publish_failed;
                                                   outputs stay provisional]
 
@@ -34,9 +43,10 @@ advance state on a provisional one.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -51,6 +61,7 @@ from agentic_pipeline.manifest import (
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.readiness import Report, evaluate_stage
 from agentic_pipeline.registry import backend_location, operations
+from agentic_pipeline.schemas import ValidationError, validate
 from agentic_pipeline.transition import (
     BudgetLedger,
     GuardEvaluator,
@@ -113,7 +124,9 @@ class PreparedCall:
         return "sha256:" + hashlib.sha256(self.prompt).hexdigest()
 
 
-type ResultStatus = Literal["ok", "quota_exhausted", "auth_failed", "error"]
+# `invalid_output` is the dispatcher's verdict on an `ok` reply (see output_problems);
+# adapters never return it.
+type ResultStatus = Literal["ok", "quota_exhausted", "auth_failed", "error", "invalid_output"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +138,30 @@ class AdapterResult:
 
 # Isolation checks the dispatcher enforces itself; adapters must enforce the rest.
 DISPATCHER_ENFORCED = frozenset({"proposal_path_layout", "sealed_input_verification"})
+# How many times an operation whose output breaks its schema is asked again, in a fresh
+# invocation with the same inputs. A malformed reply is a formatting slip, not a design
+# outcome, so a re-ask charges no graph budget; the cap still keeps a model that never gets
+# the format right from spending allowance without end.
+OUTPUT_RETRIES = 2
+REJECTED_DIR = "rejected"  # per attempt: outputs set aside by the output check, never sealed
+
+
+def output_problems(grant: DispatchGrant) -> list[str]:
+    """Why the output is not the one JSON object its schema asks for, read as the gates read it."""
+    if grant.output_schema is None:
+        return []
+    name = f"{grant.operation_id}.json"
+    try:
+        document = json.loads((grant.write_path / name).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return [f"no {name}: the reply was not one JSON object"]
+    except (OSError, ValueError) as exc:
+        return [f"{name}: {exc}"]
+    try:
+        validate(grant.output_schema, document)
+    except ValidationError as exc:
+        return [f"{name}: schema {grant.output_schema}: {exc.message}"]
+    return []
 
 
 @runtime_checkable
@@ -230,19 +267,9 @@ class Dispatcher:
         for index, op in enumerate(ops):
             backend = verdict.backends[op["id"]]
             if index > 0:
-                again = evaluate_stage(stage, self.preflight())
-                if not again.eligible or again.backends.get(op["id"]) != backend:
-                    self._log_exception(stage, op["id"], None, "readiness_lost")
-                    raise RunPaused(f"{stage}.{op['id']}: readiness lost before invocation")
+                self._recheck_readiness(stage, op, backend)
             # Re-verified right before each invocation.
-            inputs, data_class, errors = self._inputs(op, backend)
-            if errors:
-                if self._committed:
-                    self._log_exception(stage, op["id"], None, "sealed_input_changed")
-                    raise RunPaused(f"{stage}.{op['id']}: sealed input changed")
-                if reservation is not None:
-                    reservation.release()
-                raise DispatchBlocked(f"{stage}.{op['id']}: sealed input changed")
+            inputs, data_class = self._recheck_inputs(stage, op, backend, reservation)
             grant = DispatchGrant(
                 run_id=self.log.run_id,
                 stage=stage,
@@ -258,9 +285,55 @@ class Dispatcher:
                 write_path=self.run_root / ATTEMPTS_DIR / attempt / roots[op["write_root"]],
                 output_schema=op.get("output_schema"),
             )
-            results[op["id"]] = self._invoke(grant, reservation)
+            grant, results[op["id"]] = self._invoke_checked(grant, reservation, op)
             grants.append(grant)
         return StageOutcome(stage, results, self._seal(stage, attempt, grants))
+
+    def _recheck_readiness(self, stage: str, op: Mapping[str, Any], backend: str) -> None:
+        again = evaluate_stage(stage, self.preflight())
+        if not again.eligible or again.backends.get(op["id"]) != backend:
+            self._log_exception(stage, op["id"], None, "readiness_lost")
+            raise RunPaused(f"{stage}.{op['id']}: readiness lost before invocation")
+
+    def _recheck_inputs(
+        self, stage: str, op: Mapping[str, Any], backend: str, reservation: Reservation | None
+    ) -> tuple[dict[str, Path], str]:
+        inputs, data_class, errors = self._inputs(op, backend)
+        if errors:
+            if self._committed:
+                self._log_exception(stage, op["id"], None, "sealed_input_changed")
+                raise RunPaused(f"{stage}.{op['id']}: sealed input changed")
+            if reservation is not None:
+                reservation.release()
+            raise DispatchBlocked(f"{stage}.{op['id']}: sealed input changed")
+        return inputs, data_class
+
+    def _invoke_checked(
+        self, grant: DispatchGrant, reservation: Reservation | None, op: Mapping[str, Any]
+    ) -> tuple[DispatchGrant, AdapterResult]:
+        """Invoke; while the output breaks its schema, set it aside and ask again (fresh id)."""
+        for retry in range(OUTPUT_RETRIES + 1):
+            if retry:
+                self._recheck_readiness(grant.stage, op, grant.backend)
+                inputs, data_class = self._recheck_inputs(
+                    grant.stage, op, grant.backend, reservation
+                )
+                grant = replace(
+                    grant,
+                    invocation_id=self.new_invocation_id(),
+                    inputs=inputs,
+                    data_class=data_class,
+                )
+            result = self._invoke(grant, reservation)
+            if result.status == "ok":
+                return grant, result
+            rejected = self.run_root / ATTEMPTS_DIR / grant.attempt / REJECTED_DIR
+            rejected.mkdir(parents=True, exist_ok=True)
+            grant.write_path.rename(rejected / f"{grant.operation_id}-{grant.invocation_id}")
+        raise RunPaused(
+            f"{grant.operation_id}: invalid_output in {OUTPUT_RETRIES + 1} invocations: "
+            f"{result.detail}"
+        )
 
     def _inputs(
         self, op: Mapping[str, Any], backend: str
@@ -360,6 +433,8 @@ class Dispatcher:
         except Exception as exc:
             self._log_exception(grant.stage, grant.operation_id, correlation, "adapter_error")
             raise RunPaused(f"{grant.operation_id}: adapter failed: {exc}") from exc
+        if result.status == "ok" and (problems := output_problems(grant)):
+            result = AdapterResult("invalid_output", "; ".join(problems), result.resolved_model)
 
         try:
             record = {**correlation, "event": "model_result", "reason_code": result.status}
@@ -368,7 +443,7 @@ class Dispatcher:
             self._tip = self.log.append(record)["event_hash"]
         except Exception as exc:
             raise ProvenanceIncomplete(f"{grant.operation_id}: result not recorded") from exc
-        if result.status != "ok":
+        if result.status not in ("ok", "invalid_output"):
             raise RunPaused(f"{grant.operation_id}: {result.status} {result.detail}".rstrip())
         return result
 

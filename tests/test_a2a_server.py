@@ -133,6 +133,12 @@ def _text(task_or_event: Mapping[str, Any]) -> str:
     return " ".join(p["text"] for p in parts if p.get("text"))
 
 
+def _stop(task_or_event: Mapping[str, Any]) -> dict[str, Any]:
+    """The {run_status, node} data part of a stopped task's status message."""
+    parts = task_or_event["status"]["message"]["parts"]
+    return next(p["data"] for p in parts if "data" in p)
+
+
 # ── Card and token gate ──────────────────────────────────────────────────────
 
 
@@ -206,6 +212,7 @@ def test_advance_streams_every_step_and_stops_for_a_human(pipe: Pipeline) -> Non
     final = updates[-1]
     assert _state(final) == "TASK_STATE_INPUT_REQUIRED"
     assert "signed approval at H1" in _text(final) and "cannot approve" in _text(final)
+    assert _stop(final) == {"run_status": "awaiting_human", "node": "H1"}
     # The run lock is free while the task waits, so a human can run `run decide`.
     store = RunStore(pipe.run_dir)
     store.acquire(wait=0)
@@ -292,6 +299,17 @@ def test_a_blocked_run_stays_resumable_not_failed(tmp_path: Path) -> None:
     task = pipe.send({"skill": "advance", "run_id": RUN_ID})["result"]["task"]
     assert _state(task) == "TASK_STATE_INPUT_REQUIRED"
     assert "no handler registered for G" in _text(task) and "advance" in _text(task)
+    # Not mistaken for a wait on a human, and not promised to continue on the next advance.
+    assert _stop(task) == {"run_status": "blocked", "node": "G"}
+    assert "blocks again until the cause is fixed" in _text(task)
+    assert "Send advance to continue" not in _text(task)
+
+
+def test_a_run_out_of_steps_says_advance_continues_it(pipe: Pipeline) -> None:
+    task = pipe.send({"skill": "advance", "run_id": RUN_ID, "max_steps": 1})["result"]["task"]
+    assert _state(task) == "TASK_STATE_INPUT_REQUIRED"
+    assert _stop(task)["run_status"] == "out_of_steps"
+    assert "Send advance to continue" in _text(task)
 
 
 def test_evidence_outside_a_human_state_is_refused(pipe: Pipeline) -> None:
@@ -313,6 +331,7 @@ def test_a_stored_working_task_is_answered_from_the_run_after_a_restart(pipe: Pi
     found = asyncio.run(fresh.get("t1", context))
     assert found is not None and found.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
     assert "stopped at START" in found.status.message.parts[0].text
+    assert found.status.message.parts[1].data.struct_value["run_status"] == "stopped"
     listed = asyncio.run(fresh.list(a2a_server.ListTasksRequest(), context))
     assert [t.status.state for t in listed.tasks] == [TaskState.TASK_STATE_INPUT_REQUIRED]
 
