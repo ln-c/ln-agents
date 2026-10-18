@@ -9,9 +9,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import socketserver
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class Server(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind also calls socket.getfqdn(host), a reverse lookup that stalls
+        # for many seconds on some CI hosts between bind and listen: bound, but not answering.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = str(self.server_address[0]), self.server_address[1]
 
 
 def main() -> int:
@@ -38,8 +47,9 @@ def main() -> int:
         def log_message(self, *_: object) -> None:
             pass
 
+    server = Server((args.host, args.port), Handler)
     print(f"fake llama-server listening on {args.host}:{args.port}", flush=True)
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    server.serve_forever()
     return 0
 
 
