@@ -105,6 +105,20 @@ def _stage_names_a_backend(r: Registry) -> None:
     r["stage_requirements"]["E1"]["backends"] = ["claude_pro"]
 
 
+def _launch_on_any_interface(r: Registry) -> None:
+    argv = r["providers"]["llamacpp_decision"]["launch"]["argv"]
+    argv[argv.index("--host") + 1] = "0.0.0.0"  # noqa: S104 - the violation under test
+
+
+def _launch_on_another_port(r: Registry) -> None:
+    argv = r["providers"]["llamacpp_decision"]["launch"]["argv"]
+    argv[argv.index("--port") + 1] = "9999"
+
+
+def _launch_a_cloud_tool(r: Registry) -> None:
+    r["providers"]["claude_pro"]["launch"] = {"argv": ["claude", "--serve"]}
+
+
 def _build_on_the_classifier(r: Registry) -> None:
     r["agents"]["build"]["primary"] = "clef_flash"
 
@@ -295,6 +309,13 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
         _provider_without_patterns,
         "registry R17 providers.clef_flash_free",
     ),
+    (
+        "launch binds every interface",
+        _launch_on_any_interface,
+        "registry R19 providers.llamacpp_decision",
+    ),
+    ("launch on another port", _launch_on_another_port, "registry R19 providers.llamacpp_decision"),
+    ("launch a cloud tool", _launch_a_cloud_tool, "registry R19 providers.claude_pro"),
     ("bad family pattern", _bad_family_pattern, "registry R17 providers.google_ai_pro"),
     (
         "bad pattern after a match",

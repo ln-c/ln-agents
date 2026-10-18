@@ -22,6 +22,8 @@ R17  every model provider declares family patterns; every model names a model pr
      model_id matches a pattern, and its declared family agrees; (provider, model_id) are unique;
      only a model whose provider's adapter passes it on declares an `effort`
 R18  every model an operation may run on declares the capabilities the operation requires
+R19  a provider the dispatcher may start (`launch`) is local and binds exactly the loopback
+     host and port its readiness probe checks
 """
 
 from __future__ import annotations
@@ -142,6 +144,25 @@ def op_backends(registry: Mapping[str, Any], stage: str, op: Op) -> list[str]:
     return list(dict.fromkeys([*first, *(agent.get("model_assistance") or ())]))
 
 
+def _flag(argv: list[str], flag: str) -> list[str]:
+    """Every value given to `flag` in argv, as `--flag value` or `--flag=value`."""
+    values = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == flag]
+    return values + [a.split("=", 1)[1] for a in argv if a.startswith(f"{flag}=")]
+
+
+def launch_errors(provider: Mapping[str, Any]) -> list[str]:
+    """Why a provider's `launch` could start a server other than the one readiness checks."""
+    if provider.get("location") != "local" or "protocol" not in (provider.get("readiness") or {}):
+        return ["`launch` is only for a local inference server with a readiness probe"]
+    argv, spec = provider["launch"]["argv"], provider["readiness"]
+    errors = []
+    if _flag(argv, "--host") != [spec["host"]]:
+        errors.append(f"launch must pass --host {spec['host']} exactly once")
+    if _flag(argv, "--port") != [str(spec["port"])]:
+        errors.append(f"launch must pass --port {spec['port']} exactly once")
+    return errors
+
+
 def _repo_paths(registry: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
     execution, agents = registry["execution"], registry["agents"]
     for key in EXECUTION_PATH_KEYS:
@@ -194,6 +215,11 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
                 f"registry R16 providers.{name}: access mode {mode!r} is {expected}, "
                 f"declared {provider['location']!r}"
             )
+
+    # R19. A server the dispatcher starts listens where readiness looks, on loopback only.
+    for name, provider in providers.items():
+        if "launch" in provider:
+            errors.extend(f"registry R19 providers.{name}: {e}" for e in launch_errors(provider))
 
     # R17. Models name a model provider, agree with its family patterns, and are unique.
     served: dict[tuple[str, str], str] = {}

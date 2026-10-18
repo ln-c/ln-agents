@@ -29,6 +29,7 @@ APPROVED = {
     "broker.py": frozenset({"http"}),  # the only route from a worker to a model
     "sandbox_entry.py": frozenset({"subprocess", "http", "urllib"}),  # runs inside bwrap only
     "a2a_server.py": frozenset({"socket"}),  # binds the loopback-only A2A listener
+    "local_servers.py": frozenset({"subprocess"}),  # starts registry `launch` servers on demand
 }
 
 

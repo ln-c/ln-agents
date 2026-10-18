@@ -2,6 +2,9 @@
 
 Order of operations for `dispatch_stage` (failure handling in brackets):
 
+0. Start any local model server the stage would
+   dispatch to that is down and has `launch` in
+   the registry; stopped after the stage        [DispatchBlocked, no budget]
 1. Preflight + stage eligibility: static validity, credential denylist,
    backend readiness, isolation profile          [DispatchBlocked, no budget]
 2. Adapter present for every selected backend, and
@@ -51,6 +54,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from agentic_pipeline.graph import Graph
+from agentic_pipeline.local_servers import LocalServerError, LocalServers
 from agentic_pipeline.manifest import (
     ATTEMPTS_DIR,
     ManifestError,
@@ -213,6 +217,7 @@ class Dispatcher:
     data_classes: Mapping[str, Any]  # policy/data_classes.yaml
     guards: GuardEvaluator = deny_all_guards
     new_invocation_id: Callable[[], str] = _new_invocation_id
+    servers: LocalServers | None = None  # starts local model servers on demand
     _committed: bool = field(default=False, init=False)
     _tip: str = field(default="", init=False)
 
@@ -223,6 +228,26 @@ class Dispatcher:
         stage: str,
         run_context: Mapping[str, Any],
         human_decision: object | None = None,
+    ) -> StageOutcome:
+        if self.servers is None:
+            return self._dispatch(src, guard, stage, run_context, human_decision)
+        try:
+            self.servers.ensure(stage)
+        except LocalServerError as exc:
+            self.servers.release()
+            raise DispatchBlocked(f"{stage}: {exc}") from exc
+        try:
+            return self._dispatch(src, guard, stage, run_context, human_decision)
+        finally:
+            self.servers.release()
+
+    def _dispatch(
+        self,
+        src: str,
+        guard: str,
+        stage: str,
+        run_context: Mapping[str, Any],
+        human_decision: object | None,
     ) -> StageOutcome:
         verdict = evaluate_stage(stage, self.preflight())
         if not verdict.eligible:

@@ -595,6 +595,9 @@ def run_preflight(
             }
             probe = {"llamacpp": probe_llamacpp, "ovms": probe_ovms}[spec["protocol"]]
             daemon, inventory = probe(spec, tags)
+            if "launch" in provider and daemon[0].status is Status.FAILED:
+                why = f"not running; dispatch starts it on demand ({daemon[0].detail})"
+                daemon = [Check("daemon", Status.UNVERIFIED, why)]
             report.providers[name] = [*daemon, probe_listeners(spec["port"], host)]
             for model, check in inventory.items():
                 report.models[model] = [check]

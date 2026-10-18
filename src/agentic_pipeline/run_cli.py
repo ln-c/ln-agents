@@ -29,6 +29,7 @@ from agentic_pipeline.approvals import (
 )
 from agentic_pipeline.dispatch import BackendAdapter, Dispatcher
 from agentic_pipeline.graph import REPO_ROOT
+from agentic_pipeline.local_servers import LocalServers
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.readiness import run_preflight
 from agentic_pipeline.run_state import (
@@ -47,6 +48,7 @@ from agentic_pipeline.runner import ChosenGuard, MakeDispatcher, Outcome, init_r
 from agentic_pipeline.transition import BudgetLedger
 
 DEFAULT_RUNS_DIR = REPO_ROOT / ".runs"
+SERVER_LOGS = ".servers"  # under the runs directory: logs of local servers dispatch started
 
 
 def _adapter_factories() -> dict[str, Callable[[Mapping[str, Any], str], BackendAdapter]]:
@@ -123,6 +125,7 @@ def _dispatcher_factory(root: Path, run_dir: Path) -> MakeDispatcher:
             run_root=run_dir,
             data_classes=policy.data_classes,
             guards=guards,
+            servers=LocalServers(policy.registry, run_dir.parent / SERVER_LOGS),
         )
 
     return make
