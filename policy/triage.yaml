@@ -6,7 +6,8 @@
 # valid blocking findings; waived blocking findings are listed at H1 with their probability.
 #
 # Calibration (Clef-Flash Q4_K_M, llama.cpp b11429, -b/-ub 4096, that question):
-#   2026-10-17, n=15: fabricated findings <= 0.033, real findings >= 0.14.
+#   2026-10-17, n=15: fabricated findings <= 0.033, real findings >= 0.14 (a similar question;
+#   its wording and state layout were not recorded, so it may differ from the pinned one).
 #   2026-10-18, n=21 (deploy-design run, 17 real + 4 fabricated): real 0.35-0.97, fabricated
 #   0.010-0.016.
 # No real *blocking* finding was in either set, so how a real blocking finding scores is not

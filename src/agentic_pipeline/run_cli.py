@@ -221,6 +221,14 @@ def _approve(args: argparse.Namespace, run_dir: Path) -> int:
             print(f"  {candidate}: fired {vetoes or '-'}; undetermined {pending or '-'}")
         if evidence["unevaluated"]:
             print(f"  vetoes with no evaluator: {evidence['unevaluated']}")
+        for critique, ratio in evidence["valid_ratios"].items():
+            share = "no findings" if ratio is None else f"{ratio:.0%} of its findings judged valid"
+            print(f"  {critique}: {share}")
+        for waived in evidence["waived_blocking"]:
+            print(
+                f"  waived blocking finding {waived['finding_id']} of {waived['critique']} "
+                f"(p={waived['probability']:.3f}); S did not have to answer it"
+            )
     print(f"written: {out}")
     print("Review it, then sign it as the approver (writes the .sig file next to it):")
     print(f"  {signing_command(out, namespace)}")

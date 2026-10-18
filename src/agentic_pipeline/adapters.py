@@ -738,7 +738,10 @@ class DecisionAdapter:
             message = error.get("message") if isinstance(error, dict) else None
             text = str(message or raw[:200])[:200]
             if "too large" in text:  # the whole state must fit one physical batch
-                text += "; restart the decision server with larger -b/-ub (e.g. 8192)"
+                text += (
+                    "; restart the decision server with larger -b/-ub (e.g. 8192) and recalibrate "
+                    "policy/triage.yaml, whose threshold was measured at 4096"
+                )
             return None, f"HTTP {status}: {text}"
         if not isinstance(reply, dict) or reply.get("model") != self.model_id:
             return None, f"answered by {reply.get('model') if isinstance(reply, dict) else None!r}"

@@ -149,7 +149,8 @@ def test(root: Path, model: str, deps: Deps) -> int:
     if gaps := sorted(needed - set(adapter.enforced_isolation)):
         print(f"ERROR: the {model} adapter does not enforce {gaps}", file=sys.stderr)
         return 1
-    print(f"{model}: running {', '.join(checks)} (live calls use its subscription allowance)")
+    cost = "local compute" if backend_location(registry, model) == "local" else "its subscription"
+    print(f"{model}: running {', '.join(checks)} (live calls use {cost})")
     with tempfile.TemporaryDirectory(prefix="agentic-conformance-") as work:
         record = run_conformance(
             model, adapter, registry, profiles, profiles_digest, Path(work), **deps.run_kwargs

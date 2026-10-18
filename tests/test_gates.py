@@ -200,6 +200,7 @@ class Design:
         results: list | None = None,
         prompt: bytes | None = None,
         backend: str = "clef_flash_local",
+        model: str = "clef-flash",
     ) -> None:
         """Seal A2J as the judge would: one answer per finding, and its logged model_call.
 
@@ -225,7 +226,7 @@ class Design:
                 }
                 for r in requests
             ]
-        document = {"model": "clef-flash", "model_version": "clef-flash@test", "results": results}
+        document = {"model": model, "model_version": "clef-flash@test", "results": results}
         invocation = f"i-judge-{next(self._calls)}"
         BACKENDS["finding_verdicts"] = backend
         try:
@@ -1317,13 +1318,11 @@ def test_a2j_blocks_on_verdicts_it_cannot_tie_to_the_findings(
 
 
 def test_a2j_blocks_on_verdicts_from_another_model(design: Design) -> None:
-    a2j_ready(design)
+    a2j_ready(design, results=None)
     verdicts = design.rig.run_dir / "design" / "finding_verdicts" / "finding_verdicts.json"
-    document = json.loads(verdicts.read_text())
-    design.seal(
-        "A2J", {"finding_verdicts_sealed": ("finding_verdicts", {**document, "model": "x"})}
-    )
-    with pytest.raises(GateError):  # a re-seal without a logged call, from the wrong model
+    results = json.loads(verdicts.read_text())["results"]
+    design.seal_verdicts(results=results, model="other-model")
+    with pytest.raises(GateError, match="verdicts are from 'other-model', not 'clef-flash'"):
         design.guard("A2J")
 
 
@@ -1369,3 +1368,58 @@ def test_h1_evidence_shows_the_ratios_and_every_waived_blocking_finding(design: 
     design.seal_verdicts(overrides={f"{A_BY_B}/f2": 0.5})
     again = approval_evidence(design.rig.ctx(design.runner, "H1"), load_policy(design.rig.repo))
     assert again["waived_blocking"] == [] and again["triage"] != evidence["triage"]
+
+
+# ── A2J through the real dispatcher and decision adapter ────────────────────
+
+
+@pytest.mark.parametrize("findings", [True, False], ids=["findings", "no-findings"])
+def test_what_the_dispatcher_seals_and_logs_satisfies_the_a2j_gate(
+    design: Design, findings: bool
+) -> None:
+    """The gate's prompt-hash binding holds for a real dispatch, not just a hand-sealed one."""
+    from agentic_pipeline.adapters import DecisionAdapter
+    from agentic_pipeline.dispatch import Dispatcher
+    from agentic_pipeline.readiness import Check, Report, Status
+    from agentic_pipeline.run_state import load_policy
+
+    h = design.context_hash
+    design.seal_valid()
+    design.seal_critiques(
+        critique("c1", "prop-b", h),
+        critique("c2", "prop-a", h, [blocking("f2", "prop-a"), NOTE] if findings else []),
+        judge=False,
+    )
+    asked: list[dict] = []
+
+    def upstream(path: str, body: bytes) -> tuple[int, dict, Any]:
+        request = json.loads(body)
+        asked.append(request)
+        answers = {"valid": {"type": "noul", "noul": 0.04 if "n1" in request["state"] else 0.8}}
+        reply = {"model": "clef-flash", "answers": answers, "usage": {"input_tokens": 9}}
+        return 200, {}, iter([json.dumps(reply).encode()])
+
+    runner, policy = design.runner, load_policy(design.rig.repo)
+    ok = Status.VERIFIED
+    dispatcher = Dispatcher(
+        graph=runner.graph,
+        registry=runner.registry,
+        log=runner.log,
+        ledger=runner.ledger,
+        adapters={"clef_flash_local": DecisionAdapter("clef-flash", "clef-flash@test", upstream)},
+        preflight=lambda: Report(
+            static_errors=[],
+            global_checks=[Check("credential_env_absent", ok, "")],
+            providers={"llamacpp_decision": [Check("daemon", ok, "")]},
+            isolation={"sealed_input_verification": Check("sealed_input_verification", ok, "")},
+            registry=runner.registry,
+        ),
+        run_root=design.rig.run_dir,
+        data_classes=policy.data_classes,
+        guards=lambda edge, context: edge.guard == "always",  # A2's handler chose `always`
+    )
+    dispatcher.dispatch_stage("A2", "always", "A2J", {})
+    assert len(asked) == (2 if findings else 0)
+    assert design.guard("A2J") == "always"
+    (record,) = design.records("A2J")
+    assert record["valid_ratios"] == {B_BY_A: None, A_BY_B: 0.5 if findings else None}
