@@ -45,6 +45,7 @@ import asyncio
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import secrets
 import socket
@@ -93,6 +94,8 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 
+from agentic_pipeline.coordinator import Coordinator, StopInfo
+from agentic_pipeline.coordinator import for_run as coordinator_for_run
 from agentic_pipeline.fsutil import WINDOWS, atomic_write_json
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.run_cli import (
@@ -125,6 +128,7 @@ SKILLS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
     "advance": (frozenset(), frozenset({"run_id", "max_steps"})),
     "status": (frozenset(), frozenset({"run_id"})),
     "evidence": (frozenset(), frozenset({"run_id"})),
+    "ask": (frozenset({"question"}), frozenset({"run_id"})),
     "approval_document": (
         frozenset({"decision", "approver", "reason"}),
         frozenset({"run_id", "candidate", "remediation_cause"}),
@@ -137,6 +141,10 @@ SKILL_TEXT = {
     "evidence": (
         "What a human decides on at H1, R1 or R2: the evidence they sign, the choices, who may "
         "sign, and a readable Markdown report (written to the run's approvals/ folder)."
+    ),
+    "ask": (
+        "Ask the coordinator model a question about a run. It answers in text from the run's "
+        "Markdown views and changes nothing."
     ),
     "approval_document": (
         "Write the unsigned approval document and return the ssh-keygen and `run decide` "
@@ -173,6 +181,10 @@ class PipelineService:
     runs_dir: Path
     make_dispatcher: Callable[[Path, Path], MakeDispatcher] = _dispatcher_factory
     handlers: Mapping[str, StateHandler] | None = None
+    # (root, run directory) -> the run's coordinator: the model that writes the Markdown views
+    coordinator_for: Callable[[Path, Path], Coordinator] = coordinator_for_run
+    _converting: set[str] = field(default_factory=set)
+    _converting_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def run_dir(self, run_id: str) -> Path:
         validate_run_id(run_id)
@@ -214,6 +226,49 @@ class PipelineService:
     def status(self, run_id: str) -> dict[str, Any]:
         store = RunStore(self.run_dir(run_id))
         return {**store.load().to_dict(), "runner_active": store.is_locked()}
+
+    def coordinator(self, run_id: str) -> Coordinator:
+        return self.coordinator_for(self.root, self.run_dir(run_id))
+
+    def ask(self, run_id: str, question: str) -> dict[str, Any]:
+        """The coordinator's answer to a question about a run. Text only: it changes nothing."""
+        answer, sources = self.coordinator(run_id).ask(question, self.status(run_id))
+        return {"answer": answer, "sources": sources}
+
+    def stop_view(
+        self, run_id: str, result: StepResult, report: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """Write the summary of the stop `result` ended in; `report` is the evidence view."""
+        _, why, stop = self.task_state(run_id, result)
+        info = StopInfo(stop["run_status"], stop["node"], why)
+        path = self.coordinator(run_id).stop_summary(
+            info,
+            self.status(run_id),
+            report["markdown"] if report else None,
+            report["path"] if report else None,
+        )
+        return {"kind": info.kind, "path": str(path.resolve()), "markdown": path.read_text("utf-8")}
+
+    def convert_in_background(self, run_id: str) -> threading.Thread | None:
+        """Write a Markdown view of each new sealed document on a thread, so a stop is not
+        held up by one model call per document. One conversion runs per run at a time."""
+        with self._converting_lock:
+            if run_id in self._converting:
+                return None
+            self._converting.add(run_id)
+
+        def convert() -> None:
+            try:
+                self.coordinator(run_id).convert_all()
+            except Exception as exc:  # advisory: the next stop tries again
+                logging.getLogger(__name__).warning("views of %s not written: %s", run_id, exc)
+            finally:
+                with self._converting_lock:
+                    self._converting.discard(run_id)
+
+        thread = threading.Thread(target=convert, name=f"views-{run_id}", daemon=True)
+        thread.start()
+        return thread
 
     def evidence(self, run_id: str) -> dict[str, Any]:
         """The approval view (evidence, choices, approvers, Markdown) and the report's path."""
@@ -364,7 +419,7 @@ class RunTaskStore(TaskStore):
 # ── The executor: A2A messages to skills ────────────────────────────────────
 
 
-QUERIES = frozenset({"status", "evidence", "approval_document"})
+QUERIES = frozenset({"status", "evidence", "approval_document", "ask"})
 
 
 def _request(message: Message | None) -> tuple[str, dict[str, Any]]:
@@ -510,6 +565,7 @@ class PipelineExecutor(AgentExecutor):
                 current = (await asyncio.to_thread(self.service.status, run_id))["current"]
                 result = StepResult(Outcome.BLOCKED, current, f"{type(exc).__name__}: {exc}")
             state, why, stop = await asyncio.to_thread(self.service.task_state, run_id, result)
+            evidence = None
             if (
                 state == TaskState.TASK_STATE_INPUT_REQUIRED
                 and result.outcome is Outcome.AWAITING_HUMAN
@@ -519,6 +575,18 @@ class PipelineExecutor(AgentExecutor):
                     await updater.add_artifact([new_data_part(_json(evidence))], name="evidence")
                 except Exception as exc:  # unverifiable evidence is reported, never invented
                     why = f"{why} Evidence could not be recomputed: {exc}"
+            await updater.update_status(
+                TaskState.TASK_STATE_WORKING,
+                new_message(
+                    [new_text_part("writing the summary of this stop")], task.context_id, task.id
+                ),
+            )
+            try:
+                summary = await asyncio.to_thread(self.service.stop_view, run_id, result, evidence)
+                await updater.add_artifact([new_data_part(_json(summary))], name="summary")
+            except Exception as exc:  # advisory: the stop is reported with or without it
+                why = f"{why} (No summary was written: {type(exc).__name__}: {exc})"
+            self.service.convert_in_background(run_id)
             await updater.update_status(
                 state,
                 new_message([new_text_part(why), new_data_part(stop)], task.context_id, task.id),

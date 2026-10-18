@@ -290,7 +290,7 @@ def test_writing_an_invalid_record_is_refused(tmp_path: Path) -> None:
 
 # ── Profiles policy ──────────────────────────────────────────────────────────
 
-CAPS = ["classification", "code_generation", "decision", "design_reasoning"]
+CAPS = ["classification", "code_generation", "coordination", "decision", "design_reasoning"]
 
 
 def test_the_repo_profiles_and_schemas_validate() -> None:

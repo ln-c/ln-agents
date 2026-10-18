@@ -262,6 +262,24 @@ def _evidence(args: argparse.Namespace, run_dir: Path) -> int:
     return 0
 
 
+def _views(args: argparse.Namespace, run_dir: Path) -> int:
+    """Write the Markdown views of a run and the summary of where it stands."""
+    from agentic_pipeline.coordinator import for_run, info_from_state
+
+    coordinator = for_run(args.root, run_dir)
+    for path in coordinator.convert_all():
+        print(f"view: {path}")
+    state = RunStore(run_dir).load()
+    info = info_from_state(state)
+    report, report_path = None, None
+    if info.kind == "awaiting_human":
+        view, path = evidence_report(args.root, run_dir)
+        report, report_path = view["markdown"], str(path.resolve())
+    summary = coordinator.stop_summary(info, state.to_dict(), report, report_path)
+    print(f"summary: {summary}")
+    return 0
+
+
 def _approve(args: argparse.Namespace, run_dir: Path) -> int:
     """Write the approval document for the human to sign; nothing about the run changes."""
     draft = write_approval_document(
@@ -420,6 +438,11 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
     step.add_argument("--max-steps", type=_positive_int, default=100)
     commands.add_parser("status", parents=[common], help="show run state")
     commands.add_parser(
+        "views",
+        parents=[common],
+        help="write the Markdown views of a run and a summary of where it stands",
+    )
+    commands.add_parser(
         "evidence",
         parents=[common],
         help="write the readable evidence report of a run awaiting a human",
@@ -457,6 +480,7 @@ def run_command(args: argparse.Namespace) -> int:
         "step": _step,
         "status": _status,
         "evidence": _evidence,
+        "views": _views,
         "resume": _resume,
         "approve": _approve,
         "decide": _decide,

@@ -59,6 +59,7 @@ uv run python -m agentic_pipeline run init   <run_id> [--entry START] [--entry-s
 uv run python -m agentic_pipeline run step   <run_id> [--max-steps N]   # advance until blocked, paused or awaiting a human
 uv run python -m agentic_pipeline run status <run_id>
 uv run python -m agentic_pipeline run evidence <run_id>                  # write the readable report of a run awaiting a human
+uv run python -m agentic_pipeline run views <run_id>                     # write the coordinator's Markdown views and the summary of where the run stands
 uv run python -m agentic_pipeline run approve <run_id> --decision G --approver ID --reason TEXT \
     [--candidate C] [--remediation-cause code_defect|test_defect|design_issue] [--out FILE]
 uv run python -m agentic_pipeline run decide  <run_id> --approval FILE [--signature FILE]
@@ -78,7 +79,8 @@ A request is one A2A message with one data part naming a skill:
 - `advance` (`run_id`, or the task's run);
 - `status`;
 - `evidence`: the evidence, the choices a human can sign, who may sign, and the readable report (its Markdown and the path it was written to);
-- `approval_document` (`decision`, `approver`, `reason`, and `candidate` for a design approval).
+- `approval_document` (`decision`, `approver`, `reason`, and `candidate` for a design approval);
+- `ask` (`question`, and `run_id` unless the task has one): the coordinator's text answer, from the run's Markdown views (see [The coordinator](#the-coordinator)).
 
 Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume`.
 
@@ -120,6 +122,24 @@ A human state (`H1` design, `R1` merge, `R2` deploy) stops the run. The decision
 3. `run decide` verifies the signature offline against `policy/approvers.yaml`, recomputes the evidence and takes the edge only if it still matches.
 
 Only the keys listed in `policy/approvers.yaml` count. A model process has no way to produce an approval, but the approver's key is the user's own login key here: an unprotected key readable by a model process running as the same user could forge one, so protect it with a passphrase or use a dedicated or hardware key.
+
+### The coordinator
+
+Every sealed document and gate record is JSON, which the gates read and an approval binds to. A model, the **coordinator**, writes the readable version: a Markdown view of each document, a summary of every stop, and answers to questions. It is named in the project's `LN-HUB.md`:
+
+```markdown
+---
+coordinator: gemini_3_8_flash_high   # a model that declares `coordination` in the registry
+fallback: some_other_model           # optional
+---
+Your instructions on tone and layout, in plain Markdown.
+```
+
+- **What it writes**, under `.runs/<run>/views/`: `A1-proposal_a.md`, `A2-critique_a_by_b.md` and so on (every sealed document from the task specification to the review of the synthesis, plus the gate records), and `STOP-<n>-<node>.md` for each stop: blocked, paused, waiting for a signed decision, or finished. At a human decision the summary is a briefing on the candidates, with a recommendation labelled as advice. `run views <run>` writes them from a terminal; the A2A server writes the summary when a run stops and the documents in the background.
+- **What it cannot do:** start, advance, sign, resume or decide anything. The commands in a summary come from a fixed table in code; the model's text is never run or parsed into an action. The JSON stays the record: every view says so, and says which model wrote it.
+- **What checks it:** the same readiness, credential and data-class checks as a stage (a class that policy keeps off the cloud is refused before any call), and the subscription tool's sandbox. A reply that leaves out an identifier of its record is replaced by the raw record. With no coordinator, or when it fails, every file is still written, from code.
+- **Where it is logged:** in its own hash chain, `views/provenance_<run>.jsonl`, not the run's, because the evidence a human signs includes the run's provenance tip and an advisory call must not void an approval already written. It charges no budget and seals nothing.
+- **Policy:** which models may coordinate is human-owned: the `coordination` capability in `policy/model_registry.yaml`. `LN-HUB.md` only chooses among them.
 
 ### CI checks
 

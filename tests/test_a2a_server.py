@@ -14,12 +14,14 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import warnings
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
+from test_coordinator import FakeModel
 from test_dispatch import BINDABLE, DATA_CLASSES, GRAPH, REGISTRY, A, FakeAdapter, report, seed
 
 pytest.importorskip("a2a")
@@ -42,6 +44,7 @@ from agentic_pipeline.a2a_server import (  # noqa: E402
     load_token,
     loopback,
 )
+from agentic_pipeline.coordinator import Coordinator, Setup  # noqa: E402
 from agentic_pipeline.dispatch import Dispatcher  # noqa: E402
 from agentic_pipeline.run_state import RunStore, Status  # noqa: E402
 from agentic_pipeline.runner import StateHandler, init_run  # noqa: E402
@@ -71,9 +74,30 @@ class Pipeline:
         self.adapters = {b: FakeAdapter() for b in BINDABLE}
         seed(self.run_dir, ("START", "G"))
         init_run(ROOT, self.run_dir, RUN_ID, "START")
-        self.service = PipelineService(ROOT, tmp_path, self._factory, handlers)
+        self.calls: list[str] = []
+        self.service = PipelineService(
+            ROOT, tmp_path, self._factory, handlers, coordinator_for=self._coordinator
+        )
         app, self.executor = build_app(self.service, TOKEN, "http://127.0.0.1:0/a2a/jsonrpc", 0.01)
         self.client = TestClient(app)
+
+    reply: Any = staticmethod(lambda prompt: "A summary written by the fake coordinator.")
+    setup: Setup | None = Setup("gemini_3_8_flash_high", None, "", ROOT / "LN-HUB.md")
+
+    def _coordinator(self, root: Path, run_dir: Path) -> Coordinator:
+        """The run's coordinator, played by a fake model (or absent when `setup` is None)."""
+        return Coordinator(
+            root=root,
+            run_dir=run_dir,
+            run_id=run_dir.name,
+            registry=REGISTRY,
+            data_classes=DATA_CLASSES,
+            adapter_factory=lambda registry, backend, **kw: FakeModel(
+                kw["task_builder"], self.calls, self.reply
+            ),
+            preflight=report,
+            setup=self.setup,
+        )
 
     def _factory(self, root: Path, run_dir: Path) -> Any:
         def make(policy: Any, log: Any, ledger: Any, guards: Any) -> Dispatcher:
@@ -142,11 +166,11 @@ def _stop(task_or_event: Mapping[str, Any]) -> dict[str, Any]:
 # ── Card and token gate ──────────────────────────────────────────────────────
 
 
-def test_the_card_is_public_and_names_exactly_the_five_skills(pipe: Pipeline) -> None:
+def test_the_card_is_public_and_names_exactly_the_six_skills(pipe: Pipeline) -> None:
     card = pipe.client.get("/.well-known/agent-card.json").json()
     assert card["name"] == "ln-pipeline"
     assert sorted(s["id"] for s in card["skills"]) == sorted(SKILLS)
-    assert set(SKILLS) == {"start_run", "advance", "status", "evidence", "approval_document"}
+    assert set(SKILLS) == {"start_run", "advance", "status", "evidence", "approval_document", "ask"}
     assert card["securitySchemes"]["bearer"]["httpAuthSecurityScheme"]["scheme"] == "bearer"
     assert card["capabilities"]["streaming"] is True
 
@@ -218,6 +242,70 @@ def test_advance_streams_every_step_and_stops_for_a_human(pipe: Pipeline) -> Non
     store.acquire(wait=0)
     store.release()
     assert store.load().status is Status.AWAITING_HUMAN
+
+
+def _artifacts(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    found = {}
+    for e in events:
+        update = e.get("artifactUpdate")
+        if update:
+            found[update["artifact"]["name"]] = update["artifact"]["parts"][0]["data"]
+    return found
+
+
+def test_a_stop_comes_with_the_coordinators_summary_written_to_the_runs_views(
+    pipe: Pipeline,
+) -> None:
+    events = pipe.stream({"skill": "advance", "run_id": RUN_ID})
+    summary = _artifacts(events)["summary"]
+    assert summary["kind"] == "awaiting_human"
+    assert "A summary written by the fake coordinator." in summary["markdown"]
+    assert "## What to do next" in summary["markdown"]  # the commands are code's, not the model's
+    path = Path(summary["path"])
+    assert path == (pipe.run_dir / "views" / "STOP-001-H1.md").resolve() and path.is_file()
+    assert _state(events[-1]["statusUpdate"]) == "TASK_STATE_INPUT_REQUIRED"
+
+
+def test_a_stop_is_reported_even_when_there_is_no_coordinator(tmp_path: Path) -> None:
+    pipe = Pipeline(tmp_path)
+    pipe.setup = None
+    events = pipe.stream({"skill": "advance", "run_id": RUN_ID})
+    summary = _artifacts(events)["summary"]
+    assert "No coordinator summary" in summary["markdown"]
+    assert _state(events[-1]["statusUpdate"]) == "TASK_STATE_INPUT_REQUIRED"
+
+
+def test_only_one_conversion_runs_per_run_and_it_ends(pipe: Pipeline) -> None:
+    pipe.send({"skill": "advance", "run_id": RUN_ID})  # a stop starts one in the background
+    deadline = time.monotonic() + 30
+    while pipe.service._converting and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not pipe.service._converting
+    started = pipe.service.convert_in_background(RUN_ID)
+    assert started is not None
+    started.join(30)
+    assert not started.is_alive() and not pipe.service._converting
+
+
+def test_a_question_is_answered_by_message_and_changes_no_task(pipe: Pipeline) -> None:
+    first = pipe.send({"skill": "advance", "run_id": RUN_ID})["result"]["task"]
+    reply = pipe.send({"skill": "ask", "question": "why did it stop?"}, taskId=first["id"])
+    message = reply["result"]["message"]
+    assert message["parts"][0]["data"]["answer"] == "A summary written by the fake coordinator."
+    assert "STOP-001-H1.md" in message["parts"][0]["data"]["sources"]
+    task = pipe.rpc("GetTask", {"id": first["id"]}).json()["result"]
+    assert task["status"] == first["status"]
+    assert any("why did it stop?" in call for call in pipe.calls)  # conversions share the list
+
+
+def test_a_question_without_a_coordinator_is_refused_and_leaves_the_run_alone(
+    tmp_path: Path,
+) -> None:
+    pipe = Pipeline(tmp_path)
+    pipe.setup = None
+    reply = pipe.send({"skill": "ask", "question": "why?", "run_id": RUN_ID})
+    assert reply["error"]["code"] == -32602 and "no coordinator is available" in str(reply["error"])
+    assert pipe.rpc("ListTasks", {}).json()["result"].get("tasks", []) == []
 
 
 def test_a_task_waiting_for_a_human_continues_on_the_same_task(pipe: Pipeline) -> None:
