@@ -11,6 +11,12 @@ A request is one A2A message whose single data part names a skill: `start_run`, 
 of them can sign an approval, take a human edge, resume a paused run or change policy: a human
 signs with ssh-keygen and runs `run decide` (or `run resume`). An A2A message never approves.
 
+A request is checked, and `start_run` creates its run, before any task is touched, so a refused
+request is a JSON-RPC error and leaves every task as it was (the SDK fails a task terminally
+when its executor raises). `status`, `evidence` and `approval_document` are queries: they are
+answered with a message, never through a task, even when the message names one. A message that
+names a task without a context gets the task's context.
+
 A run is advanced under one A2A task. While it advances, every provenance event is streamed as
 a WORKING status update; when it stops, the task's state says why:
 
@@ -39,7 +45,7 @@ import secrets
 import socket
 import tempfile
 import threading
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
@@ -68,14 +74,16 @@ from a2a.types.a2a_pb2 import (
     HTTPAuthSecurityScheme,
     ListTasksRequest,
     ListTasksResponse,
+    Message,
     SecurityRequirement,
     SecurityScheme,
+    SendMessageRequest,
     StringList,
     Task,
     TaskState,
 )
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
-from a2a.utils.errors import InvalidParamsError
+from a2a.utils.errors import InvalidParamsError, TaskNotFoundError
 from google.protobuf.json_format import MessageToDict, ParseDict
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
@@ -316,9 +324,11 @@ class RunTaskStore(TaskStore):
 # ── The executor: A2A messages to skills ────────────────────────────────────
 
 
-def _request(context: RequestContext) -> tuple[str, dict[str, Any]]:
+QUERIES = frozenset({"status", "evidence", "approval_document"})
+
+
+def _request(message: Message | None) -> tuple[str, dict[str, Any]]:
     """(skill, arguments) from the single data part; anything else is refused."""
-    message = context.message
     data = get_data_parts(message.parts) if message is not None else []
     if len(data) != 1 or len(message.parts) != 1 or not isinstance(data[0], dict):
         raise InvalidParamsError(message="send exactly one data part: {'skill': ..., ...}")
@@ -343,6 +353,14 @@ def _max_steps(args: Mapping[str, Any]) -> int:
     return value
 
 
+def _run_of(args: Mapping[str, Any], task: Task | None) -> str | None:
+    if args.get("run_id"):
+        return str(args["run_id"])
+    if task is not None and RUN_ID_KEY in task.metadata:
+        return str(task.metadata[RUN_ID_KEY])
+    return None
+
+
 @dataclass(slots=True)
 class PipelineExecutor(AgentExecutor):
     service: PipelineService
@@ -352,39 +370,46 @@ class PipelineExecutor(AgentExecutor):
     def is_live(self, task_id: str) -> bool:
         return task_id in self._stops
 
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        skill, args = _request(context)
-        task = context.current_task
-        run_id = args.get("run_id") or (
-            str(task.metadata[RUN_ID_KEY])
-            if task is not None and RUN_ID_KEY in task.metadata
-            else None
-        )
+    async def prepare(self, message: Message, task: Task | None) -> Message | None:
+        """Check a request before any task is touched; answer a query outright.
+
+        Raises InvalidParamsError for anything refused. For `start_run` the run is created
+        here. Returns the reply for a query, or None when the request advances a run (then the
+        SDK runs `execute` on a task).
+        """
+        skill, args = _request(message)
         if skill == "start_run":
             if task is not None:
                 raise InvalidParamsError(message="start_run begins a new task; send it without one")
-            entry_spec = args["entry_spec"]
-            if not isinstance(entry_spec, dict):
+            if not isinstance(args["entry_spec"], dict):
                 raise InvalidParamsError(message="entry_spec must be a JSON object")
-            await self._call(self.service.start, run_id, args.get("entry", "START"), entry_spec)
+            _max_steps(args)
+            await self._call(
+                self.service.start, args["run_id"], args.get("entry", "START"), args["entry_spec"]
+            )
+        run_id = _run_of(args, task)
         if run_id is None:
             raise InvalidParamsError(message=f"{skill} needs a run_id (or a task that has one)")
-        self._check_run(str(run_id))
-        if skill in ("start_run", "advance"):
-            await self._advance(context, event_queue, task, run_id, _max_steps(args))
-            return
+        self._check_run(run_id)
+        if skill not in QUERIES:
+            _max_steps(args)
+            return None
         fields = {k: v for k, v in args.items() if k != "run_id"}
-        call: Callable[..., Any] = getattr(self.service, skill)
-        result = await self._call(call, run_id, **fields)
-        if task is None:
-            await event_queue.enqueue_event(new_data_message({"skill": skill, **_json(result)}))
-            return
-        updater = TaskUpdater(event_queue, task.id, task.context_id)
-        state, _ = await asyncio.to_thread(self.service.task_state, run_id)
-        reply = new_message(
-            [new_data_part({"skill": skill, **_json(result)})], task.context_id, task.id
+        result = await self._call(getattr(self.service, skill), run_id, **fields)
+        return new_data_message(
+            {"skill": skill, **_json(result)},
+            context_id=message.context_id or None,
+            task_id=message.task_id or None,
         )
-        await updater.update_status(state, reply)
+
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """Advance the run (`start_run` or `advance`, already checked by `prepare`)."""
+        skill, args = _request(context.message)
+        task = context.current_task
+        run_id = _run_of(args, task)
+        if skill in QUERIES or run_id is None:  # only reachable without `prepare`
+            raise InvalidParamsError(message=f"{skill} is not run on a task")
+        await self._advance(context, event_queue, task, run_id, _max_steps(args))
 
     def _check_run(self, run_id: str) -> None:
         try:
@@ -439,7 +464,11 @@ class PipelineExecutor(AgentExecutor):
             except asyncio.CancelledError:
                 stop.set()  # the thread stops after its current step
                 raise
-            result = work.result()
+            try:
+                result = work.result()
+            except Exception as exc:  # the run could not be opened or stepped: it stays as it is
+                current = (await asyncio.to_thread(self.service.status, run_id))["current"]
+                result = StepResult(Outcome.BLOCKED, current, f"{type(exc).__name__}: {exc}")
             state, why = await asyncio.to_thread(self.service.task_state, run_id, result.detail)
             if (
                 state == TaskState.TASK_STATE_INPUT_REQUIRED
@@ -474,6 +503,47 @@ class PipelineExecutor(AgentExecutor):
                 task_id,
             )
         )
+
+
+class PipelineRequestHandler(DefaultRequestHandler):
+    """The SDK's handler, with every request checked (and queries answered) before a task is
+    touched: an executor that raises would leave its task FAILED, which is terminal."""
+
+    def __init__(self, executor: PipelineExecutor, store: RunTaskStore, card: AgentCard) -> None:
+        super().__init__(agent_executor=executor, task_store=store, agent_card=card)
+        self._pipeline = executor
+        self._tasks = store
+
+    async def _prepare(
+        self, params: SendMessageRequest, context: ServerCallContext
+    ) -> Message | None:
+        message = params.message
+        task = None
+        if message.task_id:
+            task = await self._tasks.get(message.task_id, context)
+            if task is None:
+                raise TaskNotFoundError(f"Task {message.task_id} not found")
+            if not message.context_id:
+                message.context_id = task.context_id  # the task's own context, as A2A infers it
+        return await self._pipeline.prepare(message, task)
+
+    async def on_message_send(
+        self, params: SendMessageRequest, context: ServerCallContext
+    ) -> Message | Task:
+        reply = await self._prepare(params, context)
+        if reply is not None:
+            return reply
+        return await super().on_message_send(params, context)
+
+    async def on_message_send_stream(  # type: ignore[override]
+        self, params: SendMessageRequest, context: ServerCallContext
+    ) -> AsyncGenerator[Any]:
+        reply = await self._prepare(params, context)
+        if reply is not None:
+            yield reply
+            return
+        async for event in super().on_message_send_stream(params, context):
+            yield event
 
 
 def _json(value: Any) -> Any:
@@ -548,7 +618,7 @@ def build_app(
     executor = PipelineExecutor(service, poll_seconds)
     store = RunTaskStore(service.runs_dir / TASKS_DIR / "tasks", service, executor.is_live)
     card = agent_card(url)
-    handler = DefaultRequestHandler(agent_executor=executor, task_store=store, agent_card=card)
+    handler = PipelineRequestHandler(executor, store, card)
     app = Starlette(
         routes=[*create_agent_card_routes(card), *create_jsonrpc_routes(handler, RPC_PATH)]
     )

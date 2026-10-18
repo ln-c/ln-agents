@@ -218,10 +218,55 @@ def test_a_task_waiting_for_a_human_continues_on_the_same_task(pipe: Pipeline) -
     first = pipe.send({"skill": "advance", "run_id": RUN_ID})["result"]["task"]
     assert _state(first) == "TASK_STATE_INPUT_REQUIRED"
     assert first["metadata"][RUN_ID_KEY] == RUN_ID
+    again = pipe.send({"skill": "advance"}, taskId=first["id"], contextId=first["contextId"])
+    assert again["result"]["task"]["id"] == first["id"]  # run_id from the task
+    assert _state(again["result"]["task"]) == "TASK_STATE_INPUT_REQUIRED"
+
+
+def test_a_query_naming_a_task_is_answered_by_message_and_leaves_the_task(pipe: Pipeline) -> None:
+    first = pipe.send({"skill": "advance", "run_id": RUN_ID})["result"]["task"]
+    # No contextId: the server takes the task's own.
+    reply = pipe.send({"skill": "status"}, taskId=first["id"])["result"]["message"]
+    assert reply["taskId"] == first["id"] and reply["contextId"] == first["contextId"]
+    assert reply["parts"][0]["data"]["current"] == "H1"
+    task = pipe.rpc("GetTask", {"id": first["id"]}).json()["result"]
+    assert task["status"] == first["status"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"skill": "approval_document"},  # missing arguments
+        {"skill": "evidence"},  # refused by the pipeline (the seeded run has no evidence)
+        {"skill": "decide"},
+        {"skill": "start_run", "run_id": "run-9", "entry_spec": {}},
+    ],
+)
+def test_a_refused_request_on_a_task_leaves_it_usable(pipe: Pipeline, data: dict) -> None:
+    first = pipe.send({"skill": "advance", "run_id": RUN_ID})["result"]["task"]
     ids = {"taskId": first["id"], "contextId": first["contextId"]}
-    again = pipe.send({"skill": "status"}, **ids)["result"]["task"]  # run_id from the task
+    assert pipe.send(data, **ids)["error"]["code"] == -32602
+    task = pipe.rpc("GetTask", {"id": first["id"]}).json()["result"]
+    assert _state(task) == "TASK_STATE_INPUT_REQUIRED"
+    again = pipe.send({"skill": "advance"}, **ids)["result"]["task"]
     assert _state(again) == "TASK_STATE_INPUT_REQUIRED"
-    assert again["status"]["message"]["parts"][0]["data"]["current"] == "H1"
+
+
+def test_a_refused_request_without_a_task_leaves_no_task_behind(pipe: Pipeline) -> None:
+    for data in ({"skill": "status", "run_id": "nope"}, {"skill": "evidence", "run_id": RUN_ID}):
+        assert pipe.send(data)["error"]["code"] == -32602
+    assert pipe.send({"skill": "status", "run_id": RUN_ID})["result"]["message"]
+    assert pipe.rpc("ListTasks", {}).json()["result"].get("tasks", []) == []
+
+
+def test_a_run_that_cannot_be_opened_stops_the_task_resumably(pipe: Pipeline) -> None:
+    def broken(root: Path, run_dir: Path) -> Any:
+        raise RuntimeError("policy changed under the run")
+
+    pipe.service.make_dispatcher = broken
+    task = pipe.send({"skill": "advance", "run_id": RUN_ID})["result"]["task"]
+    assert _state(task) == "TASK_STATE_INPUT_REQUIRED"
+    assert "policy changed under the run" in _text(task) and "advance" in _text(task)
 
 
 def test_start_run_creates_the_run_then_advances_it(tmp_path: Path) -> None:
