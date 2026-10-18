@@ -6,8 +6,9 @@
 //! task stops, its status text and any evidence are the agent's message.
 
 use agent_client_protocol_schema::v1::{
-    ContentChunk, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionUpdate, ToolCall,
-    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    ContentBlock, ContentChunk, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, ResourceLink,
+    SessionUpdate, ToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ToolKind,
 };
 use ln_a2a::types::{Artifact, StreamResponse, TaskState};
 use serde_json::Value;
@@ -61,7 +62,7 @@ impl Turn {
                 )));
                 updates
             }
-            StreamResponse::ArtifactUpdate(update) => vec![message(artifact(&update.artifact))],
+            StreamResponse::ArtifactUpdate(update) => artifact(&update.artifact),
             StreamResponse::Message(m) => vec![message(ln_a2a::text(m))],
         }
     }
@@ -161,11 +162,64 @@ fn stopped_text(state: &TaskState, run_status: Option<&str>, text: &str) -> Stri
     format!("**{label}.** {text}")
 }
 
-fn artifact(artifact: &Artifact) -> String {
+fn artifact(artifact: &Artifact) -> Vec<SessionUpdate> {
     match (artifact.name.as_deref(), ln_a2a::data(&artifact.parts)) {
-        (Some("evidence"), Some(evidence)) => evidence_text(evidence),
-        (name, _) => format!("\nArtifact {}\n", name.unwrap_or("(unnamed)")),
+        (Some("evidence"), Some(view)) => view_updates(view),
+        (name, _) => vec![message(format!(
+            "\nArtifact {}\n",
+            name.unwrap_or("(unnamed)")
+        ))],
     }
+}
+
+/// The sections of the report shown in the chat; the rest is one click away in the file.
+const SUMMARY_SECTIONS: [&str; 2] = ["## Your choices", "## Candidates at a glance"];
+
+/// An approval view (the `evidence` skill reply, also attached when a run stops for a human):
+/// the choices and the candidates at a glance from its Markdown report, then a link that opens
+/// the whole report. A server without reports sends bare evidence, shown as before.
+pub fn view_updates(view: &Value) -> Vec<SessionUpdate> {
+    let Some(markdown) = view.get("markdown").and_then(Value::as_str) else {
+        return vec![message(evidence_text(view))];
+    };
+    let mut text = String::from("\n");
+    for heading in SUMMARY_SECTIONS {
+        if let Some(section) = section(markdown, heading) {
+            text.push_str(&section.replacen("## ", "#### ", 1));
+            text.push('\n');
+        }
+    }
+    let mut updates = vec![message(text)];
+    if let Some(path) = view.get("path").and_then(Value::as_str) {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string());
+        let link = ResourceLink::new(name, format!("file://{path}"))
+            .mime_type("text/markdown".to_string())
+            .title("The full evidence report".to_string());
+        updates.push(message(
+            "The full report, with every finding and what you sign: ",
+        ));
+        updates.push(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+            ContentBlock::ResourceLink(link),
+        )));
+        updates.push(message("\n"));
+    }
+    updates
+}
+
+/// From `heading` up to the next section of the same level.
+fn section<'a>(markdown: &'a str, heading: &str) -> Option<&'a str> {
+    let start = markdown
+        .match_indices(heading)
+        .map(|(i, _)| i)
+        .find(|&i| i == 0 || markdown[..i].ends_with('\n'))?;
+    let body = &markdown[start + heading.len()..];
+    let end = body
+        .find("\n## ")
+        .map_or(markdown.len(), |i| start + heading.len() + i + 1);
+    Some(&markdown[start..end])
 }
 
 /// The parts of H1/R1/R2 evidence a reviewer reads first; `/evidence` shows all of it.
@@ -220,8 +274,9 @@ pub fn status_text(status: &Value) -> String {
     }
     if field("status") == "awaiting_human" {
         text.push_str(
-            "\nNext: `/evidence`, then `/approval-doc <decision> <approver> <reason>` (design \
-             mode), sign it with ssh-keygen and run `run decide`.",
+            "\nNext: `/evidence` to read the report, then `/approval-doc \
+             <decision>[:<candidate>] <approver> <reason>` (design mode), sign it with ssh-keygen \
+             and run `run decide`.",
         );
     }
     text.push('\n');
@@ -359,6 +414,46 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn a_view_shows_the_choices_and_glance_then_links_the_whole_report() {
+        let markdown = "# Design decision for run `r` (H1)\n\nIntro.\n\n## Your choices\n\n\
+                        - **Approve the synthesis** (`approve`)\n\n## Candidates at a glance\n\n\
+                        | Candidate | Rank |\n|---|---|\n| the synthesis | 1 |\n\n\
+                        ## Design A (`proposal_a_sealed`)\n\nLong text.\n";
+        let view = json!({"markdown": markdown, "path": "/w/.runs/r/approvals/H1-evidence.md"});
+        let updates = view_updates(&view);
+        let [
+            SessionUpdate::AgentMessageChunk(summary),
+            SessionUpdate::AgentMessageChunk(_),
+            SessionUpdate::AgentMessageChunk(link),
+            SessionUpdate::AgentMessageChunk(_),
+        ] = updates.as_slice()
+        else {
+            panic!("{updates:?}")
+        };
+        let summary = serde_json::to_value(&summary.content).unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(summary.contains("#### Your choices") && summary.contains("Approve the synthesis"));
+        assert!(summary.contains("| the synthesis | 1 |"), "{summary}");
+        assert!(
+            !summary.contains("Long text") && !summary.contains("Intro"),
+            "{summary}"
+        );
+        let link = serde_json::to_value(&link.content).unwrap();
+        assert_eq!(link["type"], "resource_link");
+        assert_eq!(link["uri"], "file:///w/.runs/r/approvals/H1-evidence.md");
+        assert_eq!(link["name"], "H1-evidence.md");
+        // An older server sends bare evidence: shown as before, nothing invented.
+        let old = view_updates(&json!({"survivors": ["a"]}));
+        let [SessionUpdate::AgentMessageChunk(old)] = old.as_slice() else {
+            panic!("{old:?}")
+        };
+        let old = serde_json::to_value(&old.content).unwrap();
+        assert!(old["text"].as_str().unwrap().contains("survivors"));
     }
 
     #[test]

@@ -41,6 +41,8 @@ from agentic_pipeline.approvals import (
 )
 from agentic_pipeline.build_gates import BUILD_GATE_HANDLERS
 from agentic_pipeline.dispatch import DispatchBlocked, Dispatcher, RunPaused
+from agentic_pipeline.evidence_md import choices
+from agentic_pipeline.evidence_md import render as render_evidence
 from agentic_pipeline.gates import GATE_HANDLERS, approval_evidence
 from agentic_pipeline.graph import NO_EDGE_KINDS, REPO_ROOT, Edge, Graph, spent_route
 from agentic_pipeline.grounding import (
@@ -335,6 +337,28 @@ class Runner:
                 f"cannot recompute the evidence: {type(exc).__name__}: {exc}"
             ) from exc
         return {**evidence, "provenance_tip": self.log.tip(), "policy": dict(st.policy)}
+
+    def approval_view(self) -> dict[str, Any]:
+        """What a human reads before deciding here: the evidence, each choice they can sign,
+        who may sign it, and a Markdown report of it all (a view; only the evidence is signed)."""
+        evidence = self.approval_evidence()
+        node = self.state.current
+        policy = load_policy(self.root)
+        offered = choices(node, [e.guard for e in self.graph.edges if e.src == node], evidence)
+        kind = NODE_DECISION[node]
+        try:
+            markdown = render_evidence(self._context(node), policy, evidence, offered)
+        except Exception as exc:  # a report that cannot be built is never shown as complete
+            raise ApprovalError(
+                f"cannot build the evidence report: {type(exc).__name__}: {exc}"
+            ) from exc
+        return {
+            "node": node,
+            "evidence": evidence,
+            "choices": offered,
+            "approvers": [a["id"] for a in policy.approvers["approvers"] if kind in a["decisions"]],
+            "markdown": markdown,
+        }
 
     def decide(self, document: bytes, signature: str) -> StepResult:
         """Take the human edge named by a verified signed approval; otherwise change nothing."""

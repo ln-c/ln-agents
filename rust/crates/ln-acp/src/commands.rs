@@ -62,6 +62,7 @@ pub enum Command {
     },
     ApprovalDoc {
         decision: String,
+        candidate: Option<String>,
         approver: String,
         reason: String,
     },
@@ -100,7 +101,7 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
             ),
             (
                 "approval-doc",
-                "<decision> <approver> <reason>",
+                "<decision>[:<candidate>] <approver> <reason>",
                 "Write the unsigned approval document and show how to sign it",
             ),
         ]);
@@ -151,14 +152,21 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
             _ => return Err(Refusal("usage: /start <run> <entry_spec.json>".into())),
         },
         "approval-doc" => match args.as_slice() {
-            [decision, approver, reason @ ..] if !reason.is_empty() => Command::ApprovalDoc {
-                decision: decision.to_string(),
-                approver: approver.to_string(),
-                reason: reason.join(" "),
-            },
+            [choice, approver, reason @ ..] if !reason.is_empty() => {
+                let (decision, candidate) = match choice.split_once(':') {
+                    Some((decision, candidate)) => (decision, Some(candidate.to_string())),
+                    None => (*choice, None),
+                };
+                Command::ApprovalDoc {
+                    decision: decision.to_string(),
+                    candidate,
+                    approver: approver.to_string(),
+                    reason: reason.join(" "),
+                }
+            }
             _ => {
                 return Err(Refusal(
-                    "usage: /approval-doc <decision> <approver> <reason>".into(),
+                    "usage: /approval-doc <decision>[:<candidate>] <approver> <reason>".into(),
                 ));
             }
         },
@@ -237,8 +245,21 @@ mod tests {
             ),
             Ok(Command::ApprovalDoc {
                 decision: "approve_design_and_no_security_veto".into(),
+                candidate: None,
                 approver: "ln-c".into(),
                 reason: "looks right".into(),
+            })
+        );
+        assert_eq!(
+            parse(
+                "/approval-doc approve_design_and_no_security_veto:synthesis_sealed ln-c ok",
+                design
+            ),
+            Ok(Command::ApprovalDoc {
+                decision: "approve_design_and_no_security_veto".into(),
+                candidate: Some("synthesis_sealed".into()),
+                approver: "ln-c".into(),
+                reason: "ok".into(),
             })
         );
         assert_eq!(parse("add rate limiting please", design), Ok(Command::Help));
