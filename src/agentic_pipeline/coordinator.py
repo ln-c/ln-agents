@@ -91,13 +91,15 @@ NEXT: Mapping[str, tuple[str, ...]] = {
         "Read the evidence report linked below, and the summary above.",
         "`/approval-doc <decision>[:<candidate>] <approver> <reason>` writes the unsigned "
         "approval document (design mode).",
-        "Sign it with `ssh-keygen -Y sign`, then run `python -m agentic_pipeline run decide` "
-        "in a terminal. Nothing here approves anything.",
+        "`/decide` opens a terminal where you sign it with your SSH key and record the "
+        "decision (by hand: `ssh-keygen -Y sign`, then `python -m agentic_pipeline run decide`). "
+        "Nothing here approves anything.",
     ),
     "paused": (
         "Fix the cause named above (a sign-in, a quota, a server).",
-        "A human resumes the run in a terminal: `python -m agentic_pipeline run resume "
-        "<run> --by <you> --reason <why>`; then `/advance` continues it.",
+        "`/resume <who> <reason>` opens a terminal where you resume the run (by hand: "
+        "`python -m agentic_pipeline run resume <run> --by <you> --reason <why>`); then "
+        "`/advance` continues it.",
     ),
     "blocked": (
         "Fix the cause named above; the step spent nothing.",

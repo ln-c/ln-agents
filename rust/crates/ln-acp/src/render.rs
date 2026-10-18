@@ -329,6 +329,23 @@ pub fn status_text(status: &Value) -> String {
 }
 
 /// An `approval_document` skill reply: where the document is and the two human steps.
+/// `/decide` or `/resume` opened a terminal window for the human.
+pub fn window_opened(run: &str, what: &str, command: &str) -> String {
+    format!(
+        "A terminal window is open for run `{run}`. In it you {what}: you type the run id there, \
+         and for a decision your SSH passphrase; ln-hub never sees either. When the window says \
+         it is done, `/status` shows where the run is and `/advance` continues it.\n\n\
+         Opened with `{command}`\n"
+    )
+}
+
+/// No terminal window could be opened; the human does it by hand.
+pub fn window_failed(error: &str, manual: &str) -> String {
+    format!(
+        "No terminal window was opened: {error}.\n\nDo it by hand in a terminal instead:\n\n```sh\n{manual}\n```\n"
+    )
+}
+
 pub fn approval_text(reply: &Value) -> String {
     let field = |k: &str| reply.get(k).and_then(Value::as_str).unwrap_or("-");
     format!(

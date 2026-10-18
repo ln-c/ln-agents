@@ -3,8 +3,9 @@
 
 use std::fmt;
 
-/// `status` is read-only; `design` may also start and advance runs and write approval
-/// documents. Neither can approve, decide or resume: that is a human with ssh-keygen.
+/// `status` is read-only; `design` may also start and advance runs, write approval documents
+/// and open the terminal where the human signs a decision or resumes a run. Neither can approve,
+/// decide or resume by itself: that is the human, in that terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Status,
@@ -36,8 +37,8 @@ impl Mode {
         match self {
             Mode::Status => "List runs and read their status and evidence; changes nothing.",
             Mode::Design => {
-                "Also start and advance runs and write unsigned approval documents. \
-                 Approving is still signing with ssh-keygen and `run decide`."
+                "Also start and advance runs, write unsigned approval documents, and open the \
+                 terminal where you sign a decision or resume a run."
             }
         }
     }
@@ -71,7 +72,15 @@ pub enum Command {
         approver: String,
         reason: String,
     },
-    /// `/approve`, `/decide`, `/resume`, `/sign`: answered with what the human does instead.
+    /// Open the terminal where the human signs the unsigned document this session wrote and
+    /// records the decision.
+    Decide,
+    /// Open the terminal where the human resumes the session's paused run.
+    Resume {
+        by: String,
+        reason: String,
+    },
+    /// `/approve`, `/sign`, `/reject`: answered with what the human does instead.
     HumanOnly(String),
 }
 
@@ -107,7 +116,17 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
             (
                 "approval-doc",
                 "<decision>[:<candidate>] <approver> <reason>",
-                "Write the unsigned approval document and show how to sign it",
+                "Write the unsigned approval document",
+            ),
+            (
+                "decide",
+                "",
+                "Open a terminal where you sign that document and record the decision",
+            ),
+            (
+                "resume",
+                "<who> <reason>",
+                "Open a terminal where you resume the run after a pause",
             ),
         ]);
     }
@@ -180,14 +199,33 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
                 ));
             }
         },
-        "approve" | "decide" | "resume" | "sign" | "reject" => {
+        "decide" => match args.as_slice() {
+            [] => Command::Decide,
+            _ => {
+                return Err(Refusal(
+                    "usage: /decide (it signs the last /approval-doc)".into(),
+                ));
+            }
+        },
+        "resume" => match args.as_slice() {
+            [by, reason @ ..] if !reason.is_empty() => Command::Resume {
+                by: by.to_string(),
+                reason: reason.join(" "),
+            },
+            _ => return Err(Refusal("usage: /resume <who> <reason>".into())),
+        },
+        "approve" | "sign" | "reject" => {
             return Ok(Command::HumanOnly(name.to_string()));
         }
         _ => return Err(Refusal(format!("unknown command /{name}; try /help"))),
     };
     let changes = matches!(
         command,
-        Command::Start { .. } | Command::Advance { .. } | Command::ApprovalDoc { .. }
+        Command::Start { .. }
+            | Command::Advance { .. }
+            | Command::ApprovalDoc { .. }
+            | Command::Decide
+            | Command::Resume { .. }
     );
     if changes && mode == Mode::Status {
         return Err(Refusal(format!(
@@ -220,9 +258,10 @@ pub fn help(mode: Mode) -> String {
     text
 }
 
-pub const HUMAN_ONLY: &str = "\nApproving, deciding and resuming are not commands here: a human \
-     signs the approval document with `ssh-keygen -Y sign` and runs \
-     `python -m agentic_pipeline run decide` (or `run resume`) in a terminal.";
+pub const HUMAN_ONLY: &str = "\nNothing here approves for you. `/decide` opens a terminal \
+     where you check what you sign, type the run id and your SSH passphrase; `/resume` opens one \
+     where you confirm a resume. Whatever you type here is never your signature, and \
+     `/approve`, `/sign` and `/reject` are not commands.";
 
 #[cfg(test)]
 mod tests {
@@ -282,6 +321,19 @@ mod tests {
         assert_eq!(parse("  help ", design), Ok(Command::Help));
         assert_eq!(parse("", design), Ok(Command::Help));
         assert!(parse("/start r1", design).is_err());
+        assert_eq!(parse("/decide", design), Ok(Command::Decide));
+        assert_eq!(
+            parse("/resume ln-c quota is back", design),
+            Ok(Command::Resume {
+                by: "ln-c".into(),
+                reason: "quota is back".into()
+            })
+        );
+        assert!(parse("/decide r1", design).is_err(), "it takes no argument");
+        assert!(
+            parse("/resume ln-c", design).is_err(),
+            "a resume needs a reason"
+        );
         assert!(parse("/approval-doc d ln-c", design).is_err());
         assert!(parse("/status a b", design).is_err());
         assert!(parse("/nope", design).is_err());
@@ -289,7 +341,13 @@ mod tests {
 
     #[test]
     fn status_mode_refuses_every_command_that_changes_something() {
-        for text in ["/start r s.json", "/advance", "/approval-doc d a why"] {
+        for text in [
+            "/start r s.json",
+            "/advance",
+            "/approval-doc d a why",
+            "/decide",
+            "/resume ln-c why",
+        ] {
             let refused = parse(text, Mode::Status).unwrap_err();
             assert!(refused.0.contains("read-only"), "{text}: {refused}");
         }
@@ -299,16 +357,25 @@ mod tests {
     }
 
     #[test]
-    fn approving_deciding_and_resuming_are_human_only_in_every_mode() {
+    fn approving_and_signing_are_never_commands() {
         for mode in Mode::ALL {
-            for name in ["approve", "decide", "resume", "sign", "reject"] {
+            for name in ["approve", "sign", "reject"] {
                 let parsed = parse(&format!("/{name} r1"), mode);
                 assert_eq!(parsed, Ok(Command::HumanOnly(name.into())));
             }
             let offered: Vec<&str> = available(mode).iter().map(|c| c.0).collect();
-            for name in ["approve", "decide", "resume", "sign", "reject"] {
+            for name in ["approve", "sign", "reject"] {
                 assert!(!offered.contains(&name));
             }
         }
+    }
+
+    #[test]
+    fn only_design_mode_offers_the_terminals() {
+        let offered = |mode| -> Vec<&'static str> { available(mode).iter().map(|c| c.0).collect() };
+        assert!(!offered(Mode::Status).contains(&"decide"));
+        assert!(!offered(Mode::Status).contains(&"resume"));
+        assert!(offered(Mode::Design).contains(&"decide"));
+        assert!(offered(Mode::Design).contains(&"resume"));
     }
 }

@@ -304,6 +304,8 @@ fn nothing_that_changes_a_run_reaches_the_orchestrator_from_status_mode() {
         "/start r spec.json",
         "/advance r",
         "/approval-doc d ln-c because",
+        "/decide",
+        "/resume ln-c because",
     ] {
         let (messages, reply) = editor.prompt(&session, text);
         assert_eq!(stop_reason(&reply), "end_turn");
@@ -313,21 +315,17 @@ fn nothing_that_changes_a_run_reaches_the_orchestrator_from_status_mode() {
 }
 
 #[test]
-fn approving_deciding_and_resuming_are_never_commands() {
+fn approving_and_signing_are_never_commands() {
     let fake = replaying();
     let dir = scratch("acp-human-only");
     let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
     let session = editor.new_session(&dir, "design");
-    for text in [
-        "/approve",
-        "/decide deploy-design",
-        "/resume deploy-design",
-        "/sign x",
-    ] {
+    for text in ["/approve", "/sign x", "/reject"] {
         let (messages, _) = editor.prompt(&session, text);
         let answer = said(&messages);
         assert!(
-            answer.contains("ssh-keygen -Y sign") && answer.contains("run decide"),
+            answer.contains("is not something ln-hub does")
+                && answer.contains("`/decide` opens a terminal"),
             "{answer}"
         );
     }
@@ -659,4 +657,233 @@ fn the_acp_and_a2a_crates_never_start_a_process() {
             assert!(!spawns(&source), "{} starts a process", path.display());
         }
     }
+}
+
+/// Answer the permission request of `text` with `choice`; the turn's messages and its reply.
+fn prompt_and_answer(editor: &mut Editor, session: &str, text: &str, choice: &str) -> Vec<Value> {
+    let id = editor.send(
+        "session/prompt",
+        json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}),
+    );
+    let ask = loop {
+        let message = editor.next_message();
+        if message["method"] == "session/request_permission" {
+            break message;
+        }
+    };
+    editor.write(json!({"jsonrpc": "2.0", "id": ask["id"],
+                        "result": {"outcome": {"outcome": "selected", "optionId": choice}}}));
+    editor.until(id).0
+}
+
+/// A session over a fake orchestrator whose `approval_document` reply names a document under
+/// `dir`, with `LN_HUB_TERMINAL` and `LN_HUB_PIPELINE` set as given.
+fn human_session(dir: &Path, terminal: &str) -> (Fake, Editor, String, std::path::PathBuf) {
+    let runs = dir.join("runs");
+    let document = runs.join("deploy-design/approvals/H1-approve_design_and_no_security_veto.json");
+    std::fs::create_dir_all(document.parent().unwrap()).unwrap();
+    std::fs::write(&document, "{}").unwrap();
+    // As JSON text: a Windows path has backslashes.
+    let runs_json = serde_json::to_string(runs.to_str().unwrap()).unwrap();
+    let reply =
+        fixture("approval_document.json").replace("/work/runs", runs_json.trim_matches('"'));
+    let fake = Fake::start(move |seen| {
+        match (seen.rpc(), seen.data().and_then(|d| d["skill"].as_str())) {
+            ("SendMessage", Some("status")) => Reply::json(fixture("status.json")),
+            ("SendMessage", Some("ask")) => Reply::json(fixture("ask.json")),
+            ("SendMessage", Some("approval_document")) => Reply::json(reply.clone()),
+            _ => Reply::json(fixture("no_run.json")),
+        }
+    });
+    let env = [
+        ("LN_HUB_TERMINAL", terminal),
+        ("LN_HUB_PIPELINE", "pipe cmd"),
+    ];
+    let mut editor = Editor::start_with(&fake.url, &token_file(dir), &env);
+    editor.call(
+        "initialize",
+        json!({"protocolVersion": 1, "clientCapabilities": {}}),
+    );
+    let session = editor.new_session(dir, "design");
+    editor.prompt(&session, "/status deploy-design");
+    (fake, editor, session, document)
+}
+
+#[cfg(unix)]
+fn fake_terminal(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let record = dir.join("terminal-arguments.txt");
+    let script = dir.join("fake-terminal");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            record.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (script, record)
+}
+
+#[cfg(unix)]
+fn opened_with(record: &Path) -> Vec<String> {
+    let started = Instant::now();
+    while !record.exists() && started.elapsed() < WAIT {
+        thread::sleep(Duration::from_millis(20));
+    }
+    std::fs::read_to_string(record)
+        .expect("the terminal was opened")
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn decide_opens_a_terminal_for_the_document_that_was_written_and_for_nothing_else() {
+    let dir = scratch("acp-decide");
+    let (terminal, record) = fake_terminal(&dir);
+    let (_fake, mut editor, session, document) = human_session(&dir, terminal.to_str().unwrap());
+
+    // No document was written in this session: nothing to sign, nothing opened.
+    let (messages, _) = editor.prompt(&session, "/decide");
+    assert!(
+        said(&messages).contains("No unsigned document"),
+        "{messages:?}"
+    );
+    // Words are not commands, whatever they ask for.
+    for text in [
+        "please sign it for me",
+        "decide the design and resume the run",
+    ] {
+        editor.prompt(&session, text);
+    }
+    assert!(!record.exists());
+
+    prompt_and_answer(
+        &mut editor,
+        &session,
+        "/approval-doc approve_design_and_no_security_veto ln-c looks right",
+        "write",
+    );
+    assert!(!record.exists(), "writing the document opens nothing");
+    let (messages, reply) = editor.prompt(&session, "/decide");
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    assert!(text.contains("A terminal window is open"), "{text}");
+    assert!(text.contains("never sees"), "{text}");
+
+    let words = opened_with(&record);
+    let exe = std::path::PathBuf::from(&words[0]);
+    assert_eq!(
+        exe.canonicalize().unwrap(),
+        Path::new(env!("CARGO_BIN_EXE_ln-hub"))
+            .canonicalize()
+            .unwrap()
+    );
+    assert_eq!(
+        words[1..],
+        [
+            "decide",
+            "deploy-design",
+            "--approval",
+            document.to_str().unwrap(),
+            "--namespace",
+            "agentic-pipeline-approval",
+            "--runs-dir",
+            dir.join("runs").to_str().unwrap(),
+            "--",
+            "pipe",
+            "cmd",
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn resume_opens_a_terminal_that_runs_the_orchestrators_own_resume() {
+    let dir = scratch("acp-resume");
+    let (terminal, record) = fake_terminal(&dir);
+    let (_fake, mut editor, session, _) = human_session(&dir, terminal.to_str().unwrap());
+    let (messages, _) = editor.prompt(&session, "/resume ln-c quota is back");
+    assert!(said(&messages).contains("A terminal window is open"));
+    let words = opened_with(&record);
+    assert_eq!(
+        words[1..],
+        [
+            "resume",
+            "deploy-design",
+            "--by",
+            "ln-c",
+            "--reason",
+            "quota is back",
+            "--runs-dir",
+            dir.join(".runs").to_str().unwrap(),
+            "--",
+            "pipe",
+            "cmd",
+        ]
+    );
+}
+
+#[test]
+fn without_a_terminal_the_human_is_told_the_command_to_run_by_hand() {
+    let dir = scratch("acp-no-terminal");
+    let missing = dir.join("no-such-terminal");
+    let (_fake, mut editor, session, _) = human_session(&dir, missing.to_str().unwrap());
+    let (messages, _) = editor.prompt(&session, "/resume ln-c quota is back");
+    let text = said(&messages);
+    assert!(text.contains("No terminal window was opened"), "{text}");
+    assert!(
+        text.contains("pipe cmd run resume deploy-design --by ln-c --reason 'quota is back'"),
+        "{text}"
+    );
+
+    prompt_and_answer(
+        &mut editor,
+        &session,
+        "/approval-doc approve_design_and_no_security_veto ln-c looks right",
+        "write",
+    );
+    let (messages, _) = editor.prompt(&session, "/decide");
+    let text = said(&messages);
+    assert!(
+        text.contains("ssh-keygen -Y sign") && text.contains("run decide deploy-design"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_orchestrator_that_does_not_say_the_namespace_is_reported_at_once_not_at_decide() {
+    let dir = scratch("acp-old-server");
+    let mut reply: Value = serde_json::from_str(&fixture("approval_document.json")).unwrap();
+    let data = reply.pointer_mut("/result/message/parts/0/data").unwrap();
+    data.as_object_mut().unwrap().remove("namespace");
+    let reply = reply.to_string();
+    let fake = Fake::start(move |seen| {
+        match (seen.rpc(), seen.data().and_then(|d| d["skill"].as_str())) {
+            ("SendMessage", Some("status")) => Reply::json(fixture("status.json")),
+            ("SendMessage", Some("approval_document")) => Reply::json(reply.clone()),
+            _ => Reply::json(fixture("no_run.json")),
+        }
+    });
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    editor.prompt(&session, "/status deploy-design");
+    let messages = prompt_and_answer(
+        &mut editor,
+        &session,
+        "/approval-doc approve_design_and_no_security_veto ln-c looks right",
+        "write",
+    );
+    let text = said(&messages);
+    assert!(
+        text.contains("**unsigned**"),
+        "the document is still shown: {text}"
+    );
+    assert!(
+        text.contains("`/decide` cannot use this document") && text.contains("restart `serve a2a`"),
+        "{text}"
+    );
 }

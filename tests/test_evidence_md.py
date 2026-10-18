@@ -91,6 +91,33 @@ def test_the_cli_and_the_a2a_skill_write_the_report(replay: Replay, repo: Path) 
     json.dumps(reply)  # what the skill returns must be plain JSON
 
 
+def test_the_approval_document_skill_names_where_and_under_what_namespace_to_sign(
+    replay: Replay,  # noqa: F811
+    repo: Path,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    view = view_of(replay)
+    choice = next(c for c in view["choices"] if c["decision"] == APPROVE_GUARD)
+    monkeypatch.chdir(replay.run_dir.parent)
+    service = PipelineService(repo, Path("."))  # a relative runs directory
+    reply = service.approval_document(
+        replay.recording.run_id,
+        decision=choice["decision"],
+        approver="ln-c",
+        reason="looks right",
+        candidate=choice["candidate"],
+    )
+    document = Path(reply["document"])
+    assert document.is_absolute() and document.is_file()
+    # ln-hub opens the signing terminal from exactly this layout and namespace
+    assert document.parent == (replay.run_dir / "approvals").resolve()
+    assert reply["namespace"] == "agentic-pipeline-approval"
+    # the by-hand commands name the same absolute document, however the server was started
+    assert reply["namespace"] in reply["sign"] and str(document) in reply["sign"]
+    assert str(document) in reply["then"]
+    json.dumps(reply)
+
+
 @pytest.mark.parametrize(
     ("node", "guards", "expected"),
     [

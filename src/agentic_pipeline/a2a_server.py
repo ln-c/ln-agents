@@ -287,12 +287,14 @@ class PipelineService:
         from agentic_pipeline.approvals import signing_command
 
         draft = write_approval_document(self.root, self.run_dir(run_id), **fields)
+        document = draft.path.resolve()  # absolute: ln-hub and a human by hand both use it
         return {
             "node": draft.node,
             "decision": fields["decision"],
-            "document": str(draft.path),
-            "sign": signing_command(draft.path, draft.namespace),
-            "then": f"python -m agentic_pipeline run decide {run_id} --approval {draft.path}",
+            "document": str(document),
+            "namespace": draft.namespace,
+            "sign": signing_command(document, draft.namespace),
+            "then": f"python -m agentic_pipeline run decide {run_id} --approval {document}",
         }
 
     def task_state(

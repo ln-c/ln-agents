@@ -15,8 +15,6 @@ path = "src/main.rs"
 clap.workspace = true
 ln-a2a.workspace = true
 ln-acp.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
 
 [lints]
