@@ -313,6 +313,7 @@ fn nothing_that_changes_a_run_reaches_the_orchestrator_from_status_mode() {
         "/add_model google_ai_pro gemini-9-new",
         "/remove_model gemini_9_new",
         "/agents design.proposal_b.primary gemini_4_argon_high",
+        "/agents auto use only local models",
         "/confirm 1eb25dbc",
         "/discard 1eb25dbc",
     ] {
@@ -363,6 +364,13 @@ fn registry_fake() -> Fake {
             Some("ask") => Reply::json(fixture("ask.json")),
             Some("apply_change") => Reply::json(fixture("applied.json")),
             Some("discard_change") => Reply::json(fixture("discarded.json")),
+            Some("propose_mapping") => {
+                if data.unwrap().get("intent").is_some() {
+                    Reply::json(fixture("proposal.json"))
+                } else {
+                    Reply::json(fixture("proposal_refused.json"))
+                }
+            }
             Some("registry_change") => match data.unwrap()["kind"].as_str() {
                 Some("add_model") => Reply::json(fixture("change.json")),
                 Some("remove_model") => Reply::json(fixture("change_remove.json")),
@@ -467,6 +475,49 @@ fn a_refused_draft_lists_the_rules_and_offers_no_confirm() {
                 "models": ["claude_cli_default"]})
         ]
     );
+}
+
+#[test]
+fn the_authoritys_proposal_is_shown_as_its_words_beside_a_diff_you_confirm() {
+    let fake = registry_fake();
+    let dir = scratch("acp-propose");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    let (messages, reply) = editor.prompt(
+        &session,
+        "/agents auto use a third model family for design B",
+    );
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    assert!(
+        text.contains("Proposed by `gemini_3_8_flash_high`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("the authority says: Design B moves to GPT-OSS."),
+        "{text}"
+    );
+    assert!(text.contains("Bind 1 slot (proposed by gemini_3_8_flash_high)"));
+    assert!(text.contains("+      primary: gpt_oss_120b_medium"));
+    assert!(text.contains("type `/confirm d04781fe`"));
+    assert_eq!(
+        skills_sent(&fake),
+        [json!({"skill": "propose_mapping", "intent": "use a third model family for design B"})],
+        "asking sends the request and nothing is applied"
+    );
+}
+
+#[test]
+fn a_proposal_that_breaks_a_rule_is_refused_like_any_draft() {
+    let fake = registry_fake();
+    let dir = scratch("acp-propose-refused");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    let (messages, _) = editor.prompt(&session, "/agents auto");
+    let text = said(&messages);
+    assert!(text.contains("Not drafted, so nothing changed"), "{text}");
+    assert!(text.contains("registry R14 A1.proposal_b") && !text.contains("/confirm"));
+    assert_eq!(skills_sent(&fake), [json!({"skill": "propose_mapping"})]);
 }
 
 #[test]

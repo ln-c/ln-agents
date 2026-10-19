@@ -74,6 +74,11 @@ pub enum Command {
         slot: String,
         models: Vec<String>,
     },
+    /// Ask the authority model to propose bindings for the agent slots. It is called (it spends
+    /// its allowance), and what it proposes is checked and stored as a draft, never applied.
+    ProposeMapping {
+        intent: String,
+    },
     /// Write a draft the server stored: the human's own command, never a model's.
     Confirm {
         id: String,
@@ -139,6 +144,15 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
         ("help", "", "What ln-agents can and cannot do"),
     ];
     if mode == Mode::Design {
+        // The same command, with what design mode adds to it: one entry per name.
+        if let Some(agents) = commands.iter_mut().find(|c| c.0 == "agents") {
+            *agents = (
+                "agents",
+                "[<slot> <model>[,<model> ...] | auto [what you want]]",
+                "Which model each agent is bound to; with a slot and a model, draft binding it; \
+                 `auto` asks the authority model to propose the mapping (you check the draft)",
+            );
+        }
         commands.extend([
             (
                 "start",
@@ -174,11 +188,6 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
                 "remove_model",
                 "<model>",
                 "Draft removing a model nothing is bound to",
-            ),
-            (
-                "agents",
-                "<slot> <model>[,<model> ...]",
-                "Draft binding an agent slot to a model",
             ),
             (
                 "confirm",
@@ -234,6 +243,9 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
         },
         "agents" => match args.as_slice() {
             [] => Command::Agents,
+            ["auto", intent @ ..] => Command::ProposeMapping {
+                intent: intent.join(" "),
+            },
             [slot, models] => Command::Bind {
                 slot: slot.to_string(),
                 models: models
@@ -337,6 +349,7 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
             | Command::AddModel { .. }
             | Command::RemoveModel { .. }
             | Command::Bind { .. }
+            | Command::ProposeMapping { .. }
             | Command::Confirm { .. }
             | Command::Discard { .. }
     );
@@ -487,6 +500,16 @@ mod tests {
         );
         assert!(parse("/agents only-a-slot x y", design).is_err());
         assert_eq!(
+            parse("/agents auto", design),
+            Ok(Command::ProposeMapping { intent: "".into() })
+        );
+        assert_eq!(
+            parse("/agents auto use only local models for build", design),
+            Ok(Command::ProposeMapping {
+                intent: "use only local models for build".into()
+            })
+        );
+        assert_eq!(
             parse("/confirm 1eb25dbc", design),
             Ok(Command::Confirm {
                 id: "1eb25dbc".into()
@@ -528,6 +551,7 @@ mod tests {
             "/add_model google_ai_pro gemini-9-new",
             "/remove_model gemini_9_new",
             "/agents design.proposal_b.primary gemini_4_argon_high",
+            "/agents auto",
             "/confirm 1eb25dbc",
             "/discard 1eb25dbc",
         ] {
@@ -566,6 +590,15 @@ mod tests {
         for mode in Mode::ALL {
             assert!(offered(mode).contains(&"models"), "the catalog only reads");
             assert!(offered(mode).contains(&"agents"), "the mapping only reads");
+        }
+        for mode in Mode::ALL {
+            let names = offered(mode);
+            let unique: std::collections::HashSet<_> = names.iter().collect();
+            assert_eq!(
+                names.len(),
+                unique.len(),
+                "one entry per command name in {mode:?}"
+            );
         }
         for name in ["add_model", "remove_model", "confirm", "discard"] {
             assert!(

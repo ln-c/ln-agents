@@ -1,0 +1,29 @@
+{
+ "result": {
+  "message": {
+   "messageId": "9b9fd73f-f267-450d-9007-99ac14788317",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "errors": [],
+      "proposed_by": "gemini_3_8_flash_high",
+      "diff": "--- a/policy/model_registry.yaml\n+++ b/policy/model_registry.yaml\n@@ -242,5 +242,5 @@\n       isolation_group: design_a\n     proposal_b:\n-      primary: gemini_4_argon_medium\n+      primary: gpt_oss_120b_medium\n       isolation_group: design_b\n     # A2J: one decision call per critique finding, on the host's loopback only. Local, so no\n",
+      "authority_says": "Design B moves to GPT-OSS.",
+      "change_id": "d04781fe",
+      "summary": "Bind 1 slot (proposed by gemini_3_8_flash_high)",
+      "kind": "bind_many",
+      "skill": "propose_mapping",
+      "notes": [
+       "design.proposal_b.primary: gemini_4_argon_medium -> gpt_oss_120b_medium (serves A1.proposal_b, A2.critique_a_by_b)",
+       "Why (proposed by gemini_3_8_flash_high): A third family keeps the designs independent.",
+       "gpt_oss_120b_medium runs through google_ai_pro: what design.proposal_b is sent leaves this host (policy/data_classes.yaml still decides what may go)."
+      ]
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

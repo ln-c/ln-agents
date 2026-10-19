@@ -515,6 +515,11 @@ impl Prompt {
                 let reply = skill_reply(&client()?, &Request::bind(&slot, &models)).map_err(a2a)?;
                 self.say(render::change_text(&reply));
             }
+            Command::ProposeMapping { intent } => {
+                let request = Request::propose_mapping(&intent);
+                let reply = skill_reply(&client()?, &request).map_err(a2a)?;
+                self.say(render::change_text(&reply));
+            }
             Command::Confirm { id } => {
                 let reply = skill_reply(&client()?, &Request::apply_change(&id)).map_err(a2a)?;
                 self.say(render::applied_text(&reply));
