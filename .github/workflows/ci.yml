@@ -94,7 +94,7 @@ jobs:
         run: uv run python -m agentic_pipeline validate
 
   rust:
-    # ln-hub must build and pass on every OS it ships for; the toolchain is pinned in
+    # ln-agents must build and pass on every OS it ships for; the toolchain is pinned in
     # rust/rust-toolchain.toml.
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -131,4 +131,4 @@ jobs:
       - name: Release build and binary size
         run: |
           cargo build --release --locked
-          ls -l target/release/ln-hub target/release/ln-hub.exe 2>/dev/null || true
+          ls -l target/release/ln-agents target/release/ln-agents.exe 2>/dev/null || true

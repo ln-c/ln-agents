@@ -1,7 +1,7 @@
-"""The ln-hub coordinator: an agent that writes the run's Markdown and explains every stop.
+"""The ln-agents coordinator: an agent that writes the run's Markdown and explains every stop.
 
 The sealed JSON documents stay the record: the gates read them and an approval binds to
-them. The coordinator is a model, named in the project's `LN-HUB.md`, that turns each JSON
+them. The coordinator is a model, named in the project's `LN-AGENTS.md`, that turns each JSON
 document into a readable Markdown *view*, writes a summary of every stop (what happened, why
 a human is needed), and answers questions from those views. It has no authority:
 
@@ -17,7 +17,7 @@ a human is needed), and answers questions from those views. It has no authority:
 * a model that cannot be used, or a reply that leaves out an identifier of the record, makes
   the view fall back to code (raw record, or the facts), so a human always has a Markdown file.
 
-The model is chosen by name in `LN-HUB.md` from the catalog models whose registry entry
+The model is chosen by name in `LN-AGENTS.md` from the catalog models whose registry entry
 declares the `coordination` capability (human-owned policy).
 """
 
@@ -42,7 +42,7 @@ from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.readiness import Report, Status
 from agentic_pipeline.registry import backend_location
 
-SETUP_FILE = "LN-HUB.md"
+SETUP_FILE = "LN-AGENTS.md"
 VIEWS_DIR = "views"
 CAPABILITY = "coordination"
 STAGE = "VIEW"  # the `state` of the coordinator's own provenance events
@@ -126,7 +126,7 @@ class CoordinatorError(Exception):
 
 
 class SetupError(Exception):
-    """LN-HUB.md exists but cannot be read as a coordinator setup."""
+    """LN-AGENTS.md exists but cannot be read as a coordinator setup."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +138,7 @@ class Setup:
 
 
 def load_setup(root: Path) -> Setup | None:
-    """The project's `LN-HUB.md` (front matter names the model), or None if it has none."""
+    """The project's `LN-AGENTS.md` (front matter names the model), or None if it has none."""
     path = root / SETUP_FILE
     try:
         text = path.read_text(encoding="utf-8")
@@ -405,7 +405,7 @@ class Coordinator:
             f"> Written by {who} as a readable copy of `{source.name}` ({_digest(source)}). "
             "The JSON is the record; if they differ, trust the JSON."
         )
-        return f"<!-- ln-hub view kind={kind} source={_digest(source)} -->\n{label}\n{note}\n"
+        return f"<!-- ln-agents view kind={kind} source={_digest(source)} -->\n{label}\n{note}\n"
 
     def _fenced(self, source: Path) -> str:
         record = json.loads(source.read_text(encoding="utf-8"))
@@ -590,7 +590,7 @@ class Coordinator:
             account = f"No coordinator summary ({why or 'none available'}). The facts:\n\n{facts}"
         by = f"`{who}`" if who else "code"
         path.write_text(
-            f"<!-- ln-hub stop run={self.run_id} node={info.node} kind={info.kind} -->\n"
+            f"<!-- ln-agents stop run={self.run_id} node={info.node} kind={info.kind} -->\n"
             f"# {info.node}: {TITLES.get(info.kind, info.kind)}\n\n"
             f"> Summary written by {by}; the commands and file list below are written by code.\n\n"
             f"{sanitize(account, quote=True) if who else account}\n"

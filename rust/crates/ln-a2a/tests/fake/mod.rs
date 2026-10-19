@@ -1,6 +1,6 @@
 //! A fake `ln-pipeline` A2A server for tests: one thread on 127.0.0.1:<free port> that answers
 //! each HTTP request with whatever the test's handler returns, and records what it was sent.
-//! Shared by ln-a2a's and ln-hub's tests (`#[path]`-included).
+//! Shared by ln-a2a's and ln-agents's tests (`#[path]`-included).
 
 #![allow(dead_code)]
 
@@ -200,7 +200,7 @@ pub fn token_file(dir: &Path) -> PathBuf {
 
 /// A fresh empty directory for one test.
 pub fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ln-hub-test-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("ln-agents-test-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir

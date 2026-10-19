@@ -1,6 +1,6 @@
 [package]
 name = "ln-tools"
-description = "Built-in file tools and the MCP client used by ln-hub harness"
+description = "Built-in file tools and the MCP client used by ln-agents harness"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

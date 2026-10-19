@@ -1,4 +1,4 @@
-//! ACP (Agent Client Protocol) agent side of `ln-hub acp`: editors such as Zed and JetBrains
+//! ACP (Agent Client Protocol) agent side of `ln-agents acp`: editors such as Zed and JetBrains
 //! start it and talk JSON-RPC over stdio. Every prompt is a slash command run as code over one
 //! A2A skill of `ln-pipeline` (see [`commands`]); nothing here approves, decides or resumes a
 //! run by itself, and editor-supplied MCP servers are accepted and ignored (pipeline tools are
@@ -66,7 +66,7 @@ impl Config {
             .clone()
             .unwrap_or_else(|| cwd.join(DEFAULT_TOKEN_FILE));
         let endpoint = Endpoint::from_token_file(&self.url, &path).map_err(|e| {
-            format!("{e}. Start the orchestrator with `python -m agentic_pipeline serve a2a`, or set --token-file / LN_HUB_TOKEN_FILE.")
+            format!("{e}. Start the orchestrator with `python -m agentic_pipeline serve a2a`, or set --token-file / LN_AGENTS_TOKEN_FILE.")
         })?;
         Ok(Client::new(endpoint))
     }
@@ -209,7 +209,7 @@ impl Agent {
             .session_capabilities(SessionCapabilities::new().list(SessionListCapabilities::new()));
         let response = InitializeResponse::new(ProtocolVersion::V1)
             .agent_capabilities(capabilities)
-            .agent_info(Implementation::new("ln-hub", env!("CARGO_PKG_VERSION")));
+            .agent_info(Implementation::new("ln-agents", env!("CARGO_PKG_VERSION")));
         Ok(Some(to_value(response)))
     }
 
@@ -447,7 +447,7 @@ impl Prompt {
         match command {
             Command::Help => self.say(commands::help(mode)),
             Command::HumanOnly(name) => self.say(format!(
-                "`/{name}` is not something ln-hub does.{}\n",
+                "`/{name}` is not something ln-agents does.{}\n",
                 commands::HUMAN_ONLY
             )),
             Command::Runs => {
@@ -741,7 +741,7 @@ impl Cancellation {
 
 fn cancel_task(client: &Client, task: &str) {
     if let Err(e) = client.cancel_task(task) {
-        eprintln!("ln-hub: cancelling task {task}: {e}");
+        eprintln!("ln-agents: cancelling task {task}: {e}");
     }
 }
 

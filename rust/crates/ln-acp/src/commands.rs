@@ -99,7 +99,7 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
             "[run]",
             "The evidence a human signs at H1, R1 or R2",
         ),
-        ("help", "", "What ln-hub can and cannot do"),
+        ("help", "", "What ln-agents can and cannot do"),
     ];
     if mode == Mode::Design {
         commands.extend([
@@ -237,7 +237,7 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
 
 pub fn help(mode: Mode) -> String {
     let mut text = String::from(
-        "ln-hub drives the ln-pipeline orchestrator. It runs these commands as code. Anything \
+        "ln-agents drives the ln-pipeline orchestrator. It runs these commands as code. Anything \
          else you type is a question for the coordinator model: it answers in text from the \
          run's Markdown views, and cannot start, advance, sign or resume anything.\n\n",
     );

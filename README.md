@@ -26,7 +26,7 @@ Build status of every graph state, checked against `DEFAULT_HANDLERS` in `src/ag
 
 ## Getting started
 
-Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/); `ln-hub` in `rust/` needs `rustup` (it installs the pinned toolchain). The control plane (`validate`, `run init/step/status/approve/decide`, the gates and approvals) runs on Linux, macOS and Windows; CI tests it on all three. Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, so for now only on Linux (elsewhere readiness reports the sandbox UNVERIFIED and those stages block), plus `git` and `ssh-keygen` (OpenSSH 8.2+ for `-Y`). Local models run through a llama.cpp `llama-server` or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`). You do not start the llama.cpp servers by hand: each local provider's `launch` in the registry is how dispatch starts it when a stage needs it and it is not running, and it is stopped again after the stage (a server you started yourself is used and left running). Logs go to `<runs-dir>/.servers/<provider>.log`; a server that does not come up in time refuses the stage before anything is spent, and `preflight` shows a stopped one as "started on demand". `launch` must bind the loopback host and port the readiness probe checks (registry rule R19) and pin `-dev Vulkan0` (with `ggml-openvino` installed a bare `llama-server` picks the OpenVINO CPU backend). The decision model Clef-Flash runs on port 8081 with a 8192-token batch, because it answers only on `/v1/systemone` and judges each critique finding at `A2J` in one batch.
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/); `ln-agents` in `rust/` needs `rustup` (it installs the pinned toolchain). The control plane (`validate`, `run init/step/status/approve/decide`, the gates and approvals) runs on Linux, macOS and Windows; CI tests it on all three. Running model stages and CI checks also needs `bubblewrap` (`bwrap`) with unprivileged user namespaces, so for now only on Linux (elsewhere readiness reports the sandbox UNVERIFIED and those stages block), plus `git` and `ssh-keygen` (OpenSSH 8.2+ for `-Y`). Local models run through a llama.cpp `llama-server` or an OpenVINO Model Server on loopback (see `providers` in `policy/model_registry.yaml`). You do not start the llama.cpp servers by hand: each local provider's `launch` in the registry is how dispatch starts it when a stage needs it and it is not running, and it is stopped again after the stage (a server you started yourself is used and left running). Logs go to `<runs-dir>/.servers/<provider>.log`; a server that does not come up in time refuses the stage before anything is spent, and `preflight` shows a stopped one as "started on demand". `launch` must bind the loopback host and port the readiness probe checks (registry rule R19) and pin `-dev Vulkan0` (with `ggml-openvino` installed a bare `llama-server` picks the OpenVINO CPU backend). The decision model Clef-Flash runs on port 8081 with a 8192-token batch, because it answers only on `/v1/systemone` and judges each critique finding at `A2J` in one batch.
 
 ```bash
 uv sync --all-groups
@@ -35,7 +35,7 @@ uv run pytest                                 # tests; the sandbox tests skip wh
 uv run python -m agentic_pipeline validate    # graph, policy and model-registry invariants
 uv run ruff check . && uv run ruff format --check .
 
-# ln-hub (rust/, toolchain pinned in rust/rust-toolchain.toml); CI runs it on Linux, Windows and macOS
+# ln-agents (rust/, toolchain pinned in rust/rust-toolchain.toml); CI runs it on Linux, Windows and macOS
 cd rust && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
 ```
 
@@ -68,7 +68,7 @@ uv run python -m agentic_pipeline run resume  <run_id> --by WHO --reason TEXT   
 
 A run that dispatches a model stage and fails (quota, auth, an adapter error) pauses; `resume` records a human decision to continue. `step` reports when it blocked and why. An operation that must reply with a JSON object (`output_schema` in the registry: `A1`, `A2`, `A3`, `A3R`) is checked as soon as it answers, the way the gates will read it: a reply that is not one object of its schema is logged as `invalid_output`, set aside under the attempt's `rejected/`, and that operation alone is asked again with the same inputs. A re-ask charges no budget; after two re-asks (`OUTPUT_RETRIES` in `dispatch.py`) the run pauses.
 
-`serve a2a` exposes the same runs to other agents (such as `ln-hub`) as the A2A agent `ln-pipeline`. It needs the `a2a` extra (`uv sync --extra a2a`), binds a literal loopback address only, and gates everything but the agent card behind a bearer token (created with mode 0600 if missing).
+`serve a2a` exposes the same runs to other agents (such as `ln-agents`) as the A2A agent `ln-pipeline`. It needs the `a2a` extra (`uv sync --extra a2a`), binds a literal loopback address only, and gates everything but the agent card behind a bearer token (created with mode 0600 if missing).
 
 ```bash
 uv run python -m agentic_pipeline serve a2a [--runs-dir D] [--host 127.0.0.1] [--port 8420] [--token-file F]
@@ -82,7 +82,7 @@ A request is one A2A message with one data part naming a skill:
 - `approval_document` (`decision`, `approver`, `reason`, and `candidate` for a design approval);
 - `ask` (`question`, and `run_id` unless the task has one): the coordinator's text answer, from the run's Markdown views (see [The coordinator](#the-coordinator)).
 
-Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume` (`ln-hub` opens a terminal for that, see below).
+Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume` (`ln-agents` opens a terminal for that, see below).
 
 A request is checked before any task is touched. A refused request is a JSON-RPC error and leaves every task as it was. `status`, `evidence` and `approval_document` are answered with a message, even when the request names a task. A message that names a task without a `contextId` gets the task's context.
 
@@ -92,29 +92,29 @@ A request is checked before any task is touched. A refused request is a JSON-RPC
 - `TASK_STATE_INPUT_REQUIRED` when the run is otherwise paused, blocked or out of steps (it is resumable);
 - `TASK_STATE_COMPLETED` at a terminal state.
 
-Because one A2A state covers several stops, the final status message also carries `{"run_status", "node"}`: `awaiting_human`, `paused`, `blocked`, `out_of_steps`, `stopped` or `finished`. A blocked step spent nothing. Advance retries it, but it blocks again until its cause is fixed. `ln-hub` says a run "needs a human" only for `awaiting_human`.
+Because one A2A state covers several stops, the final status message also carries `{"run_status", "node"}`: `awaiting_human`, `paused`, `blocked`, `out_of_steps`, `stopped` or `finished`. A blocked step spent nothing. Advance retries it, but it blocks again until its cause is fixed. `ln-agents` says a run "needs a human" only for `awaiting_human`.
 
 Tasks are stored under `<runs-dir>/.a2a/tasks` and answered from the run's own state after a restart.
 
-`ln-hub acp` puts those skills in an editor that speaks ACP (Zed, JetBrains, Neovim plugins). The editor starts it and talks JSON-RPC over stdio. It calls the A2A server above, which must be running.
+`ln-agents acp` puts those skills in an editor that speaks ACP (Zed, JetBrains, Neovim plugins). The editor starts it and talks JSON-RPC over stdio. It calls the A2A server above, which must be running.
 
 ```bash
-cd rust && cargo build --release      # target/release/ln-hub (about 1.7 MB; about 6 MB resident when idle)
-ln-hub acp [--a2a-url http://127.0.0.1:8420/a2a/jsonrpc] [--token-file F]
+cd rust && cargo build --release      # target/release/ln-agents (about 1.7 MB; about 6 MB resident when idle)
+ln-agents acp [--a2a-url http://127.0.0.1:8420/a2a/jsonrpc] [--token-file F]
 ```
 
-The token file defaults to `<session cwd>/.runs/.a2a/token`, the server's default when the editor opens this repository. You can also set it, and the URL, through `LN_HUB_TOKEN_FILE` and `LN_HUB_A2A_URL`. The URL must be a literal loopback address, and on Unix a token file that others can read is refused. To use it from Zed, add it under `agent_servers` with the command `ln-hub` and the arguments `["acp"]`.
+The token file defaults to `<session cwd>/.runs/.a2a/token`, the server's default when the editor opens this repository. You can also set it, and the URL, through `LN_AGENTS_TOKEN_FILE` and `LN_AGENTS_A2A_URL`. The URL must be a literal loopback address, and on Unix a token file that others can read is refused. To use it from Zed, add it under `agent_servers` with the command `ln-agents` and the arguments `["acp"]`.
 
 Every prompt is a slash command that runs as code; free text gets the help.
 - `/runs`, `/status [run]` and `/evidence [run]` work in either mode.
 - Anything you type that is not a slash command is a question for the coordinator model (see [The coordinator](#the-coordinator)), asked about the session's run. The answer is text, from the run's Markdown views; it starts, advances, signs and resumes nothing, and `/help` or `help` shows the commands.
 - `/start <run> <entry_spec.json>`, `/advance [run]` and `/approval-doc <decision>[:<candidate>] <approver> <reason>` need the `design` mode. A design approval names its candidate, e.g. `approve_design_and_no_security_veto:synthesis_sealed`. A session starts in the read-only `status` mode.
 - `/approval-doc` asks the editor once (allow or reject, never "always") before writing the unsigned document. It then shows the `ssh-keygen` and `run decide` commands you could run by hand, and remembers the document for `/decide`.
-- `/decide` (design mode) opens a terminal window for the document `/approval-doc` wrote in this session. ln-hub does not sign or decide: the window runs `ln-hub decide`, which shows the run, node, decision, candidate, approver and reason, asks you to type the run id, runs `ssh-keygen -Y sign` so it asks for your passphrase there, and then runs `run decide`, which verifies the signature against `policy/approvers.yaml` as before. The window drops `SSH_AUTH_SOCK` and `SSH_ASKPASS_REQUIRE`, so a key loaded in an ssh-agent still asks for its passphrase. A key without a passphrase is protected only by the typed run id. An earlier `.sig` next to the document is set aside while signing and put back if the signing fails.
+- `/decide` (design mode) opens a terminal window for the document `/approval-doc` wrote in this session. ln-agents does not sign or decide: the window runs `ln-agents decide`, which shows the run, node, decision, candidate, approver and reason, asks you to type the run id, runs `ssh-keygen -Y sign` so it asks for your passphrase there, and then runs `run decide`, which verifies the signature against `policy/approvers.yaml` as before. The window drops `SSH_AUTH_SOCK` and `SSH_ASKPASS_REQUIRE`, so a key loaded in an ssh-agent still asks for its passphrase. A key without a passphrase is protected only by the typed run id. An earlier `.sig` next to the document is set aside while signing and put back if the signing fails.
 - `/resume <who> <reason>` (design mode) opens a terminal that runs `run resume`, which shows why the run paused and asks you to type the run id. A resume is still self-asserted (`--by`); it has no passphrase.
 - `/approve`, `/sign` and `/reject` are not commands.
 
-The window is opened with `LN_HUB_TERMINAL` (the words that open one, such as `kitty` or `alacritty -e`), else `$TERMINAL`, `xdg-terminal-exec` or the first of foot, kitty, alacritty, wezterm, ghostty, gnome-terminal, konsole, xfce4-terminal and xterm on `PATH`. It runs the orchestrator as `LN_HUB_PIPELINE` (default `uv run python -m agentic_pipeline`), signs with `LN_HUB_SSH_KEY` (default `~/.ssh/id_ed25519_ln_approval`, the approval key), and `/resume` looks for runs in `LN_HUB_RUNS_DIR` (default `<session cwd>/.runs`). macOS and Windows have no known emulator yet, so set `LN_HUB_TERMINAL` there. If no window can be opened, ln-hub prints the commands to run by hand.
+The window is opened with `LN_AGENTS_TERMINAL` (the words that open one, such as `kitty` or `alacritty -e`), else `$TERMINAL`, `xdg-terminal-exec` or the first of foot, kitty, alacritty, wezterm, ghostty, gnome-terminal, konsole, xfce4-terminal and xterm on `PATH`. It runs the orchestrator as `LN_AGENTS_PIPELINE` (default `uv run python -m agentic_pipeline`), signs with `LN_AGENTS_SSH_KEY` (default `~/.ssh/id_ed25519_ln_approval`, the approval key), and `/resume` looks for runs in `LN_AGENTS_RUNS_DIR` (default `<session cwd>/.runs`). macOS and Windows have no known emulator yet, so set `LN_AGENTS_TERMINAL` there. If no window can be opened, ln-agents prints the commands to run by hand.
 
 While a run advances, the editor shows each state as a plan entry and each model call as a tool call. When the run stops for a human, and on `/evidence`, it shows the choices and the candidates at a glance, with a link that opens the full report. When a run stops, it also shows the coordinator's summary of the stop, with a link that opens the file. Cancelling ends the turn at once and cancels the task, and the run stops after its current step. The session list holds the runs driven over A2A (`run/<id>`), and loading one shows its status. MCP servers that the editor offers are ignored: pipeline tools are policy.
 
@@ -130,7 +130,7 @@ Only the keys listed in `policy/approvers.yaml` count. A model process has no wa
 
 ### The coordinator
 
-Every sealed document and gate record is JSON, which the gates read and an approval binds to. A model, the **coordinator**, writes the readable version: a Markdown view of each document, a summary of every stop, and answers to questions. It is named in the project's `LN-HUB.md`:
+Every sealed document and gate record is JSON, which the gates read and an approval binds to. A model, the **coordinator**, writes the readable version: a Markdown view of each document, a summary of every stop, and answers to questions. It is named in the project's `LN-AGENTS.md`:
 
 ```markdown
 ---
@@ -144,7 +144,7 @@ Your instructions on tone and layout, in plain Markdown.
 - **What it cannot do:** start, advance, sign, resume or decide anything. The commands in a summary come from a fixed table in code; the model's text is never run or parsed into an action. The JSON stays the record: every view says so, and says which model wrote it.
 - **What checks it:** the same readiness, credential and data-class checks as a stage (a class that policy keeps off the cloud is refused before any call), and the subscription tool's sandbox. A reply that leaves out an identifier of its record is replaced by the raw record. With no coordinator, or when it fails, every file is still written, from code.
 - **Where it is logged:** in its own hash chain, `views/provenance_<run>.jsonl`, not the run's, because the evidence a human signs includes the run's provenance tip and an advisory call must not void an approval already written. It charges no budget and seals nothing.
-- **Policy:** which models may coordinate is human-owned: the `coordination` capability in `policy/model_registry.yaml`. `LN-HUB.md` only chooses among them.
+- **Policy:** which models may coordinate is human-owned: the `coordination` capability in `policy/model_registry.yaml`. `LN-AGENTS.md` only chooses among them.
 
 ### CI checks
 
@@ -188,7 +188,7 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 ├── agents/                    # role specifications (instructions, not a security boundary)
 ├── scripts/                   # MC/DC and mutation wrappers run by the CI checks
 ├── src/agentic_pipeline/      # runner, gates, adapters, sandbox, approvals, release
-├── rust/                      # ln-hub: ACP agent and A2A client; MCP tool loop and sandbox launcher to come
+├── rust/                      # ln-agents: ACP agent and A2A client; MCP tool loop and sandbox launcher to come
 └── tests/                     # invariant, policy, schema and runner tests
 ```
 

@@ -333,7 +333,7 @@ pub fn status_text(status: &Value) -> String {
 pub fn window_opened(run: &str, what: &str, command: &str) -> String {
     format!(
         "A terminal window is open for run `{run}`. In it you {what}: you type the run id there, \
-         and for a decision your SSH passphrase; ln-hub never sees either. When the window says \
+         and for a decision your SSH passphrase; ln-agents never sees either. When the window says \
          it is done, `/status` shows where the run is and `/advance` continues it.\n\n\
          Opened with `{command}`\n"
     )

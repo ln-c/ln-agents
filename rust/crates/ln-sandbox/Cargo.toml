@@ -1,6 +1,6 @@
 [package]
 name = "ln-sandbox"
-description = "Process isolation backends behind ln-hub sandbox"
+description = "Process isolation backends behind ln-agents sandbox"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

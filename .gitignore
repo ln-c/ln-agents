@@ -48,7 +48,7 @@ Thumbs.db
 .runs/
 mutants/
 
-# Rust build output (ln-hub)
+# Rust build output (ln-agents)
 rust/target/
 
 # Model conformance results: host evidence written by `models test`, not policy

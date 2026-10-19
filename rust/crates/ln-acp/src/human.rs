@@ -2,7 +2,7 @@
 //! `/decide` signs an approval document with the human's SSH key and records the decision,
 //! `/resume` records that a paused run may go on. This crate never starts a process: it only
 //! works out the words of the window ([`decide_args`], [`resume_args`]) and hands them to a
-//! [`Window`], which the `ln-hub` binary implements. What runs in the window shows what is at
+//! [`Window`], which the `ln-agents` binary implements. What runs in the window shows what is at
 //! stake, asks the human to type the run id, and lets `ssh-keygen` ask for the passphrase on that
 //! terminal; the orchestrator still verifies the signature against `policy/approvers.yaml` and
 //! takes the edge itself.
@@ -15,12 +15,12 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-/// What the window runs to reach the orchestrator when `LN_HUB_PIPELINE` names nothing else.
+/// What the window runs to reach the orchestrator when `LN_AGENTS_PIPELINE` names nothing else.
 pub const DEFAULT_PIPELINE: [&str; 5] = ["uv", "run", "python", "-m", "agentic_pipeline"];
-/// Where a session's runs live relative to its cwd when `LN_HUB_RUNS_DIR` names nothing else.
+/// Where a session's runs live relative to its cwd when `LN_AGENTS_RUNS_DIR` names nothing else.
 pub const DEFAULT_RUNS_DIR: &str = ".runs";
 
-/// Terminal emulators ln-hub can open, with the words that put the command to run after them.
+/// Terminal emulators ln-agents can open, with the words that put the command to run after them.
 const KNOWN: [(&str, &[&str]); 10] = [
     ("xdg-terminal-exec", &[]),
     ("foot", &[]),
@@ -34,7 +34,7 @@ const KNOWN: [(&str, &[&str]); 10] = [
     ("xterm", &["-e"]),
 ];
 
-/// Opens a terminal window running `ln-hub <args>` in `cwd` for the human; the command line it
+/// Opens a terminal window running `ln-agents <args>` in `cwd` for the human; the command line it
 /// ran, or why there is no window. Implemented by the binary, which alone may start a process.
 pub trait Window: Send + Sync + std::fmt::Debug {
     fn open(&self, cwd: &Path, args: &[String]) -> Result<String, String>;
@@ -46,22 +46,22 @@ pub struct NoWindow;
 
 impl Window for NoWindow {
     fn open(&self, _cwd: &Path, _args: &[String]) -> Result<String, String> {
-        Err("this ln-hub cannot open a terminal window".to_string())
+        Err("this ln-agents cannot open a terminal window".to_string())
     }
 }
 
 /// The machine's settings for these two commands (environment variables or flags of
-/// `ln-hub acp`); every field has a default.
+/// `ln-agents acp`); every field has a default.
 #[derive(Debug, Clone, Default)]
 pub struct Setup {
-    /// `LN_HUB_TERMINAL`: the words to put before the command to run, such as `kitty` or
+    /// `LN_AGENTS_TERMINAL`: the words to put before the command to run, such as `kitty` or
     /// `alacritty -e`. Unset: `$TERMINAL`, then `xdg-terminal-exec`, then a known emulator.
     pub terminal: Option<String>,
-    /// `LN_HUB_PIPELINE`: how the window runs the orchestrator's CLI, split on spaces.
+    /// `LN_AGENTS_PIPELINE`: how the window runs the orchestrator's CLI, split on spaces.
     pub pipeline: Vec<String>,
-    /// `LN_HUB_SSH_KEY`: the private key the human signs with.
+    /// `LN_AGENTS_SSH_KEY`: the private key the human signs with.
     pub key: Option<PathBuf>,
-    /// `LN_HUB_RUNS_DIR`: where `/resume` finds runs; `<session cwd>/.runs` when unset.
+    /// `LN_AGENTS_RUNS_DIR`: where `/resume` finds runs; `<session cwd>/.runs` when unset.
     pub runs_dir: Option<PathBuf>,
 }
 
@@ -96,7 +96,7 @@ impl Pending {
                 .ok_or_else(|| {
                     format!(
                         "the orchestrator's reply has no `{key}`; restart `serve a2a` with the \
-                         same version as ln-hub"
+                         same version as ln-agents"
                     )
                 })
         };
@@ -130,7 +130,7 @@ pub fn runs_dir_of(document: &Path, run: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// The words after `ln-hub` that make up the window for `/decide`.
+/// The words after `ln-agents` that make up the window for `/decide`.
 pub fn decide_args(
     setup: &Setup,
     run: &str,
@@ -156,7 +156,7 @@ pub fn decide_args(
     Ok(args)
 }
 
-/// The words after `ln-hub` that make up the window for `/resume`.
+/// The words after `ln-agents` that make up the window for `/resume`.
 pub fn resume_args(setup: &Setup, cwd: &Path, run: &str, by: &str, reason: &str) -> Vec<String> {
     let runs_dir = setup
         .runs_dir
@@ -218,7 +218,7 @@ pub fn terminal_words(
             found
         })
         .ok_or_else(|| {
-            "no terminal emulator was found; set LN_HUB_TERMINAL to the words that open one, \
+            "no terminal emulator was found; set LN_AGENTS_TERMINAL to the words that open one, \
              for example `kitty` or `alacritty -e`"
                 .to_string()
         })
@@ -242,7 +242,7 @@ pub fn display(words: &[String]) -> String {
         .join(" ")
 }
 
-/// What `ln-hub acp` hands to every session: how to open the human's windows.
+/// What `ln-agents acp` hands to every session: how to open the human's windows.
 pub type SharedWindow = Arc<dyn Window>;
 
 #[cfg(test)]
@@ -293,7 +293,7 @@ mod tests {
             ["gnome-terminal", "--"]
         );
         let error = terminal_words(&plain, None, &none).unwrap_err();
-        assert!(error.contains("LN_HUB_TERMINAL"), "{error}");
+        assert!(error.contains("LN_AGENTS_TERMINAL"), "{error}");
         let blank = Setup {
             terminal: Some("  ".into()),
             ..Setup::default()
