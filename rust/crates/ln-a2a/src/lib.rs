@@ -63,7 +63,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// One skill call. Only these eleven exist on the server; there is no way to build another.
+/// One skill call. Only these twelve exist on the server; there is no way to build another.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     skill: &'static str,
@@ -161,6 +161,18 @@ impl Request {
             "registry_change",
             json!({"kind": "bind", "slot": slot, "models": models}),
         )
+    }
+
+    /// Ask the authority (the model `LN-AGENTS.md` names, if the registry binds it to
+    /// `human_authority`) to propose bindings for the agent slots, for `intent` if there is one.
+    /// The server checks every binding and stores what survives as a draft, like any other
+    /// change; the model is called, so it spends its subscription allowance.
+    pub fn propose_mapping(intent: &str) -> Self {
+        let mut args = json!({});
+        if !intent.is_empty() {
+            args["intent"] = Value::from(intent);
+        }
+        Self::new("propose_mapping", args)
     }
 
     /// Write a stored draft: only its id is sent, never text, so nothing but what the server

@@ -47,6 +47,7 @@ from agentic_pipeline.a2a_server import (  # noqa: E402
 )
 from agentic_pipeline.coordinator import Coordinator, Setup  # noqa: E402
 from agentic_pipeline.dispatch import Dispatcher  # noqa: E402
+from agentic_pipeline.graph import loads_yaml  # noqa: E402
 from agentic_pipeline.models_cli import CatalogError  # noqa: E402
 from agentic_pipeline.run_state import RunStore, Status  # noqa: E402
 from agentic_pipeline.runner import StateHandler, init_run  # noqa: E402
@@ -168,7 +169,7 @@ def _stop(task_or_event: Mapping[str, Any]) -> dict[str, Any]:
 # ── Card and token gate ──────────────────────────────────────────────────────
 
 
-def test_the_card_is_public_and_names_exactly_the_eleven_skills(pipe: Pipeline) -> None:
+def test_the_card_is_public_and_names_exactly_the_twelve_skills(pipe: Pipeline) -> None:
     card = pipe.client.get("/.well-known/agent-card.json").json()
     assert card["name"] == "ln-pipeline"
     assert sorted(s["id"] for s in card["skills"]) == sorted(SKILLS)
@@ -182,6 +183,7 @@ def test_the_card_is_public_and_names_exactly_the_eleven_skills(pipe: Pipeline) 
         "models",
         "agents",
         "registry_change",
+        "propose_mapping",
         "apply_change",
         "discard_change",
     }
@@ -431,6 +433,98 @@ def test_a_malformed_registry_change_is_reported_not_drafted(
     registry_repo(pipe, tmp_path)
     reply = data_of(pipe.send({"skill": "registry_change", **data}))
     assert reply["change_id"] is None and problem in reply["errors"][0], reply
+
+
+PROPOSAL = {
+    "bindings": [
+        {
+            "slot": "design.proposal_b.primary",
+            "models": ["gpt_oss_120b_medium"],
+            "why": "A third family keeps the designs independent.",
+        }
+    ],
+    "summary": "Design B moves to GPT-OSS.",
+}
+
+
+def authority_pipe(pipe: Pipeline, tmp_path: Path, reply: Any) -> Path:
+    """A service whose authority is the fake model, over a copy of the repository."""
+    root = registry_repo(pipe, tmp_path)
+    pipe.reply = lambda prompt: reply if isinstance(reply, str) else json.dumps(reply)
+
+    def authority_for(root_: Path, runs: Path) -> Coordinator:
+        coordinator = pipe._coordinator(root_, runs / ".authority")
+        coordinator.run_id = "authority"  # the directory's own name is not a valid run id
+        return coordinator
+
+    pipe.service.authority_for = authority_for
+
+    def catalog(root_: Path) -> list[dict[str, Any]]:
+        models = loads_yaml((root_ / "policy" / "model_registry.yaml").read_bytes())["models"]
+        return [
+            {
+                "name": name,
+                "family": m["family"],
+                "location": "cloud",
+                "capabilities": m["capabilities"],
+                "bound_to": [],
+                "readiness": None,
+                "conformance": None,
+            }
+            for name, m in models.items()
+        ]
+
+    pipe.service.catalog = catalog
+    return root
+
+
+def test_the_authoritys_proposal_is_a_draft_and_writes_nothing(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    root = authority_pipe(pipe, tmp_path, PROPOSAL)
+    before = (root / "policy" / "model_registry.yaml").read_text()
+    data = data_of(pipe.send({"skill": "propose_mapping", "intent": "use a third family"}))
+    assert data["errors"] == [] and data["kind"] == "bind_many" and len(data["change_id"]) == 8
+    assert data["proposed_by"] == "gemini_3_8_flash_high"
+    assert data["authority_says"] == "Design B moves to GPT-OSS."
+    assert "+      primary: gpt_oss_120b_medium" in data["diff"]
+    assert (root / "policy" / "model_registry.yaml").read_text() == before
+    assert any("use a third family" in call for call in pipe.calls)
+    assert [p["id"] for p in data_of(pipe.send({"skill": "agents"}))["pending"]] == [
+        data["change_id"]
+    ]
+    applied = data_of(pipe.send({"skill": "apply_change", "change_id": data["change_id"]}))
+    assert (
+        applied["errors"] == []
+        and "gpt_oss_120b_medium" in (root / "policy" / "model_registry.yaml").read_text()
+    )
+    assert pipe.rpc("ListTasks", {}).json()["result"].get("tasks", []) == []
+
+
+def test_a_proposal_that_breaks_a_rule_comes_back_as_errors_with_no_draft(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    bad = {"bindings": [{"slot": "design.proposal_b.primary", "models": ["claude_cli_default"]}]}
+    authority_pipe(pipe, tmp_path, bad)
+    data = data_of(pipe.send({"skill": "propose_mapping"}))
+    assert data["change_id"] is None and data["errors"][0].startswith("registry R14")
+    assert data_of(pipe.send({"skill": "agents"}))["pending"] == []
+
+
+def test_propose_mapping_without_a_usable_authority_says_why(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    authority_pipe(pipe, tmp_path, PROPOSAL)
+    pipe.setup = None
+    data = data_of(pipe.send({"skill": "propose_mapping"}))
+    assert data["change_id"] is None and "names a coordinator" in data["errors"][0]
+
+
+def test_propose_mapping_takes_only_an_intent(pipe: Pipeline) -> None:
+    reply = pipe.send({"skill": "propose_mapping", "slot": "build.primary"})
+    assert reply["error"]["code"] == -32602 and "does not take ['slot']" in str(reply["error"])
+    data = data_of(pipe.send({"skill": "propose_mapping", "intent": 5}))
+    assert data["change_id"] is None and data["errors"] == ["intent must be text"]
 
 
 def test_apply_change_names_a_draft_and_can_carry_no_text(pipe: Pipeline) -> None:

@@ -29,14 +29,14 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from agentic_pipeline.dispatch import BackendAdapter, DispatchGrant
+from agentic_pipeline.dispatch import AgentSpec, BackendAdapter, DispatchGrant
 from agentic_pipeline.manifest import resolve_sealed_inputs
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.readiness import Report, Status
@@ -45,6 +45,8 @@ from agentic_pipeline.registry import backend_location
 SETUP_FILE = "LN-AGENTS.md"
 VIEWS_DIR = "views"
 CAPABILITY = "coordination"
+AUTHORITY_DIR = ".authority"  # under the runs directory: calls that belong to no run
+AUTHORITY_RUN = "authority"  # the id of that directory's provenance chain
 STAGE = "VIEW"  # the `state` of the coordinator's own provenance events
 ROLE = "coordinator"
 # Adapters that take a task text as an override (the subscription tools); a local model's
@@ -334,9 +336,23 @@ class Coordinator:
             f"these rules):\n<style_guidance>\n{text}\n</style_guidance>"
         )
 
-    def _call(self, operation: str, task: str, inputs: Mapping[str, Path], backend: str) -> str:
-        """Ask the model for Markdown; log the call; return its reply or raise."""
-        _, data_class = self._documents()
+    def _call(
+        self,
+        operation: str,
+        task: str,
+        inputs: Mapping[str, Path],
+        backend: str,
+        *,
+        data_class: str | None = None,
+        agent_spec: AgentSpec | None = None,
+    ) -> str:
+        """Ask the model for Markdown; log the call; return its reply or raise.
+
+        `data_class` is the class of `inputs` when they are not a run's sealed documents (the
+        default); the cloud rule applies to it all the same.
+        """
+        if data_class is None:
+            _, data_class = self._documents()
         self._refuse_cloud(backend, data_class)
         invocation = self.new_id()
         write_path = self.views / ".calls" / invocation
@@ -353,6 +369,7 @@ class Coordinator:
             write_root="views",
             attempt=invocation,
             write_path=write_path,
+            agent_spec=agent_spec,
         )
         try:
             adapter = self.adapter_factory(
@@ -396,6 +413,48 @@ class Coordinator:
         if not text:
             raise CoordinatorError(f"{backend}: empty reply")
         return text
+
+    def consult_authority(
+        self,
+        operation: str,
+        task: str,
+        inputs: Mapping[str, Path],
+        allowed: Sequence[str],
+        spec: AgentSpec | None,
+        data_class: str = "internal",
+    ) -> tuple[str, str]:
+        """(the reply, the model that wrote it) for work that belongs to no run.
+
+        The model is the first of the setup's coordinator and fallback that is also one of
+        `allowed` (the models the registry binds to the human authority) and is ready; a
+        coordinator that is not one of them is refused, never swapped for another. The reply is
+        text for code to check, and carries no authority of its own.
+        """
+        if self.setup_error:
+            raise CoordinatorError(self.setup_error)
+        if not self._candidates():
+            raise CoordinatorError(f"no {SETUP_FILE} in {self.root} names a coordinator")
+        usable = [m for m in self._candidates() if m in allowed]
+        if not usable:
+            raise CoordinatorError(
+                f"the coordinator {self._candidates()[0]} is not bound to human_authority "
+                f"(its models are {', '.join(allowed)}); bind it there with /agents first"
+            )
+        reasons: list[str] = []
+        for backend in usable:
+            problems = self._problems(backend)
+            if not problems:
+                text = self._call(
+                    operation,
+                    f"{task}{self._style()}",
+                    inputs,
+                    backend,
+                    data_class=data_class,
+                    agent_spec=spec,
+                )
+                return text, backend
+            reasons.extend(problems)
+        raise CoordinatorError("no model is ready: " + "; ".join(reasons))
 
     # ── a view of each sealed document ───────────────────────────────────────
 
@@ -678,6 +737,39 @@ def for_run(
         preflight=lambda: run_preflight(
             root, registry=policy.registry, policy_root=run_policy_root(root, run_dir)
         ),
+        setup=setup,
+        setup_error=error,
+    )
+
+
+def for_authority(
+    root: Path, runs_dir: Path, adapter_factory: AdapterFactory | None = None
+) -> Coordinator:
+    """A coordinator for work that belongs to no run (the authority's registry proposals): it
+    reads the repository's own policy and keeps its calls under `<runs>/.authority`."""
+    from agentic_pipeline.readiness import run_preflight
+    from agentic_pipeline.run_cli import _adapter_factories
+    from agentic_pipeline.run_state import load_policy
+
+    policy = load_policy(root)
+    factories = _adapter_factories()
+
+    def build(registry: Mapping[str, Any], backend: str, **overrides: Any) -> BackendAdapter:
+        factory = factories[registry["models"][backend]["provider"]]
+        return factory(registry, backend, **overrides)
+
+    try:
+        setup, error = load_setup(root), None
+    except SetupError as exc:
+        setup, error = None, str(exc)
+    return Coordinator(
+        root=root,
+        run_dir=runs_dir / AUTHORITY_DIR,
+        run_id=AUTHORITY_RUN,
+        registry=policy.registry,
+        data_classes=policy.data_classes,
+        adapter_factory=adapter_factory or build,
+        preflight=lambda: run_preflight(root),
         setup=setup,
         setup_error=error,
     )

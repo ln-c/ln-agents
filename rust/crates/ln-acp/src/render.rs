@@ -456,7 +456,21 @@ pub fn change_text(reply: &Value) -> String {
         return text;
     };
     let summary = reply.get("summary").and_then(Value::as_str).unwrap_or("");
-    let mut text = format!("\n**{summary}**\n\n");
+    let mut text = String::from("\n");
+    if let Some(model) = reply.get("proposed_by").and_then(Value::as_str) {
+        text.push_str(&format!(
+            "Proposed by `{model}`, acting as the authority. It only advises: code checked every \
+             binding, and you decide.\n\n"
+        ));
+    }
+    text.push_str(&format!("**{summary}**\n\n"));
+    if let Some(says) = reply
+        .get("authority_says")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        text.push_str(&format!("- the authority says: {says}\n"));
+    }
     for note in reply
         .get("notes")
         .and_then(Value::as_array)

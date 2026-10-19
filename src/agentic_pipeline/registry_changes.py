@@ -382,11 +382,13 @@ def _coordinators(root: Path) -> list[str]:
     return [m for m in (setup.coordinator, setup.fallback) if m] if setup else []
 
 
-def draft_bind(root: Path, runs_dir: Path, slot: str, models: Sequence[str]) -> Draft:
-    """Bind `slot` (e.g. `design.proposal_b.primary`) to `models`, a list for a list slot."""
-    old = _registry_bytes(root)
-    registry = _load(old)
-    by_slot = {s["slot"]: s for s in slots(registry)}
+def _plan_bind(
+    registry: Mapping[str, Any],
+    by_slot: Mapping[str, Mapping[str, Any]],
+    slot: str,
+    models: Sequence[str],
+) -> tuple[Mapping[str, Any], str | list[str]]:
+    """The slot's row and the value that binding `models` would give it, or why not."""
     row = by_slot.get(slot)
     if row is None:
         raise ChangeError(f"no slot {slot!r}; the slots are {sorted(by_slot)}")
@@ -402,27 +404,42 @@ def draft_bind(root: Path, runs_dir: Path, slot: str, models: Sequence[str]) -> 
     is_list = isinstance(row["value"], list)
     if not is_list and len(models) != 1:
         raise ChangeError(f"{slot} takes one model, not {len(models)}")
-    value: str | list[str] = models if is_list else models[0]
-    if value == row["value"]:
-        raise ChangeError(f"{slot} is already {value}")
-    path = slot.split(".")
-    expected = copy.deepcopy(registry)
+    return row, (models if is_list else models[0])
+
+
+def _set_slot(expected: dict[str, Any], slot: str, value: str | list[str]) -> None:
     node = expected["agents"]
+    path = slot.split(".")
     for key in path[:-1]:
         node = node[key]
     node[path[-1]] = value
+
+
+def _egress_notes(
+    registry: Mapping[str, Any], row: Mapping[str, Any], models: Sequence[str]
+) -> list[str]:
+    return [
+        f"{model} runs through {registry['models'][model]['provider']}: what {row['agent']} is "
+        "sent leaves this host (policy/data_classes.yaml still decides what may go)."
+        for model in models
+        if backend_location(registry, model) != "local"
+    ]
+
+
+def draft_bind(root: Path, runs_dir: Path, slot: str, models: Sequence[str]) -> Draft:
+    """Bind `slot` (e.g. `design.proposal_b.primary`) to `models`, a list for a list slot."""
+    old = _registry_bytes(root)
+    registry = _load(old)
+    row, value = _plan_bind(registry, {s["slot"]: s for s in slots(registry)}, slot, models)
+    if value == row["value"]:
+        raise ChangeError(f"{slot} is already {value}")
+    expected = copy.deepcopy(registry)
+    _set_slot(expected, slot, value)
     try:
-        new_text = registry_edit.set_slot(old.decode("utf-8"), path, value)
+        new_text = registry_edit.set_slot(old.decode("utf-8"), slot.split("."), value)
     except registry_edit.EditError as exc:
         raise ChangeError(str(exc)) from exc
-    notes = []
-    for model in models:
-        if backend_location(registry, model) != "local":
-            provider = registry["models"][model]["provider"]
-            notes.append(
-                f"{model} runs through {provider}: what {row['agent']} is sent leaves this host "
-                "(policy/data_classes.yaml still decides what may go)."
-            )
+    notes = _egress_notes(registry, row, [value] if isinstance(value, str) else value)
     if row["operations"]:
         notes.append(f"It serves {', '.join(row['operations'])}.")
     return _finish(
@@ -433,6 +450,62 @@ def draft_bind(root: Path, runs_dir: Path, slot: str, models: Sequence[str]) -> 
         notes=notes,
         old=old,
         new_text=new_text,
+        expected=expected,
+    )
+
+
+def draft_bind_many(
+    root: Path,
+    runs_dir: Path,
+    bindings: Sequence[tuple[str, Sequence[str]]],
+    *,
+    origin: str,
+    reasons: Mapping[str, str] | None = None,
+) -> Draft:
+    """Bind several slots at once, as one draft (the authority's proposal).
+
+    A binding that names a slot's current value is left out; a proposal that changes nothing,
+    names a slot twice, or breaks any rule is refused whole, so a draft is all or nothing.
+    `reasons` is the proposer's one-line explanation per slot, shown with the diff.
+    """
+    old = _registry_bytes(root)
+    registry = _load(old)
+    by_slot = {s["slot"]: s for s in slots(registry)}
+    seen = [slot for slot, _ in bindings]
+    if len(set(seen)) != len(seen):
+        raise ChangeError(
+            f"the proposal names a slot twice: {sorted(s for s in seen if seen.count(s) > 1)}"
+        )
+    text, expected = old.decode("utf-8"), copy.deepcopy(registry)
+    notes: list[str] = []
+    changed: list[str] = []
+    for slot, models in bindings:
+        row, value = _plan_bind(registry, by_slot, slot, models)
+        if value == row["value"]:
+            continue
+        _set_slot(expected, slot, value)
+        try:
+            text = registry_edit.set_slot(text, slot.split("."), value)
+        except registry_edit.EditError as exc:
+            raise ChangeError(str(exc)) from exc
+        changed.append(slot)
+        line = f"{slot}: {row['value']} -> {value}"
+        if row["operations"]:
+            line += f" (serves {', '.join(row['operations'])})"
+        notes.append(line)
+        if reasons and slot in reasons:
+            notes.append(f"Why ({origin}): {reasons[slot]}")
+        notes += _egress_notes(registry, row, [value] if isinstance(value, str) else value)
+    if not changed:
+        raise ChangeError("the proposal changes nothing: every slot it names already has that")
+    return _finish(
+        root,
+        runs_dir,
+        kind="bind_many",
+        summary=f"Bind {len(changed)} slot{'s' * (len(changed) != 1)} ({origin})",
+        notes=notes,
+        old=old,
+        new_text=text,
         expected=expected,
     )
 

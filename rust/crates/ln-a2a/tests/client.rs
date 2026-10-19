@@ -29,6 +29,7 @@ fn every_captured_reply_deserializes() {
             "models",
             "agents",
             "registry_change",
+            "propose_mapping",
             "apply_change",
             "discard_change",
             "approval_document"
@@ -43,6 +44,8 @@ fn every_captured_reply_deserializes() {
         "change.json",
         "change_refused.json",
         "change_remove.json",
+        "proposal.json",
+        "proposal_refused.json",
         "applied.json",
         "discarded.json",
         "approval_document.json",
@@ -136,7 +139,7 @@ fn a_token_file_others_can_read_is_refused() {
 }
 
 #[test]
-fn a_request_is_one_data_part_naming_one_of_the_eleven_skills() {
+fn a_request_is_one_data_part_naming_one_of_the_twelve_skills() {
     let message = Request::approval_document(
         "r",
         "approve_design_and_no_security_veto",
@@ -184,6 +187,7 @@ fn a_request_is_one_data_part_naming_one_of_the_eleven_skills() {
         Request::models(),
         Request::agents(),
         Request::add_model("p", "m", &[]),
+        Request::propose_mapping(""),
         Request::apply_change("deadbeef"),
         Request::discard_change("deadbeef"),
         Request::approval_document("r", "d", "a", "why", None),
@@ -240,6 +244,15 @@ fn registry_changes_name_fields_and_a_confirmation_carries_only_an_id() {
         json!({"skill": "discard_change", "change_id": "1eb25dbc"})
     );
     assert_eq!(sent(&Request::agents()), json!({"skill": "agents"}));
+    assert_eq!(
+        sent(&Request::propose_mapping("use only local models")),
+        json!({"skill": "propose_mapping", "intent": "use only local models"})
+    );
+    assert_eq!(
+        sent(&Request::propose_mapping("")),
+        json!({"skill": "propose_mapping"}),
+        "no intent, no field"
+    );
 }
 
 #[test]

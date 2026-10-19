@@ -8,13 +8,14 @@
 
 A request is one A2A message whose single data part names a skill: `start_run`, `advance`,
 `status`, `evidence`, `ask`, `approval_document`, `models`, `agents`, `registry_change`,
-`apply_change` or `discard_change`. Every skill calls the same code as the CLI. None of them can
-sign an approval, take a human edge or resume a paused run: a human signs with ssh-keygen and
-runs `run decide` (or `run resume`). An A2A message never approves.
+`propose_mapping`, `apply_change` or `discard_change`. Every skill calls the same code as the CLI.
+None of them can sign an approval, take a human edge or resume a paused run: a human signs with
+ssh-keygen and runs `run decide` (or `run resume`). An A2A message never approves.
 
 One policy file can change, in one way: `policy/model_registry.yaml`, through `registry_change`
-(a draft that code checks against every registry rule and stores with a diff, writing nothing)
-and `apply_change` (which takes a draft's id, never text, and writes it only if the file is
+(a draft that code checks against every registry rule and stores with a diff, writing nothing),
+`propose_mapping` (the same, with the bindings proposed by a model acting as the authority) and
+`apply_change` (which takes a draft's id, never text, and writes it only if the file is
 still the one the draft was made from). They add a model, claim capabilities for one, remove an
 unbound one, or bind an agent slot to a model; budgets, vetoes, approvers and the graph cannot
 be reached. ln-agents calls `apply_change` only for the `/confirm` a human types, and the edit
@@ -105,8 +106,9 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 
-from agentic_pipeline import registry_changes
+from agentic_pipeline import authority, registry_changes
 from agentic_pipeline.coordinator import Coordinator, StopInfo
+from agentic_pipeline.coordinator import for_authority as authority_coordinator
 from agentic_pipeline.coordinator import for_run as coordinator_for_run
 from agentic_pipeline.fsutil import WINDOWS, atomic_write_json
 from agentic_pipeline.models_cli import CatalogError, Deps, catalog_rows
@@ -149,6 +151,7 @@ SKILLS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"kind"}),
         frozenset({"provider", "model_id", "capabilities", "model", "models", "slot"}),
     ),
+    "propose_mapping": (frozenset(), frozenset({"intent"})),
     "apply_change": (frozenset({"change_id"}), frozenset()),
     "discard_change": (frozenset({"change_id"}), frozenset()),
     "approval_document": (
@@ -182,6 +185,13 @@ SKILL_TEXT = {
         "one the catalog has), remove an unbound model, or bind an agent slot to a model. Code "
         "checks it against every registry rule and stores it with a diff; nothing is written "
         "to policy/ until a human's apply_change."
+    ),
+    "propose_mapping": (
+        "Ask the authority (the model LN-AGENTS.md names, if the registry binds it to "
+        "human_authority) to propose which model serves which agent slot, optionally for a stated "
+        "intent. Code checks every binding against the registry's rules and stores what survives "
+        "as a draft with a diff, like registry_change; it writes nothing to policy/. Spends the "
+        "model's subscription allowance."
     ),
     "apply_change": (
         "Write a stored draft to policy/model_registry.yaml, if the file is still the one the "
@@ -228,6 +238,8 @@ class PipelineService:
     coordinator_for: Callable[[Path, Path], Coordinator] = coordinator_for_run
     # (root) -> the model catalog rows; raises CatalogError when the repository fails validation
     catalog: Callable[[Path], list[dict[str, Any]]] = lambda root: catalog_rows(root, Deps())
+    # (root, runs directory) -> the coordinator that acts as the authority outside any run
+    authority_for: Callable[[Path, Path], Coordinator] = authority_coordinator
     _registry_lock: threading.Lock = field(default_factory=threading.Lock)
     _converting: set[str] = field(default_factory=set)
     _converting_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -333,6 +345,32 @@ class PipelineService:
             return registry_changes.draft_remove_model(self.root, self.runs_dir, text("model"))
         models = texts("models") or ([text("model")] if "model" in fields else [])
         return registry_changes.draft_bind(self.root, self.runs_dir, text("slot"), models)
+
+    def propose_mapping(self, intent: str = "") -> dict[str, Any]:
+        """The authority's proposed bindings, checked by code and stored as a draft."""
+        if not isinstance(intent, str):
+            return {"change_id": None, "errors": ["intent must be text"]}
+        try:  # no lock: the model call takes a while, and a draft only adds a file
+            proposal = authority.propose_mapping(
+                self.root,
+                self.runs_dir,
+                intent,
+                self.authority_for(self.root, self.runs_dir),
+                self.catalog,
+            )
+        except (ChangeError, CatalogError) as exc:
+            return {"change_id": None, "errors": getattr(exc, "errors", [str(exc)])}
+        draft = proposal.draft
+        return {
+            "change_id": draft.change_id,
+            "kind": draft.kind,
+            "summary": draft.summary,
+            "notes": draft.notes,
+            "diff": draft.diff,
+            "proposed_by": proposal.model,
+            "authority_says": proposal.summary,
+            "errors": [],
+        }
 
     def apply_change(self, change_id: str) -> dict[str, Any]:
         """Write a stored draft: the human's `/confirm`. The caller names a draft, never text."""
@@ -563,7 +601,9 @@ ALLOWED_FIELDS: Mapping[str, frozenset[str]] = {
     "bind": frozenset({"slot", "model", "models"}),
 }
 # Answered outright, about the repository rather than a run.
-RUNLESS = frozenset({"models", "agents", "registry_change", "apply_change", "discard_change"})
+RUNLESS = frozenset(
+    {"models", "agents", "registry_change", "propose_mapping", "apply_change", "discard_change"}
+)
 
 
 def _request(message: Message | None) -> tuple[str, dict[str, Any]]:
