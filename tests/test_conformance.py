@@ -437,6 +437,33 @@ def test_models_discover_reports_each_provider_and_never_calls_a_model(
     assert "gemini_4_argon_high" in out and "known, unclaimed" in out
 
 
+def test_catalog_rows_describe_every_model_and_call_none(repo: Path) -> None:
+    adapter = FakeAdapter()
+    conformance.write_record(repo, run("qwen3_5_9b", adapter, repo / "w"))
+    adapter.calls = 0
+    rows = {r["name"]: r for r in models_cli.catalog_rows(repo, deps(adapter))}
+    assert adapter.calls == 0 and list(rows) == list(REGISTRY["models"])
+    qwen = rows["qwen3_5_9b"]
+    assert qwen["provider"] == "llamacpp_local" and qwen["model_id"] == "qwen3.5-9b"
+    assert qwen["family"] == "qwen3_5" and qwen["location"] == "local"
+    assert qwen["capabilities"] == ["classification", "code_generation"]
+    assert "E1.implementation_patch" in qwen["bound_to"]
+    assert qwen["readiness"] == "ready" and qwen["conformance"]["status"] == "ok"
+    assert rows["claude_cli_default"]["conformance"]["status"] == "missing"
+    # a model nothing is bound to says nothing about readiness or conformance
+    for name in ("clef_flash", "gemini_4_argon_high"):
+        assert rows[name]["bound_to"] == [] and rows[name]["readiness"] is None
+        assert rows[name]["conformance"] is None
+    assert rows["gemini_4_argon_high"]["capabilities"] == []
+
+
+def test_catalog_rows_refuse_a_repository_that_fails_validation(repo: Path) -> None:
+    broken = models_cli.Deps(preflight=lambda _root: Report(static_errors=["registry R1: broken"]))
+    with pytest.raises(models_cli.CatalogError) as caught:
+        models_cli.catalog_rows(repo, broken)
+    assert caught.value.errors == ["registry R1: broken"]
+
+
 def test_models_discover_cannot_vouch_for_a_provider_whose_adapter_is_unavailable(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

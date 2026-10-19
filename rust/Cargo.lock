@@ -694,10 +694,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ln-harness"
-version = "0.1.0"
-
-[[package]]
 name = "ln-agents"
 version = "0.1.0"
 dependencies = [
@@ -706,6 +702,10 @@ dependencies = [
  "ln-acp",
  "serde_json",
 ]
+
+[[package]]
+name = "ln-harness"
+version = "0.1.0"
 
 [[package]]
 name = "ln-sandbox"

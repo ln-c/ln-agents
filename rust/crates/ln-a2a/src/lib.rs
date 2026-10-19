@@ -63,7 +63,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// One skill call. Only these six exist on the server; there is no way to build another.
+/// One skill call. Only these seven exist on the server; there is no way to build another.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     skill: &'static str,
@@ -122,6 +122,12 @@ impl Request {
             args["run_id"] = Value::from(run_id);
         }
         Self::new("ask", args)
+    }
+
+    /// The model catalog of the repository's registry. It is about the repository, not a run,
+    /// so it takes no run id; read-only, and no model is called.
+    pub fn models() -> Self {
+        Self::new("models", json!({}))
     }
 
     pub fn skill(&self) -> &'static str {

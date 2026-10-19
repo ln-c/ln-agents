@@ -26,6 +26,7 @@ fn every_captured_reply_deserializes() {
             "status",
             "evidence",
             "ask",
+            "models",
             "approval_document"
         ]
     );
@@ -33,6 +34,7 @@ fn every_captured_reply_deserializes() {
         "status.json",
         "evidence.json",
         "ask.json",
+        "models.json",
         "approval_document.json",
     ] {
         let reply: SendMessageResponse = serde_json::from_value(result(name)).unwrap();
@@ -124,7 +126,7 @@ fn a_token_file_others_can_read_is_refused() {
 }
 
 #[test]
-fn a_request_is_one_data_part_naming_one_of_the_six_skills() {
+fn a_request_is_one_data_part_naming_one_of_the_seven_skills() {
     let message = Request::approval_document(
         "r",
         "approve_design_and_no_security_veto",
@@ -146,6 +148,18 @@ fn a_request_is_one_data_part_naming_one_of_the_six_skills() {
                 "decision": "approve_design_and_no_security_veto", "approver": "ln-c", "reason": "ok",
                 "candidate": "synthesis_sealed"})
     );
+    let models = Request::models().message();
+    let [part] = models.parts.as_slice() else {
+        panic!("one part")
+    };
+    let PartContent::Data(data) = &part.content else {
+        panic!("a data part")
+    };
+    assert_eq!(
+        data,
+        &json!({"skill": "models"}),
+        "the catalog is about the repository: no run id, no arguments"
+    );
     assert_eq!(
         Request::ask(Some("r"), "why?").message().parts.len(),
         1,
@@ -157,6 +171,7 @@ fn a_request_is_one_data_part_naming_one_of_the_six_skills() {
         Request::status("r"),
         Request::evidence("r"),
         Request::ask(None, "why?"),
+        Request::models(),
         Request::approval_document("r", "d", "a", "why", None),
     ]
     .iter()

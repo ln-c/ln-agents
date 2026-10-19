@@ -169,6 +169,7 @@ fn replaying() -> Fake {
             ("SendMessage", Some("status")) => Reply::json(fixture("status.json")),
             ("SendMessage", Some("evidence")) => Reply::json(fixture("evidence.json")),
             ("SendMessage", Some("ask")) => Reply::json(fixture("ask.json")),
+            ("SendMessage", Some("models")) => Reply::json(fixture("models.json")),
             ("SendMessage", Some("approval_document")) => {
                 Reply::json(fixture("approval_document.json"))
             }
@@ -221,7 +222,7 @@ fn a_new_session_is_read_only_and_ignores_the_editors_mcp_servers() {
         .iter()
         .map(|c| c["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["runs", "status", "evidence", "help"]);
+    assert_eq!(names, ["runs", "status", "evidence", "models", "help"]);
     assert!(fake.seen().is_empty(), "nothing reaches the orchestrator");
 }
 
@@ -312,6 +313,36 @@ fn nothing_that_changes_a_run_reaches_the_orchestrator_from_status_mode() {
         assert!(said(&messages).contains("read-only"), "{text}");
     }
     assert!(fake.seen().is_empty());
+}
+
+#[test]
+fn models_shows_the_catalog_in_status_mode_for_no_run() {
+    let fake = replaying();
+    let dir = scratch("acp-models");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "status");
+    let (messages, reply) = editor.prompt(&session, "/models");
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    // a model in use: where it runs, what it is bound to and what is not yet verified
+    assert!(text.contains("| `qwen3_5_9b` | llamacpp_local:qwen3.5-9b | qwen3_5 | local |"));
+    assert!(text.contains("C1.module_decomposition, D1.test_generation, E1.implementation_patch"));
+    assert!(text.contains("not ready: qwen3_5_9b.daemon UNVERIFIED"));
+    assert!(text.contains("| missing: no record |"), "{text}");
+    // the rest, by name: bindable ones show what they declare, unclaimed ones say they cannot bind
+    assert!(text.contains("`clef_flash` (classification)"));
+    assert!(text.contains("Known, unclaimed"));
+    assert!(text.contains("`gemini_4_argon_high`"));
+    let sent: Vec<Value> = fake
+        .seen()
+        .iter()
+        .filter_map(|s| s.data().cloned())
+        .collect();
+    assert_eq!(
+        sent,
+        [json!({"skill": "models"})],
+        "no run id, nothing else"
+    );
 }
 
 #[test]

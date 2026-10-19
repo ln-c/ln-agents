@@ -328,6 +328,113 @@ pub fn status_text(status: &Value) -> String {
     text
 }
 
+/// A `models` skill reply: the models something is bound to as a table, then the rest by name.
+pub fn models_text(catalog: &Value) -> String {
+    let rows: &[Value] = catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let errors: Vec<&str> = catalog
+        .get("errors")
+        .and_then(Value::as_array)
+        .map(|e| e.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if !errors.is_empty() {
+        let mut text = String::from(
+            "\nThe repository fails its checks, so there is no catalog to show. Fix these (`python -m agentic_pipeline validate` lists them):\n\n",
+        );
+        for error in errors {
+            text.push_str(&format!("- {error}\n"));
+        }
+        return text;
+    }
+    let field = |row: &Value, key: &str| {
+        row.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("-")
+            .to_string()
+    };
+    let list = |row: &Value, key: &str| -> Vec<String> {
+        row.get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let cell = |text: &str| text.replace('|', "\\|");
+    let short = |text: &str| match text.char_indices().nth(70) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    };
+    let mut bound = String::new();
+    let (mut bindable, mut unclaimed) = (vec![], vec![]);
+    for row in rows {
+        let name = field(row, "name");
+        let operations = list(row, "bound_to");
+        if operations.is_empty() {
+            if list(row, "capabilities").is_empty() {
+                unclaimed.push(format!("`{name}`"));
+            } else {
+                bindable.push(format!(
+                    "`{name}` ({})",
+                    list(row, "capabilities").join(", ")
+                ));
+            }
+            continue;
+        }
+        let readiness = match row.get("readiness").and_then(Value::as_str) {
+            Some("ready") => "ready".to_string(),
+            Some(why) => format!("not ready: {}", short(why)),
+            None => "-".to_string(),
+        };
+        let conformance = row.get("conformance").map_or("-".to_string(), |c| {
+            let status = c.get("status").and_then(Value::as_str).unwrap_or("-");
+            match c.get("detail").and_then(Value::as_str) {
+                Some(detail) if status != "ok" => format!("{status}: {}", short(detail)),
+                _ => status.to_string(),
+            }
+        });
+        bound.push_str(&format!(
+            "| `{name}` | {}:{} | {} | {} | {} | {} | {} | {} |\n",
+            field(row, "provider"),
+            field(row, "model_id"),
+            field(row, "family"),
+            field(row, "location"),
+            cell(&list(row, "capabilities").join(", ")),
+            cell(&operations.join(", ")),
+            cell(&readiness),
+            cell(&conformance),
+        ));
+    }
+    let mut text = String::from("\n#### Models in use\n\n");
+    if bound.is_empty() {
+        text.push_str("None is bound to an operation.\n");
+    } else {
+        text.push_str(
+            "| model | provider:id | family | where | capabilities | bound to | readiness | conformance |\n|---|---|---|---|---|---|---|---|\n",
+        );
+        text.push_str(&bound);
+    }
+    if !bindable.is_empty() {
+        text.push_str(&format!(
+            "\n#### Known, not bound (they declare capabilities, so a human can bind them)\n\n{}\n",
+            bindable.join(", ")
+        ));
+    }
+    if !unclaimed.is_empty() {
+        text.push_str(&format!(
+            "\n#### Known, unclaimed (no capability is claimed, so none can be bound)\n\n{}\n",
+            unclaimed.join(", ")
+        ));
+    }
+    text
+}
+
 /// An `approval_document` skill reply: where the document is and the two human steps.
 /// `/decide` or `/resume` opened a terminal window for the human.
 pub fn window_opened(run: &str, what: &str, command: &str) -> String {
@@ -372,6 +479,28 @@ mod tests {
             "status": {"state": state, "message": {"messageId": "m", "role": "ROLE_AGENT", "parts": parts}}
         }}))
         .unwrap()
+    }
+
+    #[test]
+    fn a_catalog_with_errors_shows_the_errors_and_no_table() {
+        let text = models_text(&json!({"models": [], "errors": ["registry R1: broken"]}));
+        assert!(text.contains("registry R1: broken") && !text.contains("| model |"));
+    }
+
+    #[test]
+    fn a_pipe_in_a_cell_cannot_break_the_table() {
+        let text = models_text(&json!({"models": [{
+            "name": "m", "provider": "p", "model_id": "i", "family": "f", "location": "local",
+            "capabilities": ["a|b"], "bound_to": ["A1.x"], "readiness": "ready",
+            "conformance": {"status": "ok", "detail": "recorded"}
+        }], "errors": []}));
+        assert!(text.contains("a\\|b") && text.contains("| ready | ok |"));
+    }
+
+    #[test]
+    fn nothing_bound_says_so_and_a_missing_catalog_is_empty_not_a_panic() {
+        assert!(models_text(&json!({"models": [], "errors": []})).contains("None is bound"));
+        assert!(models_text(&json!({})).contains("None is bound"));
     }
 
     #[test]
