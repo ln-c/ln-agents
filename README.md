@@ -178,6 +178,8 @@ When an operation runs, its agent's spec goes to the model as reference for its 
 - **Pi and Qwen** (the build stages) get the spec as a read-only file, `/agent/spec.md`, and a line in the prompt naming it and its digest. It is read on demand, so it does not use up the 16k context.
 - **The decision model** (Clef-Flash at `A2J`) never gets one: it answers in one batch and its threshold was calibrated on the current prompt.
 
+Each spec also opens with a **brief**: about a kilobyte, between `<!-- ln-agents:brief begin -->` and `<!-- ln-agents:brief end -->`, saying what the agent is, which states it covers, what it hands on and what it may never do. The models that talk *about* the agents (the coordinator and the authority behind `/agents auto`) read the brief in place of the file, which is a tenth of the tokens, in a prompt block tagged `<agent_brief>` that carries the digest of the whole spec. A stage's own model still gets the whole spec. A brief is owned like the rest of `agents/` (CODEOWNERS) and changes only through a reviewed commit; no model writes or updates one while ln-agents runs, because a coordinator would trust what it is told about a role. The `learning` and `release` briefs repeat the "built here" status from the note at the top of their file, so the two are edited together. Registry rule R21 requires that every spec in the repository has exactly one brief of at most 2 KiB, so `validate` fails if one is missing, doubled or too long. A run that froze its specs before briefs existed keeps going: R21 is not applied to a run's frozen copy.
+
 The specs go to the provider like the rest of the prompt, so they follow the same data-class rules. A run freezes `agents/*.md` with the graph and policy (`.runs/<run>/frozen/agents/`) and their digests are part of its recorded policy, so editing a spec changes later runs and not the ones in progress. `agents/` is in CODEOWNERS, and an implementation patch may not write to it, because the specs now steer models.
 
 ### CI checks
@@ -219,7 +221,7 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 │   ├── release.yaml           # merge branch rules and protected paths
 │   └── triage.yaml            # A2J threshold for a valid critique finding
 ├── schemas/                   # JSON Schema (Draft-07) for artifacts and provenance events
-├── agents/                    # role specifications, one per agent; each has a model (registry rule R20) and is passed to it (instructions, not a security boundary)
+├── agents/                    # role specifications, one per agent; each has a model (registry rule R20), a brief (R21), and is passed to its model (instructions, not a security boundary)
 ├── scripts/                   # MC/DC and mutation wrappers run by the CI checks
 ├── src/agentic_pipeline/      # runner, gates, adapters, sandbox, approvals, release
 ├── rust/                      # ln-agents: ACP agent and A2A client; MCP tool loop and sandbox launcher to come

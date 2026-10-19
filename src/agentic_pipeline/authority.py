@@ -5,7 +5,8 @@ propose bindings. It is advice that code checks, never a decision:
 
 * the model is one the registry already binds to `human_authority` (that entry is the list of
   models allowed to act as the authority), and its call goes through the coordinator's own
-  readiness, data-class and provenance checks, with the authority's spec as its reference;
+  readiness, data-class and provenance checks, with the brief of the authority's spec as its
+  reference;
 * it sees the catalog and the slots as data, and may only name existing slots and catalog
   models: it cannot add a model, claim a capability or touch anything else;
 * its reply must be one JSON object, parsed by code; every binding in it is checked by
@@ -18,16 +19,16 @@ propose bindings. It is advice that code checks, never a decision:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agentic_pipeline.briefs import BriefError
 from agentic_pipeline.coordinator import Coordinator, CoordinatorError, sanitize
 from agentic_pipeline.design_tasks import extract_json_object
-from agentic_pipeline.dispatch import AgentSpec
+from agentic_pipeline.dispatch import AgentSpec, brief_spec
 from agentic_pipeline.registry import _backend_refs, agent_spec_path
 from agentic_pipeline.registry_changes import (
     ChangeError,
@@ -146,15 +147,16 @@ def _facts(
     }
 
 
-def _spec(registry: Mapping[str, Any], root: Path) -> AgentSpec | None:
+def _brief(registry: Mapping[str, Any], root: Path) -> AgentSpec | None:
+    """The authority spec's brief, not the whole file: the model needs the role and its limits,
+    and the rest of the spec is for the stage models that run it."""
     path = agent_spec_path(registry, AUTHORITY_AGENT)
     if path is None:
         return None
     try:
-        text = (root / path).read_text(encoding="utf-8")
-    except OSError:
+        return brief_spec(path, (root / path).read_text(encoding="utf-8"))
+    except (OSError, BriefError):
         return None
-    return AgentSpec(path, "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(), text)
 
 
 def _line(text: str, limit: int) -> str:
@@ -212,7 +214,7 @@ def propose_mapping(
             task,
             {"mapping": mapping},
             authority_models(registry),
-            _spec(registry, root),
+            _brief(registry, root),
         )
     except CoordinatorError as exc:
         raise ChangeError(str(exc)) from exc

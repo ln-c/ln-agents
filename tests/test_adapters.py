@@ -759,6 +759,21 @@ def test_claude_prompt_frames_the_spec_as_reference_for_this_operation(tmp_path:
     assert user.index("</agent_spec>") < user.index('<input artifact="requirements"')
 
 
+def test_a_brief_is_framed_as_a_brief_and_is_not_called_a_spec(tmp_path: Path) -> None:
+    brief = AgentSpec(SPEC.path, SPEC.digest, "- **Role:** builds.", brief=True)
+
+    def briefed(name: str) -> DispatchGrant:
+        return dataclasses.replace(with_spec(tmp_path / name), agent_spec=brief)
+
+    user = json.loads(claude(tmp_path).prepare(briefed("a")).prompt)["user"]
+    assert "Reference for your role: the brief of the agent you serve, below." in user
+    assert '<agent_brief path="agents/pipeline-build-agent.md" digest="sha256:abc123">' in user
+    assert "- **Role:** builds.\n</agent_brief>" in user and "agent_spec" not in user
+    assert "<agent_brief" in agy(tmp_path).prepare(briefed("b")).prompt.decode()
+    whole = json.loads(claude(tmp_path).prepare(with_spec(tmp_path / "c")).prompt)["user"]
+    assert "the specification of the agent you serve" in whole, "a whole spec keeps its frame"
+
+
 def test_a_grant_without_a_spec_leaves_the_prompts_as_they_were(tmp_path: Path) -> None:
     (tmp_path / "req.md").write_text("build a cache")
     g = grant(tmp_path, {"requirements": tmp_path / "req.md"})

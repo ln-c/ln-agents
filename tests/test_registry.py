@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from agentic_pipeline.briefs import BEGIN, END, MAX_BRIEF_BYTES
 from agentic_pipeline.graph import Graph, load_yaml
 from agentic_pipeline.registry import (
     backend_capabilities,
@@ -372,6 +373,60 @@ def test_specs_are_looked_up_in_the_frozen_copy_when_it_has_one(tmp_path: Path) 
     (tree / "agents" / "pipeline-build-agent.md").unlink()
     errors = validate_registry(REGISTRY, GRAPH, ROOT, tree)
     assert any("registry R2 agents.build.spec" in e for e in errors), errors
+
+
+def _repo(tmp_path: Path) -> Path:
+    """A copy of the repository's own files: what `validate` checks."""
+    for name in ("schemas", "pipeline", "policy", "agents"):
+        shutil.copytree(ROOT / name, tmp_path / name)
+    return tmp_path
+
+
+def _edit_spec(tree: Path, change: Callable[[str], str]) -> None:
+    path = tree / "agents" / "pipeline-build-agent.md"
+    path.write_text(change(path.read_text(encoding="utf-8")), encoding="utf-8")
+
+
+def test_a_spec_without_a_brief_is_reported_once_with_what_to_do(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _edit_spec(repo, lambda t: t.replace(BEGIN, "").replace(END, ""))
+    assert validate_registry(REGISTRY, GRAPH, repo) == [
+        "registry R21 agents.build: 'agents/pipeline-build-agent.md' has no brief: "
+        f"put it between {BEGIN} and {END}"
+    ]
+
+
+def test_a_spec_with_two_briefs_or_a_long_one_is_reported(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "two")
+    _edit_spec(repo, lambda t: t + f"\n{BEGIN}\nsecond\n{END}\n")
+    errors = validate_registry(REGISTRY, GRAPH, repo)
+    assert len(errors) == 1 and "exactly one brief, not 2 begin and 2 end markers" in errors[0]
+    repo = _repo(tmp_path / "long")
+    _edit_spec(repo, lambda t: t.replace(BEGIN, f"{BEGIN}\n" + "x" * MAX_BRIEF_BYTES))
+    errors = validate_registry(REGISTRY, GRAPH, repo)
+    assert len(errors) == 1 and "the most is" in errors[0], errors
+
+
+def test_a_frozen_copy_frozen_before_briefs_existed_is_not_held_to_them(tmp_path: Path) -> None:
+    tree = _tree(tmp_path)
+    _edit_spec(tree, lambda t: t.replace(BEGIN, "").replace(END, ""))
+    assert validate_registry(REGISTRY, GRAPH, ROOT, tree) == [], "a run keeps the specs it froze"
+
+
+def test_a_staged_registry_without_specs_is_held_to_the_repositorys_briefs(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    stage = _tree(tmp_path / "stage", agents=False)  # what a registry change is validated in
+    assert validate_registry(REGISTRY, GRAPH, repo, stage) == []
+    _edit_spec(repo, lambda t: t.replace(BEGIN, ""))
+    errors = validate_registry(REGISTRY, GRAPH, repo, stage)
+    assert len(errors) == 1 and errors[0].startswith("registry R21 agents.build"), errors
+
+
+def test_a_missing_spec_file_is_an_r2_error_and_not_also_an_r21_one(tmp_path: Path) -> None:
+    tree = _tree(tmp_path)
+    (tree / "agents" / "pipeline-build-agent.md").unlink()
+    errors = validate_registry(REGISTRY, GRAPH, ROOT, tree)
+    assert not any("R21" in e for e in errors), errors
 
 
 def test_a_frozen_copy_without_specs_falls_back_to_the_repository(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import asdict
@@ -13,6 +14,7 @@ from test_dispatch import DATA_CLASSES, ISOLATION, report
 
 from agentic_pipeline import authority
 from agentic_pipeline import registry_changes as rc
+from agentic_pipeline.briefs import extract as extract_brief
 from agentic_pipeline.coordinator import Coordinator, Setup, for_authority
 from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, PreparedCall
 from agentic_pipeline.graph import loads_yaml
@@ -155,7 +157,7 @@ def test_a_proposal_becomes_a_draft_with_the_models_words_beside_the_diff(
     assert registry(repo)["agents"]["design"]["proposal_b"]["primary"] == "gpt_oss_120b_medium"
 
 
-def test_the_model_sees_the_rules_the_catalog_and_the_authoritys_spec(
+def test_the_model_sees_the_rules_the_catalog_and_the_authoritys_brief(
     repo: Path, runs: Path
 ) -> None:
     rig = Rig(repo, runs, GOOD)
@@ -163,7 +165,8 @@ def test_the_model_sees_the_rules_the_catalog_and_the_authoritys_spec(
     grant, prompt = rig.seen[0]
     assert grant.agent_spec is not None
     assert grant.agent_spec.path == "agents/pipeline-human-authority-agent.md"
-    assert '<agent_spec path="agents/pipeline-human-authority-agent.md"' in prompt
+    assert '<agent_brief path="agents/pipeline-human-authority-agent.md"' in prompt
+    assert "<agent_spec" not in prompt
     assert "You cannot add a model, claim a capability" in prompt
     assert '<input artifact="mapping"' in prompt and '"design.proposal_b.primary"' in prompt
     assert '"name": "gpt_oss_120b_medium"' in prompt
@@ -174,6 +177,19 @@ def test_the_model_sees_the_rules_the_catalog_and_the_authoritys_spec(
         "the human's request comes after the rules and cannot rewrite them"
     )
     assert grant.data_class == "internal" and grant.role == "coordinator"
+
+
+def test_the_authority_reads_the_brief_and_not_the_whole_spec(repo: Path, runs: Path) -> None:
+    rig = Rig(repo, runs, GOOD)
+    rig.propose()
+    grant, prompt = rig.seen[0]
+    spec = (repo / "agents/pipeline-human-authority-agent.md").read_text(encoding="utf-8")
+    spec_digest = "sha256:" + hashlib.sha256(spec.encode("utf-8")).hexdigest()
+    assert grant.agent_spec is not None and grant.agent_spec.brief
+    assert grant.agent_spec.digest == spec_digest, "the digest names the whole file the brief is in"
+    assert grant.agent_spec.text == extract_brief(spec) and grant.agent_spec.text in prompt
+    assert "## Completion Checklist" not in prompt and "### BENCH" not in prompt
+    assert len(grant.agent_spec.text) < len(spec) / 5
 
 
 def test_the_call_is_logged_in_the_authoritys_own_chain(repo: Path, runs: Path) -> None:

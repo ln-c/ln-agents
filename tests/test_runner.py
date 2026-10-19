@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from test_dispatch import BINDABLE, DATA_CLASSES, GRAPH, REGISTRY, A, B, FakeAdapter, report, seed
 
+from agentic_pipeline.briefs import BEGIN, END
 from agentic_pipeline.dispatch import Dispatcher
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.run_state import (
@@ -584,6 +585,22 @@ def test_static_checks_of_a_run_read_its_frozen_policy(tmp_path: Path) -> None:
     (root / "policy" / "weights.yaml").write_text("version: 1\nweights: {}\n")
     assert validate_repo(root)  # a new run would be refused
     assert validate_repo(root, run_policy_root(root, rig.run_dir)) == []
+
+
+def test_a_run_frozen_before_briefs_existed_still_validates_and_opens(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    for name in ("pipeline", "policy", "schemas", "agents"):
+        shutil.copytree(ROOT / name, root / name)
+    for spec in (root / "agents").glob("*.md"):  # the repository as it was before R21
+        text = spec.read_text(encoding="utf-8")
+        spec.write_text(text.replace(BEGIN, "").replace(END, ""), encoding="utf-8")
+    assert any("R21" in e for e in validate_repo(root)), "a new run would be refused"
+    rig = Rig(tmp_path, root)
+    for spec in (ROOT / "agents").glob("*.md"):  # the repository gets its briefs afterwards
+        (root / "agents" / spec.name).write_text(spec.read_text(encoding="utf-8"), encoding="utf-8")
+    assert validate_repo(root) == []
+    assert validate_repo(root, run_policy_root(root, rig.run_dir)) == []
+    rig.open().close()  # no PolicyDrift either: the run reads its own frozen copy
 
 
 # ── Review fixes: commit record, guarded saves, policy snapshot ──────────────
