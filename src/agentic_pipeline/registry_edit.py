@@ -125,3 +125,53 @@ def remove_model(text: str, name: str) -> str:
             end = _line_end(text, _last_content_end(value)) + 1
             return text[:start] + text[end:]
     raise EditError(f"no model {name!r} in the catalog")
+
+
+PLAIN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
+
+
+def _block(node: yaml.Node, where: str) -> yaml.MappingNode:
+    if not isinstance(node, yaml.MappingNode) or node.flow_style or not node.value:
+        raise EditError(
+            f"{where} is not written as a block mapping, which the editor does not extend; "
+            "edit policy/model_registry.yaml by hand"
+        )
+    return node
+
+
+def _after(text: str, node: yaml.MappingNode, lines: str) -> str:
+    """`lines` (each led by a newline) inserted right after the last value of `node`."""
+    at = _line_end(text, _last_content_end(node))
+    return text[:at] + lines + text[at:]
+
+
+def add_key(text: str, path: Sequence[str], key: str, value: str | Sequence[str]) -> str:
+    """Add `key: value` as the last key of the block mapping at `path`, indented like its keys."""
+    if not BARE.match(key):
+        raise EditError(f"{key!r} is not a usable key")
+    node: yaml.Node = _root(text)
+    where = ".".join(path)
+    try:
+        for step in path:
+            _, node = _child(node, step)
+    except EditError as exc:
+        raise EditError(f"{where}: {exc}") from exc
+    entry = _block(node, where)
+    if any(isinstance(k, yaml.ScalarNode) and k.value == key for k, _ in entry.value):
+        raise EditError(f"{where} already has {key!r}")
+    indent = " " * entry.value[0][0].start_mark.column
+    return _after(text, entry, f"\n{indent}{key}: {flow(value)}")
+
+
+def add_agent(text: str, key: str, spec: str, model: str) -> str:
+    """Add `key: {spec, primary: model}` as the last entry under `agents`, after a blank line."""
+    if not BARE.match(key):
+        raise EditError(f"{key!r} is not a usable agent name")
+    _, agents = _child(_root(text), "agents")
+    entries = _block(agents, "agents")
+    if any(isinstance(k, yaml.ScalarNode) and k.value == key for k, _ in entries.value):
+        raise EditError(f"agents already has {key!r}")
+    indent = " " * entries.value[0][0].start_mark.column
+    path = spec if PLAIN.match(spec) else json.dumps(spec)
+    lines = f"\n\n{indent}{key}:\n{indent}  spec: {path}\n{indent}  primary: {flow(model)}"
+    return _after(text, entries, lines)

@@ -38,12 +38,14 @@ from agentic_pipeline import registry_edit
 from agentic_pipeline.graph import loads_yaml
 from agentic_pipeline.registry import (
     BACKEND_KEYS,
+    Gap,
     _backend_refs,
     agent_spec_path,
     backend_family,
     backend_location,
     operations,
     pattern_family,
+    spec_gaps,
 )
 from agentic_pipeline.validation import _capabilities, validate_repo
 
@@ -52,6 +54,12 @@ REGISTRY = Path("policy") / "model_registry.yaml"
 ID_RE = re.compile(r"^[0-9a-f]{8}$")
 MAX_MODEL_ID = 200
 MAX_LIST = 8
+
+
+NO_MODEL_HINT = (
+    "Some agents have no model, and no change can be made until each has one: "
+    "/start proposes a model for them."
+)
 
 
 class ChangeError(Exception):
@@ -170,6 +178,32 @@ def _store(runs_dir: Path, record: Mapping[str, Any]) -> None:
     )
 
 
+def _refused(errors: Sequence[str]) -> ChangeError:
+    """The refusal for `errors`; it says what to do when the cause is an agent with no model."""
+    gap = any(
+        e.startswith("registry R20") and ("names no catalog model" in e or "is not the spec" in e)
+        for e in errors
+    )
+    return ChangeError(*errors, *([NO_MODEL_HINT] if gap else []))
+
+
+def _same_pending(runs_dir: Path, kind: str, old: bytes, new_text: str) -> Draft | None:
+    for path in sorted((runs_dir / CHANGES_DIR).glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if (record["kind"], record["base"], record["new_text"]) == (
+                kind,
+                _digest(old),
+                new_text,
+            ):
+                return Draft(
+                    record["id"], record["kind"], record["summary"], record["notes"], record["diff"]
+                )
+        except (OSError, ValueError, KeyError):
+            continue
+    return None
+
+
 def _finish(
     root: Path,
     runs_dir: Path,
@@ -180,11 +214,16 @@ def _finish(
     old: bytes,
     new_text: str,
     expected: Mapping[str, Any],
+    reuse: bool = False,
 ) -> Draft:
+    """Check the edited text and store it as a draft. With `reuse`, a draft already waiting
+    for exactly this change is returned instead of a second one."""
     if loads_yaml(new_text.encode("utf-8")) != expected:
         raise ChangeError("the text edit did not produce the registry it meant to; nothing saved")
     if errors := _validate(root, new_text):
-        raise ChangeError(*errors)
+        raise _refused(errors)
+    if reuse and (same := _same_pending(runs_dir, kind, old, new_text)) is not None:
+        return same
     diff = "".join(
         difflib.unified_diff(
             old.decode("utf-8").splitlines(keepends=True),
@@ -510,6 +549,136 @@ def draft_bind_many(
     )
 
 
+# ── Agents that have no model ────────────────────────────────────────────────
+
+
+class MappingIncomplete(ChangeError):
+    """Some agent has no model, so no run is started."""
+
+
+def gaps(root: Path) -> list[Gap]:
+    """The agents that have no model (registry rule R20); none if the registry cannot be read,
+    which the repository's own validation reports."""
+    try:
+        return spec_gaps(_load(_registry_bytes(root)), root)
+    except (ChangeError, KeyError, TypeError, AttributeError):
+        return []
+
+
+def refuse_start(found: Sequence[Gap]) -> MappingIncomplete:
+    count = f"{len(found)} agents have" if len(found) != 1 else "1 agent has"
+    return MappingIncomplete(
+        f"{count} no model ({', '.join(g.spec for g in found)}), so no run is started: ask for "
+        "complete_mapping (/start proposes the mapping), confirm it, then start again"
+    )
+
+
+def draft_fill_gaps(
+    root: Path, runs_dir: Path, choices: Mapping[str, str], *, origin: str
+) -> Draft:
+    """Give every agent that has no model one, as a single draft.
+
+    `choices` maps each gap's agent to a catalog model. One draft has to close every gap,
+    because the whole repository is validated with it. A model never becomes a primary here:
+    an entry that exists gets the model as `model_assistance` (its `primary` stays what a human
+    wrote: `human_authority` is a human, `exception_router` is deterministic), and a spec no
+    entry owns gets a new entry, `{spec, primary}`, that has no stage wiring and serves nothing.
+    """
+    old = _registry_bytes(root)
+    registry = _load(old)
+    found = spec_gaps(registry, root)
+    if not found:
+        raise ChangeError("every agent already has a model")
+    for key in {g.agent for g in found if g.kind == "no_entry"}:
+        files = [g.spec for g in found if g.kind == "no_entry" and g.agent == key]
+        if len(files) > 1:
+            raise ChangeError(
+                f"{' and '.join(files)} would both be agents.{key}; rename one of the files"
+            )
+    text, expected = old.decode("utf-8"), copy.deepcopy(registry)
+    notes: list[str] = []
+    for gap in found:
+        model = choices.get(gap.agent)
+        if model is None:
+            raise ChangeError(f"no model was chosen for {gap.agent} ({gap.spec})")
+        if model not in registry["models"]:
+            raise ChangeError(f"{model!r} is not in the catalog")
+        try:
+            if gap.kind == "no_entry":
+                if gap.agent in registry["agents"]:
+                    raise ChangeError(
+                        f"agents.{gap.agent} already exists with another spec, so {gap.spec} "
+                        "cannot be given that name; add its entry by hand"
+                    )
+                text = registry_edit.add_agent(text, gap.agent, gap.spec, model)
+                expected["agents"][gap.agent] = {"spec": gap.spec, "primary": model}
+                notes.append(
+                    f"agents.{gap.agent} is new: it owns {gap.spec} and runs on {model}. It has "
+                    "no stage wiring, so it serves no operation until a human declares one."
+                )
+            else:
+                entry = expected["agents"][gap.agent]
+                have = entry.get("model_assistance", [])
+                value = [*([have] if isinstance(have, str) else have), model]
+                if "model_assistance" in entry:
+                    text = registry_edit.set_slot(text, [gap.agent, "model_assistance"], value)
+                else:
+                    text = registry_edit.add_key(
+                        text, ["agents", gap.agent], "model_assistance", value
+                    )
+                entry["model_assistance"] = value
+                notes.append(
+                    f"agents.{gap.agent} had no model: {model} now assists it "
+                    "(model_assistance). Its primary is untouched."
+                )
+        except registry_edit.EditError as exc:
+            raise ChangeError(str(exc)) from exc
+        notes += _egress_notes(registry, {"agent": gap.agent}, [model])
+    return _finish(
+        root,
+        runs_dir,
+        kind="fill_gaps",
+        summary=f"Give {len(found)} agent{'s' * (len(found) != 1)} a model ({origin})",
+        notes=notes,
+        old=old,
+        new_text=text,
+        expected=expected,
+        reuse=True,
+    )
+
+
+def propose_fill(root: Path, runs_dir: Path) -> Draft:
+    """The draft code makes when agents have no model: the coordinator named in `LN-AGENTS.md`
+    for each of them. No model chose it. Refused if there is no coordinator to give."""
+    from agentic_pipeline.coordinator import SETUP_FILE, SetupError, load_setup
+
+    registry = _load(_registry_bytes(root))
+    try:
+        setup = load_setup(root)
+    except SetupError as exc:
+        raise ChangeError(f"{SETUP_FILE} cannot be used: {exc}") from exc
+    named = [m for m in (setup.coordinator, setup.fallback) if m] if setup else []
+    if not named:
+        raise ChangeError(
+            f"{SETUP_FILE} names no coordinator. Set `coordinator:` in its front matter to a "
+            "catalog model: ln-agents gives that model to each agent that has none, and "
+            "/agents changes any binding afterwards"
+        )
+    model = named[0]  # the coordinator itself: a missing one is not swapped for the fallback
+    if model not in registry["models"]:
+        raise ChangeError(
+            f"the coordinator {model!r} in {SETUP_FILE} is not in the catalog "
+            f"({', '.join(sorted(registry['models']))}); name one that is"
+        )
+    found = spec_gaps(registry, root)
+    return draft_fill_gaps(
+        root,
+        runs_dir,
+        {gap.agent: model for gap in found},
+        origin=f"by code, from the coordinator in {SETUP_FILE}: no model chose this",
+    )
+
+
 # ── Confirming ───────────────────────────────────────────────────────────────
 
 
@@ -536,7 +705,7 @@ def apply(root: Path, runs_dir: Path, change_id: str) -> Applied:
             "it again"
         )
     if errors := _validate(root, record["new_text"]):
-        raise ChangeError(*errors)
+        raise _refused(errors)
     atomic_write_text(root / REGISTRY, record["new_text"])
     path.unlink(missing_ok=True)
     return Applied(change_id, record["summary"], REGISTRY.as_posix())

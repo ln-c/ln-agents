@@ -491,6 +491,54 @@ pub fn change_text(reply: &Value) -> String {
     text
 }
 
+/// The agents a `complete_mapping` reply says have no model: (kind, agent, spec).
+pub fn gaps_of(reply: &Value) -> Vec<(&str, &str, &str)> {
+    reply
+        .get("gaps")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|gap| {
+            let get = |key: &str| gap.get(key).and_then(Value::as_str);
+            Some((get("kind")?, get("agent")?, get("spec")?))
+        })
+        .collect()
+}
+
+/// A `complete_mapping` reply that found agents with no model: no run was started. It lists
+/// them, then shows the draft (or why there is none) and the way on.
+pub fn gap_text(reply: &Value) -> String {
+    let gaps = gaps_of(reply);
+    let s = if gaps.len() == 1 { "" } else { "s" };
+    let mut text = format!(
+        "\n**{} agent{s} {} no model**, so no run was started:\n\n",
+        gaps.len(),
+        if gaps.len() == 1 { "has" } else { "have" }
+    );
+    for (kind, agent, spec) in &gaps {
+        if *kind == "no_entry" {
+            text.push_str(&format!(
+                "- `{spec}`: no entry under `agents` owns this file\n"
+            ));
+        } else {
+            text.push_str(&format!(
+                "- `agents.{agent}`: its spec `{spec}` names no model in any slot\n"
+            ));
+        }
+    }
+    let mut rest = reply.clone();
+    if let Some(fields) = rest.as_object_mut() {
+        fields.remove("proposed_by"); // code made this one, and the draft's summary says so
+    }
+    text.push_str(&change_text(&rest));
+    if reply.get("change_id").and_then(Value::as_str).is_some() && reply_errors(reply).is_empty() {
+        text.push_str(
+            "\nAfter `/confirm`, run `/start` again. `/agents` changes any binding afterwards.\n",
+        );
+    }
+    text
+}
+
 /// An `apply_change` reply.
 pub fn applied_text(reply: &Value) -> String {
     let errors = reply_errors(reply);
@@ -847,5 +895,75 @@ mod tests {
         assert!(doc.contains("**unsigned**") && doc.contains("Nothing is approved yet"));
         let evidence = evidence_text(&json!({"survivors": ["a"], "valid_ratios": {"x": 1.0}}));
         assert!(evidence.contains("survivors: `[\"a\"]`") && !evidence.contains("fired"));
+    }
+
+    fn gap_reply() -> Value {
+        json!({
+            "skill": "complete_mapping",
+            "gaps": [
+                {"kind": "no_entry", "agent": "extra_helper", "spec": "agents/extra-helper.md"},
+                {"kind": "no_model", "agent": "learning", "spec": "agents/pipeline-learning-agent.md"},
+            ],
+            "change_id": "d10d897d",
+            "kind": "fill_gaps",
+            "summary": "Give 2 agents a model (by code: no model chose this)",
+            "notes": ["agents.extra_helper is new: it serves no operation."],
+            "diff": "+  extra_helper:",
+            "proposed_by": "code",
+            "errors": [],
+        })
+    }
+
+    #[test]
+    fn a_gap_reply_lists_the_agents_then_the_draft_and_the_way_on() {
+        let text = gap_text(&gap_reply());
+        assert!(
+            text.contains("**2 agents have no model**, so no run was started"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- `agents/extra-helper.md`: no entry under `agents` owns this file")
+        );
+        assert!(text.contains(
+            "- `agents.learning`: its spec `agents/pipeline-learning-agent.md` names no model"
+        ));
+        assert!(text.contains("**Give 2 agents a model (by code: no model chose this)**"));
+        assert!(text.contains("```diff\n+  extra_helper:\n```"));
+        assert!(text.contains("`/confirm d10d897d`") && text.contains("run `/start` again"));
+        assert!(
+            !text.contains("acting as the authority"),
+            "code made this proposal, not the authority: {text}"
+        );
+    }
+
+    #[test]
+    fn one_gap_reads_in_the_singular_and_a_refusal_has_no_confirm() {
+        let reply = json!({
+            "gaps": [{"kind": "no_entry", "agent": "x", "spec": "agents/x.md"}],
+            "change_id": null,
+            "errors": ["LN-AGENTS.md names no coordinator"],
+        });
+        let text = gap_text(&reply);
+        assert!(text.contains("**1 agent has no model**"), "{text}");
+        assert!(text.contains("Not drafted, so nothing changed"));
+        assert!(text.contains("- LN-AGENTS.md names no coordinator"));
+        assert!(
+            !text.contains("/confirm") && !text.contains("/start` again"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_reply_with_no_gaps_has_none_to_list() {
+        assert!(gaps_of(&json!({"gaps": [], "change_id": null, "errors": []})).is_empty());
+        assert!(
+            gaps_of(&json!({"errors": []})).is_empty(),
+            "an absent list is no gap"
+        );
+        let broken = json!({"gaps": [{"kind": "no_entry"}, "x"]});
+        assert!(
+            gaps_of(&broken).is_empty(),
+            "an entry that is missing a field is skipped"
+        );
     }
 }

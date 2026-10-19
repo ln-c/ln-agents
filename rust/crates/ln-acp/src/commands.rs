@@ -157,7 +157,7 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
             (
                 "start",
                 "<run> <entry_spec.json>",
-                "Create a run from an entry spec and advance it",
+                "Create a run from an entry spec and advance it (if an agent has no model, propose one first)",
             ),
             (
                 "advance",

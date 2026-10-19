@@ -34,6 +34,7 @@ with warnings.catch_warnings():  # Starlette asks for httpx2; httpx is what a2a-
     from starlette.testclient import TestClient
 
 from agentic_pipeline import a2a_server  # noqa: E402
+from agentic_pipeline import registry_changes as rc  # noqa: E402
 from agentic_pipeline.a2a_server import (  # noqa: E402
     RUN_ID_KEY,
     SKILLS,
@@ -48,7 +49,7 @@ from agentic_pipeline.a2a_server import (  # noqa: E402
 from agentic_pipeline.coordinator import Coordinator, Setup  # noqa: E402
 from agentic_pipeline.dispatch import Dispatcher  # noqa: E402
 from agentic_pipeline.graph import loads_yaml  # noqa: E402
-from agentic_pipeline.models_cli import CatalogError  # noqa: E402
+from agentic_pipeline.models_cli import CatalogError, Deps, catalog_rows  # noqa: E402
 from agentic_pipeline.run_state import RunStore, Status  # noqa: E402
 from agentic_pipeline.runner import StateHandler, init_run  # noqa: E402
 
@@ -169,7 +170,7 @@ def _stop(task_or_event: Mapping[str, Any]) -> dict[str, Any]:
 # ── Card and token gate ──────────────────────────────────────────────────────
 
 
-def test_the_card_is_public_and_names_exactly_the_twelve_skills(pipe: Pipeline) -> None:
+def test_the_card_is_public_and_names_exactly_the_thirteen_skills(pipe: Pipeline) -> None:
     card = pipe.client.get("/.well-known/agent-card.json").json()
     assert card["name"] == "ln-pipeline"
     assert sorted(s["id"] for s in card["skills"]) == sorted(SKILLS)
@@ -184,6 +185,7 @@ def test_the_card_is_public_and_names_exactly_the_twelve_skills(pipe: Pipeline) 
         "agents",
         "registry_change",
         "propose_mapping",
+        "complete_mapping",
         "apply_change",
         "discard_change",
     }
@@ -644,6 +646,110 @@ def test_start_run_creates_the_run_then_advances_it(tmp_path: Path) -> None:
     assert "task" in events[0] and events[0]["task"]["metadata"][RUN_ID_KEY] == "run-2"
     assert RunStore(tmp_path / "run-2").exists()
     assert pipe.send({"skill": "start_run", "run_id": "run-2", "entry_spec": spec})["error"]
+
+
+def give_a_spec_no_model(root: Path) -> None:
+    """A new `agents/*.md` that no entry owns (the learning spec's text, which has a brief)."""
+    text = (ROOT / "agents" / "pipeline-learning-agent.md").read_text(encoding="utf-8")
+    (root / "agents" / "pipeline-extra-helper-agent.md").write_text(text, encoding="utf-8")
+
+
+def test_no_run_is_created_while_an_agent_has_no_model(tmp_path: Path) -> None:
+    pipe = Pipeline(tmp_path)
+    give_a_spec_no_model(registry_repo(pipe, tmp_path))
+    from test_grounding import SPEC as spec
+
+    reply = pipe.send({"skill": "start_run", "run_id": "run-2", "entry_spec": spec})
+    assert reply["error"]["code"] == -32602
+    message = reply["error"]["message"]
+    assert (
+        "MappingIncomplete: 1 agent has no model (agents/pipeline-extra-helper-agent.md)" in message
+    )
+    assert "complete_mapping" in message
+    assert not (tmp_path / "run-2").exists(), "not even a directory"
+    assert pipe.rpc("ListTasks", {}).json()["result"].get("tasks", []) == []
+
+
+def test_the_streaming_start_the_editor_uses_creates_no_run_while_an_agent_has_no_model(
+    tmp_path: Path,
+) -> None:
+    pipe = Pipeline(tmp_path)
+    give_a_spec_no_model(registry_repo(pipe, tmp_path))
+    from test_grounding import SPEC as spec
+
+    pipe.stream({"skill": "start_run", "run_id": "run-2", "entry_spec": spec})
+    assert not (tmp_path / "run-2").exists(), "not even a directory"
+    assert pipe.rpc("ListTasks", {}).json()["result"].get("tasks", []) == []
+
+
+def test_complete_mapping_with_every_agent_mapped_says_so_and_drafts_nothing(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    registry_repo(pipe, tmp_path)
+    reply = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert reply == {"skill": "complete_mapping", "gaps": [], "change_id": None, "errors": []}
+    assert not (tmp_path / ".changes").exists()
+
+
+def test_the_gap_is_filled_by_a_draft_a_human_confirms_and_then_the_run_starts(
+    tmp_path: Path,
+) -> None:
+    pipe = Pipeline(tmp_path)
+    root = registry_repo(pipe, tmp_path)
+    give_a_spec_no_model(root)
+    draft = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert draft["errors"] == [] and draft["kind"] == "fill_gaps" and draft["proposed_by"] == "code"
+    assert draft["gaps"] == [
+        {
+            "kind": "no_entry",
+            "agent": "extra_helper",
+            "spec": "agents/pipeline-extra-helper-agent.md",
+        }
+    ]
+    assert "primary: gemini_3_8_flash_high" in draft["diff"]
+    assert any("no stage wiring" in n for n in draft["notes"])
+    again = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert again["change_id"] == draft["change_id"], "asking again does not pile up drafts"
+    assert "extra_helper" not in (root / "policy" / "model_registry.yaml").read_text()
+    applied = data_of(pipe.send({"skill": "apply_change", "change_id": draft["change_id"]}))
+    assert applied["errors"] == []
+    from test_grounding import SPEC as spec
+
+    seed(tmp_path / "run-2", ("START", "G"))
+    events = pipe.stream({"skill": "start_run", "run_id": "run-2", "entry_spec": spec})
+    assert events[0]["task"]["metadata"][RUN_ID_KEY] == "run-2"
+    assert RunStore(tmp_path / "run-2").exists()
+
+
+def test_without_a_coordinator_the_gap_is_listed_with_the_way_to_name_one(
+    tmp_path: Path,
+) -> None:
+    pipe = Pipeline(tmp_path)
+    root = registry_repo(pipe, tmp_path)
+    give_a_spec_no_model(root)
+    (root / "LN-AGENTS.md").unlink()
+    reply = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert reply["change_id"] is None and [g["agent"] for g in reply["gaps"]] == ["extra_helper"]
+    assert "names no coordinator" in reply["errors"][0] and "`coordinator:`" in reply["errors"][0]
+
+
+def test_complete_mapping_takes_no_arguments(pipe: Pipeline) -> None:
+    assert pipe.send({"skill": "complete_mapping", "model": "x"})["error"]["code"] == -32602
+
+
+def test_the_catalog_says_what_to_do_when_an_agent_has_no_model(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    give_a_spec_no_model(registry_repo(pipe, tmp_path))
+    # the real catalog, which refuses a repository that fails validation
+    pipe.service.catalog = lambda root: catalog_rows(root, Deps())
+    reply = data_of(pipe.send({"skill": "models"}))
+    assert reply["models"] == [] and reply["errors"][-1] == rc.NO_MODEL_HINT
+    assert any("is not the spec of any agents entry" in e for e in reply["errors"])
+    slots = data_of(pipe.send({"skill": "agents"}))
+    assert slots["errors"] == [] and slots["slots"], "the mapping table still works"
+    auto = data_of(pipe.send({"skill": "propose_mapping"}))
+    assert auto["change_id"] is None and auto["errors"][-1] == rc.NO_MODEL_HINT, auto
 
 
 def test_a_quota_pause_asks_for_auth(tmp_path: Path) -> None:

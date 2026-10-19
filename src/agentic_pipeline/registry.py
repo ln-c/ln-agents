@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -202,6 +203,51 @@ def _backend_refs(node: Mapping[str, Any], prefix: str) -> Iterator[tuple[str, s
                 yield where, ref
 
 
+@dataclass(frozen=True, slots=True)
+class Gap:
+    """An agent that has no model (registry rule R20).
+
+    `no_entry`: a spec file in `agents/` that no entry under `agents` owns; `agent` is the key a
+    new entry would get. `no_model`: an entry whose spec names no catalog model in any slot.
+    """
+
+    kind: str
+    agent: str
+    spec: str
+
+    def message(self) -> str:
+        if self.kind == "no_entry":
+            return f"registry R20: {self.spec} is not the spec of any agents entry"
+        return f"registry R20 agents.{self.agent}: its spec {self.spec!r} names no catalog model"
+
+
+def agent_key(file_name: str) -> str:
+    """The key a new agents entry gets for a spec file: `pipeline-foo-bar-agent.md` is
+    `foo_bar`, the way the existing entries are named."""
+    stem = PurePosixPath(file_name).stem.removeprefix("pipeline-").removesuffix("-agent")
+    key = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_") or "agent"
+    return f"agent_{key}" if key[0].isdigit() else key
+
+
+def spec_gaps(registry: Mapping[str, Any], repo: Path) -> list[Gap]:
+    """Every agent with no model: an entry's spec that names no catalog model, then every spec
+    file in `repo/agents` that no entry owns."""
+    models = registry["models"]
+    owned: set[str] = set()
+    found: list[Gap] = []
+    for name, agent in registry["agents"].items():
+        spec = agent_spec_path(registry, name)
+        if spec is None:
+            continue
+        owned.add(spec)
+        if not any(ref in models for _, ref in _backend_refs(agent, f"agents.{name}")):
+            found.append(Gap("no_model", name, spec))
+    for path in sorted((repo / "agents").glob("*.md")):
+        if (spec := f"agents/{path.name}") not in owned:
+            found.append(Gap("no_entry", agent_key(path.name), spec))
+    return found
+
+
 def validate_registry(
     registry: Mapping[str, Any], graph: Graph, root: Path, policy_root: Path | None = None
 ) -> list[str]:
@@ -299,7 +345,7 @@ def validate_registry(
     # R20. Every agent spec has a model: one owner per spec file, and a model it may run on.
     models = registry["models"]
     owners: dict[str, str] = {}
-    for name, agent in agents.items():
+    for name in agents:
         spec = agent_spec_path(registry, name)
         if spec is None:
             continue
@@ -308,11 +354,7 @@ def validate_registry(
                 f"registry R20 agents.{name}: {spec!r} is also agents.{owners[spec]}'s spec"
             )
         owners.setdefault(spec, name)
-        if not any(ref in models for _, ref in _backend_refs(agent, f"agents.{name}")):
-            errors.append(f"registry R20 agents.{name}: its spec {spec!r} names no catalog model")
-    for path in sorted((repo / "agents").glob("*.md")):
-        if f"agents/{path.name}" not in owners:
-            errors.append(f"registry R20: agents/{path.name} is not the spec of any agents entry")
+    errors += [gap.message() for gap in spec_gaps(registry, repo)]
 
     # R21. Every spec carries the brief a coordinator reads in its place. It guards what a new
     # run would freeze: a run's frozen copy keeps the specs it started with, briefed or not.

@@ -1,0 +1,28 @@
+{
+ "result": {
+  "message": {
+   "messageId": "1f67e0aa-454e-4530-bc27-8e713953ef41",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "gaps": [
+       {
+        "agent": "extra_helper",
+        "kind": "no_entry",
+        "spec": "agents/pipeline-extra-helper-agent.md"
+       }
+      ],
+      "errors": [
+       "LN-AGENTS.md names no coordinator. Set `coordinator:` in its front matter to a catalog model: ln-agents gives that model to each agent that has none, and /agents changes any binding afterwards"
+      ],
+      "change_id": null,
+      "skill": "complete_mapping"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

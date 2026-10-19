@@ -535,6 +535,13 @@ impl Prompt {
                 self.say(render::answer_text(&reply));
             }
             Command::Start { run, entry_spec } => {
+                // No run starts while an agent has no model: the server refuses it, and this asks
+                // first so that the reply is a proposal the human can confirm.
+                let gate = skill_reply(&client()?, &Request::complete_mapping()).map_err(a2a)?;
+                if !render::gaps_of(&gate).is_empty() {
+                    self.say(render::gap_text(&gate));
+                    return Ok(Ended::Done);
+                }
                 let spec = read_entry_spec(&self.cwd, &entry_spec)?;
                 return self.stream(&client()?, &Request::start_run(&run, spec), &run);
             }

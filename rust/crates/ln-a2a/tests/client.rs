@@ -30,6 +30,7 @@ fn every_captured_reply_deserializes() {
             "agents",
             "registry_change",
             "propose_mapping",
+            "complete_mapping",
             "apply_change",
             "discard_change",
             "approval_document"
@@ -46,6 +47,9 @@ fn every_captured_reply_deserializes() {
         "change_remove.json",
         "proposal.json",
         "proposal_refused.json",
+        "complete_mapping.json",
+        "complete_mapping_none.json",
+        "complete_mapping_refused.json",
         "applied.json",
         "discarded.json",
         "approval_document.json",
@@ -188,6 +192,7 @@ fn a_request_is_one_data_part_naming_one_of_the_twelve_skills() {
         Request::agents(),
         Request::add_model("p", "m", &[]),
         Request::propose_mapping(""),
+        Request::complete_mapping(),
         Request::apply_change("deadbeef"),
         Request::discard_change("deadbeef"),
         Request::approval_document("r", "d", "a", "why", None),
@@ -252,6 +257,11 @@ fn registry_changes_name_fields_and_a_confirmation_carries_only_an_id() {
         sent(&Request::propose_mapping("")),
         json!({"skill": "propose_mapping"}),
         "no intent, no field"
+    );
+    assert_eq!(
+        sent(&Request::complete_mapping()),
+        json!({"skill": "complete_mapping"}),
+        "it names no model: code picks the coordinator, so there is nothing to send"
     );
 }
 
