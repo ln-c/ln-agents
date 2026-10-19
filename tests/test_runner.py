@@ -592,11 +592,12 @@ def test_a_run_frozen_before_briefs_existed_still_validates_and_opens(tmp_path: 
     for name in ("pipeline", "policy", "schemas", "agents"):
         shutil.copytree(ROOT / name, root / name)
     for spec in (root / "agents").glob("*.md"):  # the repository as it was before R21
-        spec.write_text(spec.read_text().replace(BEGIN, "").replace(END, ""))
+        text = spec.read_text(encoding="utf-8")
+        spec.write_text(text.replace(BEGIN, "").replace(END, ""), encoding="utf-8")
     assert any("R21" in e for e in validate_repo(root)), "a new run would be refused"
     rig = Rig(tmp_path, root)
     for spec in (ROOT / "agents").glob("*.md"):  # the repository gets its briefs afterwards
-        (root / "agents" / spec.name).write_text(spec.read_text())
+        (root / "agents" / spec.name).write_text(spec.read_text(encoding="utf-8"), encoding="utf-8")
     assert validate_repo(root) == []
     assert validate_repo(root, run_policy_root(root, rig.run_dir)) == []
     rig.open().close()  # no PolicyDrift either: the run reads its own frozen copy
