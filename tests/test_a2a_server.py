@@ -46,6 +46,7 @@ from agentic_pipeline.a2a_server import (  # noqa: E402
 )
 from agentic_pipeline.coordinator import Coordinator, Setup  # noqa: E402
 from agentic_pipeline.dispatch import Dispatcher  # noqa: E402
+from agentic_pipeline.models_cli import CatalogError  # noqa: E402
 from agentic_pipeline.run_state import RunStore, Status  # noqa: E402
 from agentic_pipeline.runner import StateHandler, init_run  # noqa: E402
 
@@ -166,11 +167,19 @@ def _stop(task_or_event: Mapping[str, Any]) -> dict[str, Any]:
 # ── Card and token gate ──────────────────────────────────────────────────────
 
 
-def test_the_card_is_public_and_names_exactly_the_six_skills(pipe: Pipeline) -> None:
+def test_the_card_is_public_and_names_exactly_the_seven_skills(pipe: Pipeline) -> None:
     card = pipe.client.get("/.well-known/agent-card.json").json()
     assert card["name"] == "ln-pipeline"
     assert sorted(s["id"] for s in card["skills"]) == sorted(SKILLS)
-    assert set(SKILLS) == {"start_run", "advance", "status", "evidence", "approval_document", "ask"}
+    assert set(SKILLS) == {
+        "start_run",
+        "advance",
+        "status",
+        "evidence",
+        "approval_document",
+        "ask",
+        "models",
+    }
     assert card["securitySchemes"]["bearer"]["httpAuthSecurityScheme"]["scheme"] == "bearer"
     assert card["capabilities"]["streaming"] is True
 
@@ -296,6 +305,33 @@ def test_a_question_is_answered_by_message_and_changes_no_task(pipe: Pipeline) -
     task = pipe.rpc("GetTask", {"id": first["id"]}).json()["result"]
     assert task["status"] == first["status"]
     assert any("why did it stop?" in call for call in pipe.calls)  # conversions share the list
+
+
+def test_models_is_answered_by_message_without_a_run_or_a_task(pipe: Pipeline) -> None:
+    rows = [{"name": "qwen3_5_9b", "bound_to": ["E1.implementation_patch"]}]
+    seen: list[Path] = []
+    pipe.service.catalog = lambda root: seen.append(root) or rows
+    reply = pipe.send({"skill": "models"})
+    data = reply["result"]["message"]["parts"][0]["data"]
+    assert data["skill"] == "models" and data["models"] == rows and data["errors"] == []
+    assert seen == [ROOT]
+    assert pipe.rpc("ListTasks", {}).json()["result"].get("tasks", []) == []  # no task was made
+
+
+def test_models_reports_a_repository_that_fails_validation_instead_of_a_catalog(
+    pipe: Pipeline,
+) -> None:
+    def broken(root: Path) -> list[dict[str, Any]]:
+        raise CatalogError(["registry R1: broken"])
+
+    pipe.service.catalog = broken
+    data = pipe.send({"skill": "models"})["result"]["message"]["parts"][0]["data"]
+    assert data["models"] == [] and data["errors"] == ["registry R1: broken"]
+
+
+def test_models_takes_no_arguments_and_changes_nothing(pipe: Pipeline) -> None:
+    reply = pipe.send({"skill": "models", "run_id": RUN_ID})
+    assert reply["error"]["code"] == -32602 and "does not take ['run_id']" in str(reply["error"])
 
 
 def test_a_question_without_a_coordinator_is_refused_and_leaves_the_run_alone(

@@ -7,14 +7,16 @@
   ListTasks, CancelTask (a2a-sdk's JSON-RPC binding, protocol 1.0).
 
 A request is one A2A message whose single data part names a skill: `start_run`, `advance`,
-`status`, `evidence` or `approval_document`. Every skill calls the same code as the CLI. None
+`status`, `evidence`, `ask`, `approval_document` or `models`. Every skill calls the same code as
+the CLI. None
 of them can sign an approval, take a human edge, resume a paused run or change policy: a human
 signs with ssh-keygen and runs `run decide` (or `run resume`). An A2A message never approves.
 
 A request is checked, and `start_run` creates its run, before any task is touched, so a refused
 request is a JSON-RPC error and leaves every task as it was (the SDK fails a task terminally
-when its executor raises). `status`, `evidence` and `approval_document` are queries: they are
-answered with a message, never through a task, even when the message names one. A message that
+when its executor raises). `status`, `evidence`, `ask` and `approval_document` are queries: they
+are answered with a message, never through a task, even when the message names one. `models`
+is a query about the repository rather than a run, so it needs no run id. A message that
 names a task without a context gets the task's context.
 
 A run is advanced under one A2A task. While it advances, every provenance event is streamed as
@@ -97,6 +99,7 @@ from starlette.responses import JSONResponse
 from agentic_pipeline.coordinator import Coordinator, StopInfo
 from agentic_pipeline.coordinator import for_run as coordinator_for_run
 from agentic_pipeline.fsutil import WINDOWS, atomic_write_json
+from agentic_pipeline.models_cli import CatalogError, Deps, catalog_rows
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.run_cli import (
     _dispatcher_factory,
@@ -129,6 +132,7 @@ SKILLS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
     "status": (frozenset(), frozenset({"run_id"})),
     "evidence": (frozenset(), frozenset({"run_id"})),
     "ask": (frozenset({"question"}), frozenset({"run_id"})),
+    "models": (frozenset(), frozenset()),
     "approval_document": (
         frozenset({"decision", "approver", "reason"}),
         frozenset({"run_id", "candidate", "remediation_cause"}),
@@ -145,6 +149,11 @@ SKILL_TEXT = {
     "ask": (
         "Ask the coordinator model a question about a run. It answers in text from the run's "
         "Markdown views and changes nothing."
+    ),
+    "models": (
+        "The model catalog of the repository's registry: each model's provider, family, "
+        "capabilities, what it is bound to and, when bound, its readiness and conformance. "
+        "Read-only; it needs no run and calls no model."
     ),
     "approval_document": (
         "Write the unsigned approval document and return the ssh-keygen and `run decide` "
@@ -183,6 +192,8 @@ class PipelineService:
     handlers: Mapping[str, StateHandler] | None = None
     # (root, run directory) -> the run's coordinator: the model that writes the Markdown views
     coordinator_for: Callable[[Path, Path], Coordinator] = coordinator_for_run
+    # (root) -> the model catalog rows; raises CatalogError when the repository fails validation
+    catalog: Callable[[Path], list[dict[str, Any]]] = lambda root: catalog_rows(root, Deps())
     _converting: set[str] = field(default_factory=set)
     _converting_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -226,6 +237,13 @@ class PipelineService:
     def status(self, run_id: str) -> dict[str, Any]:
         store = RunStore(self.run_dir(run_id))
         return {**store.load().to_dict(), "runner_active": store.is_locked()}
+
+    def models(self) -> dict[str, Any]:
+        """The catalog of the repository's registry, for choosing models before a run."""
+        try:
+            return {"models": self.catalog(self.root), "errors": []}
+        except CatalogError as exc:
+            return {"models": [], "errors": exc.errors}
 
     def coordinator(self, run_id: str) -> Coordinator:
         return self.coordinator_for(self.root, self.run_dir(run_id))
@@ -425,6 +443,7 @@ class RunTaskStore(TaskStore):
 
 
 QUERIES = frozenset({"status", "evidence", "approval_document", "ask"})
+RUNLESS = frozenset({"models"})  # answered outright, about the repository rather than a run
 
 
 def _request(message: Message | None) -> tuple[str, dict[str, Any]]:
@@ -487,6 +506,12 @@ class PipelineExecutor(AgentExecutor):
             await self._call(
                 self.service.start, args["run_id"], args.get("entry", "START"), args["entry_spec"]
             )
+        if skill in RUNLESS:
+            return new_data_message(
+                {"skill": skill, **_json(await self._call(getattr(self.service, skill)))},
+                context_id=message.context_id or None,
+                task_id=message.task_id or None,
+            )
         run_id = _run_of(args, task)
         if run_id is None:
             raise InvalidParamsError(message=f"{skill} needs a run_id (or a task that has one)")
@@ -507,7 +532,7 @@ class PipelineExecutor(AgentExecutor):
         skill, args = _request(context.message)
         task = context.current_task
         run_id = _run_of(args, task)
-        if skill in QUERIES or run_id is None:  # only reachable without `prepare`
+        if skill in QUERIES or skill in RUNLESS or run_id is None:  # only without `prepare`
             raise InvalidParamsError(message=f"{skill} is not run on a task")
         await self._advance(context, event_queue, task, run_id, _max_steps(args))
 

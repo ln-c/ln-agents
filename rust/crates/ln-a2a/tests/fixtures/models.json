@@ -1,0 +1,321 @@
+{
+ "result": {
+  "message": {
+   "messageId": "f0513307-a383-4d3d-9dc0-7d86749c0e9d",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "models": [
+       {
+        "location": "cloud",
+        "provider": "claude_pro",
+        "name": "claude_cli_default",
+        "bound_to": [
+         "A3R.synthesis_review"
+        ],
+        "readiness": "ready",
+        "capabilities": [
+         "code_generation",
+         "design_reasoning"
+        ],
+        "family": "claude",
+        "conformance": {
+         "status": "missing",
+         "detail": "no record"
+        },
+        "model_id": "cli-default"
+       },
+       {
+        "location": "cloud",
+        "provider": "claude_pro",
+        "name": "claude_opus_5_5_high_cli",
+        "bound_to": [
+         "A1.proposal_a",
+         "A2.critique_b_by_a"
+        ],
+        "readiness": "ready",
+        "capabilities": [
+         "design_reasoning"
+        ],
+        "family": "claude",
+        "conformance": {
+         "status": "missing",
+         "detail": "no record"
+        },
+        "model_id": "claude-opus-5-5"
+       },
+       {
+        "location": "local",
+        "provider": "llamacpp_local",
+        "name": "qwen3_5_9b",
+        "bound_to": [
+         "C1.module_decomposition",
+         "D1.test_generation",
+         "E1.implementation_patch"
+        ],
+        "readiness": "qwen3_5_9b.daemon UNVERIFIED; qwen3_5_9b.listener_binding UNVERIFIED; qwen3_5_9b.model_inventory UNVERIFIED",
+        "capabilities": [
+         "classification",
+         "code_generation"
+        ],
+        "family": "qwen3_5",
+        "conformance": {
+         "status": "unverifiable",
+         "detail": "the model's current identity could not be resolved"
+        },
+        "model_id": "qwen3.5-9b"
+       },
+       {
+        "location": "cloud",
+        "provider": "clef_flash_free",
+        "name": "clef_flash",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [
+         "classification"
+        ],
+        "family": "clef",
+        "conformance": null,
+        "model_id": "clef-flash"
+       },
+       {
+        "location": "local",
+        "provider": "llamacpp_decision",
+        "name": "clef_flash_local",
+        "bound_to": [
+         "A2J.finding_verdicts"
+        ],
+        "readiness": "clef_flash_local.daemon UNVERIFIED; clef_flash_local.listener_binding UNVERIFIED; clef_flash_local.model_inventory UNVERIFIED",
+        "capabilities": [
+         "decision"
+        ],
+        "family": "clef",
+        "conformance": {
+         "status": "unverifiable",
+         "detail": "the model's current identity could not be resolved"
+        },
+        "model_id": "clef-flash"
+       },
+       {
+        "location": "local",
+        "provider": "openvino_local",
+        "name": "openvino_qwen3_8b_int4_cw",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "qwen3",
+        "conformance": null,
+        "model_id": "OpenVINO/Qwen3-8B-int4-cw-ov"
+       },
+       {
+        "location": "local",
+        "provider": "openvino_local",
+        "name": "openvino_qwen3_1_7b_int4",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "qwen3",
+        "conformance": null,
+        "model_id": "OpenVINO/Qwen3-1.7B-int4-ov"
+       },
+       {
+        "location": "local",
+        "provider": "openvino_local",
+        "name": "openvino_qwen3_0_6b_int4",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "qwen3",
+        "conformance": null,
+        "model_id": "OpenVINO/Qwen3-0.6B-int4-ov"
+       },
+       {
+        "location": "local",
+        "provider": "openvino_local",
+        "name": "openvino_clef_flash",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "clef",
+        "conformance": null,
+        "model_id": "meossistant/clef-flash-openvino"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "gemini_4_argon_medium",
+        "bound_to": [
+         "A1.proposal_b",
+         "A2.critique_a_by_b"
+        ],
+        "readiness": "ready",
+        "capabilities": [
+         "design_reasoning"
+        ],
+        "family": "gemini",
+        "conformance": {
+         "status": "missing",
+         "detail": "no record"
+        },
+        "model_id": "gemini-4-argon-medium"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "gemini_4_argon_high",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "gemini",
+        "conformance": null,
+        "model_id": "gemini-4-argon-high"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "gemini_4_argon_low",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "gemini",
+        "conformance": null,
+        "model_id": "gemini-4-argon-low"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "gemini_3_8_flash_high",
+        "bound_to": [
+         "A3R.synthesis_review"
+        ],
+        "readiness": "ready",
+        "capabilities": [
+         "code_generation",
+         "coordination",
+         "design_reasoning"
+        ],
+        "family": "gemini",
+        "conformance": {
+         "status": "stale",
+         "detail": "identity.model_version changed; registry entry for the model or its provider changed; policy/model_test_profiles.yaml changed"
+        },
+        "model_id": "gemini-3.8-flash-high"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "gemini_3_8_flash_medium",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "gemini",
+        "conformance": null,
+        "model_id": "gemini-3.8-flash-medium"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "gemini_3_8_flash_low",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "gemini",
+        "conformance": null,
+        "model_id": "gemini-3.8-flash-low"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "claude_opus_5_5_low",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "claude",
+        "conformance": null,
+        "model_id": "claude-opus-5-5-low"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "claude_opus_5_5_medium",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "claude",
+        "conformance": null,
+        "model_id": "claude-opus-5-5-medium"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "claude_opus_5_5_high",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "claude",
+        "conformance": null,
+        "model_id": "claude-opus-5-5-high"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "claude_sonnet_5_5_low",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "claude",
+        "conformance": null,
+        "model_id": "claude-sonnet-5-5-low"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "claude_sonnet_5_5_medium",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "claude",
+        "conformance": null,
+        "model_id": "claude-sonnet-5-5-medium"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "claude_sonnet_5_5_high",
+        "bound_to": [],
+        "readiness": null,
+        "capabilities": [],
+        "family": "claude",
+        "conformance": null,
+        "model_id": "claude-sonnet-5-5-high"
+       },
+       {
+        "location": "cloud",
+        "provider": "google_ai_pro",
+        "name": "gpt_oss_120b_medium",
+        "bound_to": [
+         "A3.synthesis"
+        ],
+        "readiness": "ready",
+        "capabilities": [
+         "design_reasoning"
+        ],
+        "family": "gpt_oss",
+        "conformance": {
+         "status": "missing",
+         "detail": "no record"
+        },
+        "model_id": "gpt-oss-120b-medium"
+       }
+      ],
+      "errors": [],
+      "skill": "models"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

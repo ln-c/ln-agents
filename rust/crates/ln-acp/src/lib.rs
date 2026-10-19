@@ -490,6 +490,10 @@ impl Prompt {
                     self.agent.update(&self.session_id, update);
                 }
             }
+            Command::Models => {
+                let catalog = skill_reply(&client()?, &Request::models()).map_err(a2a)?;
+                self.say(render::models_text(&catalog));
+            }
             Command::Ask { question } => {
                 let run = self.the_run(None)?;
                 let request = Request::ask(Some(&run), &question);

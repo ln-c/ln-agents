@@ -83,10 +83,11 @@ A request is one A2A message with one data part naming a skill:
 - `evidence`: the evidence, the choices a human can sign, who may sign, and the readable report (its Markdown and the path it was written to);
 - `approval_document` (`decision`, `approver`, `reason`, and `candidate` for a design approval);
 - `ask` (`question`, and `run_id` unless the task has one): the coordinator's text answer, from the run's Markdown views (see [The coordinator](#the-coordinator)).
+- `models` (no arguments, no run): the model catalog of the repository's registry, the rows `models discover` prints: provider, family, location, capabilities, what each model is bound to and, when bound, its readiness and conformance status. It is read-only and calls no model. If the repository fails `validate`, the reply carries the errors instead of a catalog.
 
 Each skill calls the same code as `run`. **None of them signs, decides or resumes:** the human still signs with `ssh-keygen` and runs `run decide` or `run resume` (`ln-agents` opens a terminal for that, see below).
 
-A request is checked before any task is touched. A refused request is a JSON-RPC error and leaves every task as it was. `status`, `evidence` and `approval_document` are answered with a message, even when the request names a task. A message that names a task without a `contextId` gets the task's context.
+A request is checked before any task is touched. A refused request is a JSON-RPC error and leaves every task as it was. `status`, `evidence`, `ask`, `approval_document` and `models` are answered with a message, even when the request names a task. A message that names a task without a `contextId` gets the task's context.
 
 `advance` streams every provenance event as a WORKING status update, then ends in one of these states:
 - `TASK_STATE_INPUT_REQUIRED` when the run awaits a human, with the evidence attached as an artifact;
@@ -108,7 +109,7 @@ ln-agents acp [--a2a-url http://127.0.0.1:8420/a2a/jsonrpc] [--token-file F]
 The token file defaults to `<session cwd>/.runs/.a2a/token`, the server's default when the editor opens this repository. You can also set it, and the URL, through `LN_AGENTS_TOKEN_FILE` and `LN_AGENTS_A2A_URL`. The URL must be a literal loopback address, and on Unix a token file that others can read is refused. To use it from Zed, add it under `agent_servers` with the command `ln-agents` and the arguments `["acp"]`.
 
 Every prompt is a slash command that runs as code; free text gets the help.
-- `/runs`, `/status [run]` and `/evidence [run]` work in either mode.
+- `/runs`, `/status [run]`, `/evidence [run]` and `/models` work in either mode. `/models` lists the registry's models: a table of those bound to an operation (provider and id, family, where it runs, capabilities, what it is bound to, readiness, conformance), then the others by name, split into those that declare capabilities and can be bound and those with none claimed.
 - Anything you type that is not a slash command is a question for the coordinator model (see [The coordinator](#the-coordinator)), asked about the session's run. The answer is text, from the run's Markdown views; it starts, advances, signs and resumes nothing, and `/help` or `help` shows the commands.
 - `/start <run> <entry_spec.json>`, `/advance [run]` and `/approval-doc <decision>[:<candidate>] <approver> <reason>` need the `design` mode. A design approval names its candidate, e.g. `approve_design_and_no_security_veto:synthesis_sealed`. A session starts in the read-only `status` mode.
 - `/approval-doc` asks the editor once (allow or reject, never "always") before writing the unsigned document. It then shows the `ssh-keygen` and `run decide` commands you could run by hand, and remembers the document for `/decide`.

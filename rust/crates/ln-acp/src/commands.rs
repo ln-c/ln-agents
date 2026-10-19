@@ -54,6 +54,8 @@ pub enum Command {
     Evidence {
         run: Option<String>,
     },
+    /// The model catalog of the repository's registry: read-only, about no run.
+    Models,
     /// Anything that is not a slash command: a question for the coordinator model, answered in
     /// text. It is never parsed into an action.
     Ask {
@@ -98,6 +100,11 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
             "evidence",
             "[run]",
             "The evidence a human signs at H1, R1 or R2",
+        ),
+        (
+            "models",
+            "",
+            "The model catalog: what each model is, what it is bound to, whether it is ready",
         ),
         ("help", "", "What ln-agents can and cannot do"),
     ];
@@ -169,6 +176,10 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
         },
         "evidence" => Command::Evidence {
             run: optional_run(&args)?,
+        },
+        "models" => match args.as_slice() {
+            [] => Command::Models,
+            _ => return Err(Refusal("usage: /models (it takes no arguments)".into())),
         },
         "advance" => Command::Advance {
             run: optional_run(&args)?,
@@ -321,6 +332,11 @@ mod tests {
         assert_eq!(parse("  help ", design), Ok(Command::Help));
         assert_eq!(parse("", design), Ok(Command::Help));
         assert!(parse("/start r1", design).is_err());
+        assert_eq!(parse("/models", design), Ok(Command::Models));
+        assert!(
+            parse("/models qwen", design).is_err(),
+            "it takes no argument"
+        );
         assert_eq!(parse("/decide", design), Ok(Command::Decide));
         assert_eq!(
             parse("/resume ln-c quota is back", design),
@@ -351,7 +367,7 @@ mod tests {
             let refused = parse(text, Mode::Status).unwrap_err();
             assert!(refused.0.contains("read-only"), "{text}: {refused}");
         }
-        for text in ["/runs", "/status", "/evidence", "/help"] {
+        for text in ["/runs", "/status", "/evidence", "/models", "/help"] {
             assert!(parse(text, Mode::Status).is_ok(), "{text}");
         }
     }
@@ -373,6 +389,9 @@ mod tests {
     #[test]
     fn only_design_mode_offers_the_terminals() {
         let offered = |mode| -> Vec<&'static str> { available(mode).iter().map(|c| c.0).collect() };
+        for mode in Mode::ALL {
+            assert!(offered(mode).contains(&"models"), "the catalog only reads");
+        }
         assert!(!offered(Mode::Status).contains(&"decide"));
         assert!(!offered(Mode::Status).contains(&"resume"));
         assert!(offered(Mode::Design).contains(&"decide"));

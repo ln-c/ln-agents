@@ -64,32 +64,70 @@ def _identity(deps: Deps, registry: Mapping[str, Any], model: str) -> Identity |
         return None
 
 
-def discover(root: Path, deps: Deps) -> int:
+class CatalogError(Exception):
+    """The repository fails its static checks, so nothing about its models can be trusted."""
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__("; ".join(errors))
+        self.errors = errors
+
+
+def catalog_rows(root: Path, deps: Deps) -> list[dict[str, Any]]:
+    """One row per catalog model: what it is, what it is bound to and, when it is bound, whether
+    it is ready and has passed conformance. Read-only: it never calls a model.
+
+    `readiness` and `conformance` are None for a model nothing is bound to.
+    """
     report = deps.preflight(root)
-    for err in report.static_errors:
-        print(f"ERROR: {err}", file=sys.stderr)
     if report.static_errors:
-        return 1
+        raise CatalogError(list(report.static_errors))
     registry, profiles, profiles_digest = _load(root)
+    rows: list[dict[str, Any]] = []
     for name, entry in registry["models"].items():
         bound = bound_operations(registry, name)
-        caps = ", ".join(entry["capabilities"]) or "(none claimed)"
-        if not bound:
-            note = "known, bindable" if entry["capabilities"] else "known, unclaimed"
-            print(f"{name}  [{entry['provider']}:{entry['model_id']}, {entry['family']}] {note}")
+        row: dict[str, Any] = {
+            "name": name,
+            "provider": entry["provider"],
+            "model_id": entry["model_id"],
+            "family": entry["family"],
+            "location": backend_location(registry, name),
+            "capabilities": list(entry["capabilities"]),
+            "bound_to": [f"{stage}.{op}" for stage, op in bound],
+            "readiness": None,
+            "conformance": None,
+        }
+        if bound:
+            blockers = report.backend_blockers(name)
+            row["readiness"] = "ready" if not blockers else "; ".join(blockers)
+            status, detail = conformance_status(
+                root, registry, profiles, profiles_digest, name, _identity(deps, registry, name)
+            )
+            row["conformance"] = {"status": status, "detail": detail}
+        rows.append(row)
+    return rows
+
+
+def discover(root: Path, deps: Deps) -> int:
+    try:
+        rows = catalog_rows(root, deps)
+    except CatalogError as exc:
+        for err in exc.errors:
+            print(f"ERROR: {err}", file=sys.stderr)
+        return 1
+    for row in rows:
+        caps = ", ".join(row["capabilities"]) or "(none claimed)"
+        if not row["bound_to"]:
+            note = "known, bindable" if row["capabilities"] else "known, unclaimed"
+            print(f"{row['name']}  [{row['provider']}:{row['model_id']}, {row['family']}] {note}")
             continue
-        blockers = report.backend_blockers(name)
-        print(f"{name}")
-        print(f"  model:        {entry['provider']}:{entry['model_id']}")
-        print(f"  family:       {entry['family']}")
-        print(f"  location:     {backend_location(registry, name)}")
+        print(f"{row['name']}")
+        print(f"  model:        {row['provider']}:{row['model_id']}")
+        print(f"  family:       {row['family']}")
+        print(f"  location:     {row['location']}")
         print(f"  capabilities: {caps}")
-        print(f"  bound to:     {', '.join(f'{s}.{o}' for s, o in bound)}")
-        print(f"  readiness:    {'ready' if not blockers else '; '.join(blockers)}")
-        status, detail = conformance_status(
-            root, registry, profiles, profiles_digest, name, _identity(deps, registry, name)
-        )
-        print(f"  conformance:  {status} ({detail})")
+        print(f"  bound to:     {', '.join(row['bound_to'])}")
+        print(f"  readiness:    {row['readiness']}")
+        print(f"  conformance:  {row['conformance']['status']} ({row['conformance']['detail']})")
     return 0
 
 
