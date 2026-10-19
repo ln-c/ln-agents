@@ -41,6 +41,7 @@ from agentic_pipeline.schemas import ValidationError, validate
 STATE_FILE = "state.json"
 LOCK_FILE = "state.lock"
 PROVENANCE_DIR = "provenance"
+FROZEN_DIR = "frozen"
 LOCK_WAIT_SECONDS = 1.0
 
 
@@ -60,7 +61,7 @@ class RunLocked(RunStateError):
 
 
 class PolicyDrift(RunStateError):
-    """Graph or policy files changed since the run started."""
+    """The graph or policy a run reads no longer matches the digests it recorded at start."""
 
 
 class PauseCause(StrEnum):
@@ -127,11 +128,18 @@ class PolicySnapshot:
     triage: Mapping[str, Any]
 
 
-def load_policy(root: Path) -> PolicySnapshot:
-    """Read the graph and every policy file once; hash and parse those exact bytes."""
+def read_policy(root: Path) -> dict[str, bytes]:
+    """The graph and every policy file under `root`, as bytes, keyed by their relative path."""
     files = [root / "pipeline" / "graph.yaml", *sorted((root / "policy").glob("*.yaml"))]
     try:
-        raw = {p.relative_to(root).as_posix(): p.read_bytes() for p in files}
+        return {p.relative_to(root).as_posix(): p.read_bytes() for p in files}
+    except OSError as exc:
+        raise RunStateError(f"cannot read graph or policy: {type(exc).__name__}: {exc}") from exc
+
+
+def parse_policy(raw: Mapping[str, bytes]) -> PolicySnapshot:
+    """Hash and parse the bytes `read_policy` returned (the digests and documents agree)."""
+    try:
         parsed = {rel: loads_yaml(raw[rel]) for rel in ("pipeline/graph.yaml", *POLICY_PARSED)}
         return PolicySnapshot(
             digests={rel: "sha256:" + hashlib.sha256(d).hexdigest() for rel, d in raw.items()},
@@ -151,8 +159,36 @@ def load_policy(root: Path) -> PolicySnapshot:
             release=parsed["policy/release.yaml"],
             triage=parsed["policy/triage.yaml"],
         )
-    except (OSError, KeyError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
+    except (KeyError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         raise RunStateError(f"cannot read graph or policy: {type(exc).__name__}: {exc}") from exc
+
+
+def load_policy(root: Path) -> PolicySnapshot:
+    """Read the graph and every policy file once; hash and parse those exact bytes."""
+    return parse_policy(read_policy(root))
+
+
+def write_frozen_policy(raw: Mapping[str, bytes], run_root: Path) -> None:
+    """Put the policy a run starts under into `<run>/frozen`, byte for byte.
+
+    `raw` is what `parse_policy` hashed, so the run's recorded digests describe exactly these
+    files. Later edits to the repository's policy do not reach the run.
+    """
+    for rel, data in raw.items():
+        target = run_root / FROZEN_DIR / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+
+def run_policy_root(root: Path, run_root: Path) -> Path:
+    """Where a run reads its graph and policy: its own frozen copy, or `root` for a run that
+    began before runs froze a copy (it is then drift-checked against the repository)."""
+    frozen = run_root / FROZEN_DIR
+    return frozen if frozen.is_dir() else root
+
+
+def load_run_policy(root: Path, run_root: Path) -> PolicySnapshot:
+    return load_policy(run_policy_root(root, run_root))
 
 
 @dataclass(slots=True)

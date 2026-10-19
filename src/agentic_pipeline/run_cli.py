@@ -40,8 +40,10 @@ from agentic_pipeline.run_state import (
     Status,
     check_policy,
     load_policy,
+    load_run_policy,
     recover,
     resume,
+    run_policy_root,
     validate_run_id,
 )
 from agentic_pipeline.runner import ChosenGuard, MakeDispatcher, Outcome, init_run, open_run
@@ -121,7 +123,9 @@ def _dispatcher_factory(root: Path, run_dir: Path) -> MakeDispatcher:
             log=log,
             ledger=ledger,
             adapters=LazyAdapters(policy.registry),
-            preflight=lambda: run_preflight(root, registry=policy.registry),
+            preflight=lambda: run_preflight(
+                root, registry=policy.registry, policy_root=run_policy_root(root, run_dir)
+            ),
             run_root=run_dir,
             data_classes=policy.data_classes,
             guards=guards,
@@ -151,7 +155,7 @@ def _status(args: argparse.Namespace, run_dir: Path) -> int:
         except RunStateError as exc:
             pending = [f"WILL REFUSE TO OPEN: {exc}"]
     try:
-        check_policy(state, load_policy(args.root))
+        check_policy(state, load_run_policy(args.root, run_dir))
     except RunStateError as exc:
         pending.append(f"WILL REFUSE TO OPEN: {exc}")
     print(f"run:      {state.run_id}")
@@ -224,7 +228,7 @@ def write_approval_document(
             issued_at=datetime.now(UTC).isoformat(),
             remediation_cause=remediation_cause,
         )
-        namespace = load_policy(root).approvers["namespace"]
+        namespace = load_policy(runner.policy_root).approvers["namespace"]
     finally:
         runner.close()
     path = out or run_dir / "approvals" / f"{node}-{decision}.json"
@@ -373,7 +377,7 @@ def _resume(args: argparse.Namespace, run_dir: Path) -> int:
     store.acquire()
     try:
         state = store.load()
-        check_policy(state, load_policy(args.root))
+        check_policy(state, load_run_policy(args.root, run_dir))
         log = JsonlProvenanceLog(store.provenance_dir, state.run_id)
         notes = recover(state, log)
         if notes:

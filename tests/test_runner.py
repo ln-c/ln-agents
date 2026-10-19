@@ -15,6 +15,7 @@ from test_dispatch import BINDABLE, DATA_CLASSES, GRAPH, REGISTRY, A, B, FakeAda
 from agentic_pipeline.dispatch import Dispatcher
 from agentic_pipeline.provenance import JsonlProvenanceLog, verify_provenance_chain
 from agentic_pipeline.run_state import (
+    FROZEN_DIR,
     PauseCause,
     PolicyDrift,
     PolicySnapshot,
@@ -23,10 +24,13 @@ from agentic_pipeline.run_state import (
     RunStateError,
     RunStore,
     Status,
+    load_policy,
     resume,
+    run_policy_root,
 )
 from agentic_pipeline.runner import ChosenGuard, Outcome, Runner, StateHandler, init_run, open_run
 from agentic_pipeline.transition import BudgetLedger
+from agentic_pipeline.validation import validate_repo
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ID = "run-1"
@@ -463,16 +467,98 @@ def policy_copy(tmp_path: Path) -> Path:
     ],
     ids=["budget-raised", "graph-edited"],
 )
-def test_changed_policy_refuses_to_continue(
+def test_an_edited_frozen_copy_refuses_to_continue(
     tmp_path: Path, relative: str, mutate: Callable[[str], str]
 ) -> None:
     root = policy_copy(tmp_path)
     rig = Rig(tmp_path, root)
     rig.open().close()
-    path = root / relative
+    path = rig.run_dir / FROZEN_DIR / relative
     path.write_text(mutate(path.read_text()))
     with pytest.raises(PolicyDrift, match=relative):
         rig.open()
+
+
+def test_a_run_freezes_the_policy_it_starts_under(tmp_path: Path) -> None:
+    root = policy_copy(tmp_path)
+    rig = Rig(tmp_path, root)
+    frozen = rig.run_dir / FROZEN_DIR
+    files = ["pipeline/graph.yaml", *(f"policy/{p.name}" for p in (root / "policy").glob("*.yaml"))]
+    for rel in files:
+        assert (frozen / rel).read_bytes() == (root / rel).read_bytes()
+    runner = rig.open()
+    runner.close()
+    assert load_policy(frozen).digests == runner.state.policy
+
+
+@pytest.mark.parametrize(
+    ("relative", "mutate"),
+    [
+        ("policy/budgets.yaml", lambda t: t.replace("max_retries: 2", "max_retries: 9")),
+        ("policy/model_registry.yaml", lambda t: t + "\n# a model was added\n"),
+        ("pipeline/graph.yaml", lambda t: t + "\n# edited\n"),
+    ],
+    ids=["budget-raised", "registry-edited", "graph-edited"],
+)
+def test_editing_the_repository_policy_does_not_reach_a_running_run(
+    tmp_path: Path, relative: str, mutate: Callable[[str], str]
+) -> None:
+    root = policy_copy(tmp_path)
+    rig = Rig(tmp_path, root)
+    before = rig.open(GROUNDING)
+    digests = dict(before.state.policy)
+    before.close()
+    path = root / relative
+    path.write_text(mutate(path.read_text()))
+    runner = rig.open(GROUNDING)  # no PolicyDrift
+    assert runner.state.policy == digests
+    assert runner.step().outcome is Outcome.ADVANCED
+    assert load_policy(root).digests != digests  # new runs would start under the edit
+
+
+def test_a_run_without_a_frozen_copy_is_still_checked_against_the_repository(
+    tmp_path: Path,
+) -> None:
+    root = policy_copy(tmp_path)
+    rig = Rig(tmp_path, root)
+    rig.open().close()
+    shutil.rmtree(rig.run_dir / FROZEN_DIR)  # a run from before runs froze their policy
+    rig.open().close()
+    path = root / "policy" / "budgets.yaml"
+    path.write_text(path.read_text().replace("max_retries: 2", "max_retries: 9"))
+    with pytest.raises(PolicyDrift, match="policy/budgets.yaml"):
+        rig.open()
+
+
+def test_init_never_rewrites_the_frozen_copy_of_an_existing_run(tmp_path: Path) -> None:
+    root = policy_copy(tmp_path)
+    rig = Rig(tmp_path, root)
+    frozen_budgets = rig.run_dir / FROZEN_DIR / "policy" / "budgets.yaml"
+    before = frozen_budgets.read_bytes()
+    path = root / "policy" / "budgets.yaml"
+    path.write_text(path.read_text() + "\n# edited\n")
+    with pytest.raises(RunStateError, match="run already exists"):
+        init_run(root, rig.run_dir, RUN_ID, "START")
+    assert frozen_budgets.read_bytes() == before
+
+
+def test_a_bad_policy_creates_no_run_and_no_frozen_copy(tmp_path: Path) -> None:
+    root = policy_copy(tmp_path)
+    (root / "policy" / "triage.yaml").unlink()
+    run_dir = tmp_path / "runs" / "bad"
+    with pytest.raises(RunStateError, match="cannot read graph or policy"):
+        init_run(root, run_dir, "bad", "START")
+    assert not run_dir.exists()
+
+
+def test_static_checks_of_a_run_read_its_frozen_policy(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    for name in ("pipeline", "policy", "schemas", "agents"):
+        shutil.copytree(ROOT / name, root / name)
+    rig = Rig(tmp_path, root)
+    (root / "policy" / "weights.yaml").write_text("version: 1\nweights: {}\n")
+    assert validate_repo(root)  # a new run would be refused
+    assert validate_repo(root, run_policy_root(root, rig.run_dir)) == []
 
 
 # ── Review fixes: commit record, guarded saves, policy snapshot ──────────────
@@ -638,7 +724,7 @@ def test_policy_edit_mid_session_blocks_the_next_step(tmp_path: Path) -> None:
     rig = Rig(tmp_path, root)
     runner = rig.open(GROUNDING)
     assert runner.step().outcome is Outcome.ADVANCED
-    weights = root / "policy" / "weights.yaml"
+    weights = rig.run_dir / FROZEN_DIR / "policy" / "weights.yaml"
     weights.write_text(weights.read_text() + "\n# edited mid-run\n")
     result = runner.step()
     assert result.outcome is Outcome.BLOCKED and "changed during this session" in result.detail
