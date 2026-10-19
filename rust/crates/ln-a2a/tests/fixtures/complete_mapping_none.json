@@ -1,0 +1,20 @@
+{
+ "result": {
+  "message": {
+   "messageId": "2b11f5bd-afca-454b-9b79-a8db60d8e5e4",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "gaps": [],
+      "errors": [],
+      "change_id": null,
+      "skill": "complete_mapping"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

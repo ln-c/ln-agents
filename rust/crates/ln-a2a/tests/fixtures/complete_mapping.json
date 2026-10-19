@@ -1,0 +1,34 @@
+{
+ "result": {
+  "message": {
+   "messageId": "50e038c1-e563-4144-a775-1e9998e668c4",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "notes": [
+       "agents.extra_helper is new: it owns agents/pipeline-extra-helper-agent.md and runs on gemini_3_8_flash_high. It has no stage wiring, so it serves no operation until a human declares one.",
+       "gemini_3_8_flash_high runs through google_ai_pro: what extra_helper is sent leaves this host (policy/data_classes.yaml still decides what may go)."
+      ],
+      "gaps": [
+       {
+        "agent": "extra_helper",
+        "kind": "no_entry",
+        "spec": "agents/pipeline-extra-helper-agent.md"
+       }
+      ],
+      "diff": "--- a/policy/model_registry.yaml\n+++ b/policy/model_registry.yaml\n@@ -314,4 +314,8 @@\n     security_veto_override_by_model: false\n \n+  extra_helper:\n+    spec: agents/pipeline-extra-helper-agent.md\n+    primary: gemini_3_8_flash_high\n+\n execution:\n   state_graph: pipeline/graph.yaml\n",
+      "skill": "complete_mapping",
+      "errors": [],
+      "kind": "fill_gaps",
+      "summary": "Give 1 agent a model (by code, from the coordinator in LN-AGENTS.md: no model chose this)",
+      "change_id": "d10d897d",
+      "proposed_by": "code"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

@@ -63,7 +63,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// One skill call. Only these twelve exist on the server; there is no way to build another.
+/// One skill call. Only these thirteen exist on the server; there is no way to build another.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     skill: &'static str,
@@ -173,6 +173,14 @@ impl Request {
             args["intent"] = Value::from(intent);
         }
         Self::new("propose_mapping", args)
+    }
+
+    /// If some agent has no model (an `agents/*.md` no entry owns, or an entry whose spec names no
+    /// model), draft the one change that gives each the coordinator `LN-AGENTS.md` names: made
+    /// by code, no model is called. With every agent mapped it answers with an empty gap list.
+    /// About the repository, not a run; nothing in `policy/` changes.
+    pub fn complete_mapping() -> Self {
+        Self::new("complete_mapping", json!({}))
     }
 
     /// Write a stored draft: only its id is sent, never text, so nothing but what the server

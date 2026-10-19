@@ -8,26 +8,30 @@
 
 A request is one A2A message whose single data part names a skill: `start_run`, `advance`,
 `status`, `evidence`, `ask`, `approval_document`, `models`, `agents`, `registry_change`,
-`propose_mapping`, `apply_change` or `discard_change`. Every skill calls the same code as the CLI.
-None of them can sign an approval, take a human edge or resume a paused run: a human signs with
-ssh-keygen and runs `run decide` (or `run resume`). An A2A message never approves.
+`propose_mapping`, `complete_mapping`, `apply_change` or `discard_change`. Every skill calls the
+same code as the CLI. None of them can sign an approval, take a human edge or resume a paused
+run: a human signs with ssh-keygen and runs `run decide` (or `run resume`). An A2A message never
+approves.
 
 One policy file can change, in one way: `policy/model_registry.yaml`, through `registry_change`
 (a draft that code checks against every registry rule and stores with a diff, writing nothing),
-`propose_mapping` (the same, with the bindings proposed by a model acting as the authority) and
-`apply_change` (which takes a draft's id, never text, and writes it only if the file is
-still the one the draft was made from). They add a model, claim capabilities for one, remove an
-unbound one, or bind an agent slot to a model; budgets, vetoes, approvers and the graph cannot
-be reached. ln-agents calls `apply_change` only for the `/confirm` a human types, and the edit
-is a change to the working tree that the human then commits and pushes signed. The bearer token
-is what protects it: whoever holds it can draft and apply.
+`propose_mapping` (the same, with the bindings proposed by a model acting as the authority),
+`complete_mapping` (the same, for agents that have no model, which code fills with the
+coordinator) and `apply_change` (which takes a draft's id, never text, and writes it only if the
+file is still the one the draft was made from). They add a model, claim capabilities for one,
+remove an unbound one, bind an agent slot to a model, or give an agent that has none a model;
+budgets, vetoes, approvers and the graph cannot be reached. ln-agents calls `apply_change` only
+for the `/confirm` a human types, and the edit is a change to the working tree that the human
+then commits and pushes signed. The bearer token is what protects it: whoever holds it can draft
+and apply.
 
-A request is checked, and `start_run` creates its run, before any task is touched, so a refused
-request is a JSON-RPC error and leaves every task as it was (the SDK fails a task terminally
-when its executor raises). `status`, `evidence`, `ask` and `approval_document` are queries: they
-are answered with a message, never through a task, even when the message names one. `models`
-is a query about the repository rather than a run, so it needs no run id. A message that
-names a task without a context gets the task's context.
+A request is checked, and `start_run` creates its run, before any task is touched (and not at
+all while an agent has no model: that is refused, and `complete_mapping` proposes the mapping),
+so a refused request is a JSON-RPC error and leaves every task as it was (the SDK fails a task
+terminally when its executor raises). `status`, `evidence`, `ask` and `approval_document` are
+queries: they are answered with a message, never through a task, even when the message names
+one. `models` is a query about the repository rather than a run, so it needs no run id. A
+message that names a task without a context gets the task's context.
 
 A run is advanced under one A2A task. While it advances, every provenance event is streamed as
 a WORKING status update; when it stops, the task's state says why:
@@ -152,6 +156,7 @@ SKILLS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"provider", "model_id", "capabilities", "model", "models", "slot"}),
     ),
     "propose_mapping": (frozenset(), frozenset({"intent"})),
+    "complete_mapping": (frozenset(), frozenset()),
     "apply_change": (frozenset({"change_id"}), frozenset()),
     "discard_change": (frozenset({"change_id"}), frozenset()),
     "approval_document": (
@@ -192,6 +197,12 @@ SKILL_TEXT = {
         "intent. Code checks every binding against the registry's rules and stores what survives "
         "as a draft with a diff, like registry_change; it writes nothing to policy/. Spends the "
         "model's subscription allowance."
+    ),
+    "complete_mapping": (
+        "Without a run: if some agent (an agents/*.md) has no model, draft one change that gives "
+        "each the coordinator LN-AGENTS.md names, written by code (no model chooses it) and "
+        "stored with a diff like registry_change; nothing is written to policy/ until "
+        "apply_change. Replies with an empty gap list when every agent has a model."
     ),
     "apply_change": (
         "Write a stored draft to policy/model_registry.yaml, if the file is still the one the "
@@ -249,6 +260,8 @@ class PipelineService:
         return self.runs_dir / run_id
 
     def start(self, run_id: str, entry: str, entry_spec: Mapping[str, Any]) -> None:
+        if found := registry_changes.gaps(self.root):
+            raise registry_changes.refuse_start(found)  # before any run directory exists
         with tempfile.TemporaryDirectory(prefix="ln-pipeline-spec-") as tmp:
             spec = Path(tmp) / "entry_spec.json"
             spec.write_text(json.dumps(entry_spec), encoding="utf-8")
@@ -290,7 +303,14 @@ class PipelineService:
         try:
             return {"models": self.catalog(self.root), "errors": []}
         except CatalogError as exc:
-            return {"models": [], "errors": exc.errors}
+            return {"models": [], "errors": self._hinted(exc.errors)}
+
+    def _hinted(self, errors: list[str]) -> list[str]:
+        """`errors`, with what to do about it when the cause is an agent with no model."""
+        return [
+            *errors,
+            *([registry_changes.NO_MODEL_HINT] if registry_changes.gaps(self.root) else []),
+        ]
 
     def agents(self) -> dict[str, Any]:
         """The agent slots and what each is bound to, and the drafts waiting for a human."""
@@ -346,6 +366,28 @@ class PipelineService:
         models = texts("models") or ([text("model")] if "model" in fields else [])
         return registry_changes.draft_bind(self.root, self.runs_dir, text("slot"), models)
 
+    def complete_mapping(self) -> dict[str, Any]:
+        """The draft that gives each agent with no model one, or the gaps and why it cannot."""
+        found = registry_changes.gaps(self.root)
+        gaps = [{"kind": g.kind, "agent": g.agent, "spec": g.spec} for g in found]
+        if not found:
+            return {"gaps": [], "change_id": None, "errors": []}
+        try:
+            with self._registry_lock:
+                draft = registry_changes.propose_fill(self.root, self.runs_dir)
+        except ChangeError as exc:
+            return {"gaps": gaps, "change_id": None, "errors": exc.errors}
+        return {
+            "gaps": gaps,
+            "change_id": draft.change_id,
+            "kind": draft.kind,
+            "summary": draft.summary,
+            "notes": draft.notes,
+            "diff": draft.diff,
+            "proposed_by": "code",
+            "errors": [],
+        }
+
     def propose_mapping(self, intent: str = "") -> dict[str, Any]:
         """The authority's proposed bindings, checked by code and stored as a draft."""
         if not isinstance(intent, str):
@@ -359,7 +401,8 @@ class PipelineService:
                 self.catalog,
             )
         except (ChangeError, CatalogError) as exc:
-            return {"change_id": None, "errors": getattr(exc, "errors", [str(exc)])}
+            errors = getattr(exc, "errors", [str(exc)])
+            return {"change_id": None, "errors": self._hinted(errors)}
         draft = proposal.draft
         return {
             "change_id": draft.change_id,
@@ -602,7 +645,15 @@ ALLOWED_FIELDS: Mapping[str, frozenset[str]] = {
 }
 # Answered outright, about the repository rather than a run.
 RUNLESS = frozenset(
-    {"models", "agents", "registry_change", "propose_mapping", "apply_change", "discard_change"}
+    {
+        "models",
+        "agents",
+        "registry_change",
+        "propose_mapping",
+        "complete_mapping",
+        "apply_change",
+        "discard_change",
+    }
 )
 
 

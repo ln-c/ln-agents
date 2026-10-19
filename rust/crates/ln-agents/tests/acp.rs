@@ -170,6 +170,9 @@ fn replaying() -> Fake {
             ("SendMessage", Some("evidence")) => Reply::json(fixture("evidence.json")),
             ("SendMessage", Some("ask")) => Reply::json(fixture("ask.json")),
             ("SendMessage", Some("models")) => Reply::json(fixture("models.json")),
+            ("SendMessage", Some("complete_mapping")) => {
+                Reply::json(fixture("complete_mapping_none.json"))
+            }
             ("SendMessage", Some("approval_document")) => {
                 Reply::json(fixture("approval_document.json"))
             }
@@ -289,13 +292,84 @@ fn start_streams_the_run_to_h1_as_a_plan_tool_calls_and_evidence() {
         "{text}"
     );
 
-    let [sent] = fake.seen().try_into().unwrap();
+    // the server is asked about the mapping first; every agent has a model, so the run starts
+    let [gate, sent] = fake.seen().try_into().unwrap();
+    assert_eq!(gate.rpc(), "SendMessage");
+    assert_eq!(gate.data().unwrap(), &json!({"skill": "complete_mapping"}));
     assert_eq!(sent.rpc(), "SendStreamingMessage");
     assert_eq!(
         sent.data().unwrap(),
         &json!({"skill": "start_run", "run_id": "deploy-design", "entry_spec": spec})
     );
     assert!(sent.body.pointer("/params/message/taskId").is_none());
+}
+
+/// A fake orchestrator that says an agent has no model, with the reply the real server gave.
+fn gap_fake(fixture_name: &'static str) -> Fake {
+    Fake::start(
+        move |seen| match seen.data().and_then(|d| d["skill"].as_str()) {
+            Some("complete_mapping") => Reply::json(fixture(fixture_name)),
+            _ => Reply::json(fixture("no_run.json")),
+        },
+    )
+}
+
+#[test]
+fn start_proposes_a_mapping_instead_of_a_run_when_an_agent_has_no_model() {
+    let fake = gap_fake("complete_mapping.json");
+    let dir = scratch("acp-gap");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    // the entry spec does not exist: the gate comes before it is read
+    let (messages, reply) = editor.prompt(&session, "/start r missing.json");
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    assert!(
+        text.contains("**1 agent has no model**, so no run was started"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "`agents/pipeline-extra-helper-agent.md`: no entry under `agents` owns this file"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("no model chose this"), "{text}");
+    assert!(
+        text.contains("primary: gemini_3_8_flash_high"),
+        "the diff is shown: {text}"
+    );
+    assert!(text.contains("`/confirm d10d897d`"), "{text}");
+    assert!(text.contains("run `/start` again"), "{text}");
+    assert!(
+        !text.contains("acting as the authority"),
+        "no model proposed it: {text}"
+    );
+    let seen = fake.seen();
+    assert!(
+        seen.iter().all(|s| s.rpc() == "SendMessage"),
+        "no stream was opened"
+    );
+    assert_eq!(skills_sent(&fake), [json!({"skill": "complete_mapping"})]);
+}
+
+#[test]
+fn start_says_why_there_is_no_proposal_and_still_starts_nothing() {
+    let fake = gap_fake("complete_mapping_refused.json");
+    let dir = scratch("acp-gap-refused");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    let (messages, reply) = editor.prompt(&session, "/start r spec.json");
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    assert!(text.contains("**1 agent has no model**"), "{text}");
+    assert!(text.contains("Not drafted, so nothing changed"), "{text}");
+    assert!(
+        text.contains("names no coordinator") && text.contains("`coordinator:`"),
+        "{text}"
+    );
+    assert!(!text.contains("/confirm"), "{text}");
+    assert_eq!(skills_sent(&fake), [json!({"skill": "complete_mapping"})]);
 }
 
 #[test]
