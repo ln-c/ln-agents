@@ -1,7 +1,7 @@
-# ln-hub: one binary for ACP (editor to agent), A2A (to the Python orchestrator) and MCP
+# ln-agents: one binary for ACP (editor to agent), A2A (to the Python orchestrator) and MCP
 # (agent to tool). The orchestrator in src/agentic_pipeline stays authoritative; nothing here
 # takes a pipeline transition or signs with a key of its own. `/decide` and `/resume` open a
-# terminal where the human signs or confirms (crates/ln-hub/src/human.rs, the only place that
+# terminal where the human signs or confirms (crates/ln-agents/src/human.rs, the only place that
 # starts a process).
 [workspace]
 resolver = "3"

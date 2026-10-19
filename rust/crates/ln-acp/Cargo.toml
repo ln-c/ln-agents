@@ -1,6 +1,6 @@
 [package]
 name = "ln-acp"
-description = "ACP agent: editors talk to ln-hub over JSON-RPC on stdio"
+description = "ACP agent: editors talk to ln-agents over JSON-RPC on stdio"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

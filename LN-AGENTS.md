@@ -1,7 +1,7 @@
 ---
 coordinator: gemini_3_8_flash_high
 ---
-# How the ln-hub coordinator should write for me
+# How the ln-agents coordinator should write for me
 
 The coordinator is the model that turns each run document into Markdown, writes a summary at
 every stop, and answers questions in the editor. It cannot start, advance, sign or resume

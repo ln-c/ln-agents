@@ -109,7 +109,7 @@ def test_the_approval_document_skill_names_where_and_under_what_namespace_to_sig
     )
     document = Path(reply["document"])
     assert document.is_absolute() and document.is_file()
-    # ln-hub opens the signing terminal from exactly this layout and namespace
+    # ln-agents opens the signing terminal from exactly this layout and namespace
     assert document.parent == (replay.run_dir / "approvals").resolve()
     assert reply["namespace"] == "agentic-pipeline-approval"
     # the by-hand commands name the same absolute document, however the server was started

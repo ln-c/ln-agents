@@ -1,4 +1,4 @@
-"""The ln-hub coordinator: Markdown views, stop summaries and answers, with no real model.
+"""The ln-agents coordinator: Markdown views, stop summaries and answers, with no real model.
 
 A fake adapter plays the model. The recorded deploy-design run (tests/playback.py) supplies
 real sealed documents, so the views are built from what a run really holds.
@@ -90,7 +90,7 @@ class Fakes:
         self.registry = options.pop("registry", copy.deepcopy(_registry(replay)))
         self.data_classes = options.pop("data_classes", DATA_CLASSES)
         self.unready: tuple[str, ...] = options.pop("unready", ())
-        setup = options.pop("setup", Setup(MODEL, None, "", replay.repo / "LN-HUB.md"))
+        setup = options.pop("setup", Setup(MODEL, None, "", replay.repo / "LN-AGENTS.md"))
         self.coordinator = Coordinator(
             root=replay.repo,
             run_dir=replay.run_dir,
@@ -122,11 +122,11 @@ def advisory(co: Coordinator) -> list[dict[str, Any]]:
     return co._logger().records()
 
 
-# ── LN-HUB.md ────────────────────────────────────────────────────────────────
+# ── LN-AGENTS.md ────────────────────────────────────────────────────────────────
 
 
 def write_setup(tmp_path: Path, text: str) -> Path:
-    (tmp_path / "LN-HUB.md").write_text(text, encoding="utf-8")
+    (tmp_path / "LN-AGENTS.md").write_text(text, encoding="utf-8")
     return tmp_path
 
 
@@ -191,8 +191,8 @@ def test_the_fallback_is_used_only_when_the_first_is_not_ready(at_h1: Replay) ->
 
 
 def test_a_broken_setup_means_no_coordinator_and_says_why(at_h1: Replay) -> None:
-    fakes = Fakes(at_h1, setup=None, setup_error="LN-HUB.md: unknown front matter keys ['x']")
-    assert fakes.coordinator.choose() == (None, "LN-HUB.md: unknown front matter keys ['x']")
+    fakes = Fakes(at_h1, setup=None, setup_error="LN-AGENTS.md: unknown front matter keys ['x']")
+    assert fakes.coordinator.choose() == (None, "LN-AGENTS.md: unknown front matter keys ['x']")
 
 
 # ── a Markdown view of each document ─────────────────────────────────────────
@@ -216,7 +216,7 @@ def test_every_sealed_document_and_gate_record_gets_a_labelled_view(at_h1: Repla
         "B2-scores",
     }
     text = (fakes.coordinator.views / "A3-synthesis.md").read_text(encoding="utf-8")
-    assert text.startswith("<!-- ln-hub view kind=model source=sha256:")
+    assert text.startswith("<!-- ln-agents view kind=model source=sha256:")
     assert f"Written by `{MODEL}`" in text and "The JSON is the record" in text
     assert len(fakes.calls) == len(written)
 

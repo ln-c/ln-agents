@@ -1,4 +1,4 @@
-//! `ln-hub acp` as an editor sees it: the binary on stdio, against a fake `ln-pipeline` that
+//! `ln-agents acp` as an editor sees it: the binary on stdio, against a fake `ln-pipeline` that
 //! replays what the real A2A server sent (ln-a2a/tests/fixtures).
 
 #[path = "../../ln-a2a/tests/fake/mod.rs"]
@@ -29,16 +29,16 @@ impl Editor {
     }
 
     fn start_with(url: &str, token: &Path, env: &[(&str, &str)]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ln-hub"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ln-agents"))
             .args(["acp", "--a2a-url", url, "--token-file"])
             .arg(token)
-            .env_remove("LN_HUB_A2A_URL")
-            .env_remove("LN_HUB_TOKEN_FILE")
+            .env_remove("LN_AGENTS_A2A_URL")
+            .env_remove("LN_AGENTS_TOKEN_FILE")
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .expect("ln-hub starts");
+            .expect("ln-agents starts");
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let (tx, lines) = channel();
@@ -76,10 +76,10 @@ impl Editor {
     fn next_message(&self) -> Value {
         self.lines
             .recv_timeout(WAIT)
-            .expect("ln-hub answers in time")
+            .expect("ln-agents answers in time")
     }
 
-    /// Everything ln-hub sends until the response to `id`, and that response.
+    /// Everything ln-agents sends until the response to `id`, and that response.
     fn until(&self, id: i64) -> (Vec<Value>, Value) {
         let mut before = vec![];
         loop {
@@ -193,7 +193,7 @@ fn initialize_advertises_only_what_it_implements() {
     assert_eq!(capabilities["sessionCapabilities"]["list"], json!({}));
     assert_eq!(capabilities["promptCapabilities"]["image"], false);
     assert_eq!(reply["result"]["authMethods"], json!([]));
-    assert_eq!(reply["result"]["agentInfo"]["name"], "ln-hub");
+    assert_eq!(reply["result"]["agentInfo"]["name"], "ln-agents");
     let (_, reply) = editor.call("authenticate", json!({"methodId": "x"}));
     assert_eq!(reply["error"]["code"], -32601);
     assert!(fake.seen().is_empty());
@@ -268,7 +268,7 @@ fn start_streams_the_run_to_h1_as_a_plan_tool_calls_and_evidence() {
         "{text}"
     );
     assert!(
-        !text.contains("<!-- ln-hub"),
+        !text.contains("<!-- ln-agents"),
         "the file's comment is not for the chat"
     );
     let links: Vec<&str> = updates(&messages, "agent_message_chunk")
@@ -324,7 +324,7 @@ fn approving_and_signing_are_never_commands() {
         let (messages, _) = editor.prompt(&session, text);
         let answer = said(&messages);
         assert!(
-            answer.contains("is not something ln-hub does")
+            answer.contains("is not something ln-agents does")
                 && answer.contains("`/decide` opens a terminal"),
             "{answer}"
         );
@@ -602,7 +602,7 @@ fn a_missing_token_is_explained_and_a_remote_endpoint_is_refused() {
     assert!(said(&messages).contains("serve a2a"), "{}", said(&messages));
     assert!(fake.seen().is_empty());
 
-    let out = Command::new(env!("CARGO_BIN_EXE_ln-hub"))
+    let out = Command::new(env!("CARGO_BIN_EXE_ln-agents"))
         .args(["acp", "--a2a-url", "http://10.0.0.1:8420/a2a/jsonrpc"])
         .stdin(Stdio::null())
         .output()
@@ -677,7 +677,7 @@ fn prompt_and_answer(editor: &mut Editor, session: &str, text: &str, choice: &st
 }
 
 /// A session over a fake orchestrator whose `approval_document` reply names a document under
-/// `dir`, with `LN_HUB_TERMINAL` and `LN_HUB_PIPELINE` set as given.
+/// `dir`, with `LN_AGENTS_TERMINAL` and `LN_AGENTS_PIPELINE` set as given.
 fn human_session(dir: &Path, terminal: &str) -> (Fake, Editor, String, std::path::PathBuf) {
     let runs = dir.join("runs");
     let document = runs.join("deploy-design/approvals/H1-approve_design_and_no_security_veto.json");
@@ -696,8 +696,8 @@ fn human_session(dir: &Path, terminal: &str) -> (Fake, Editor, String, std::path
         }
     });
     let env = [
-        ("LN_HUB_TERMINAL", terminal),
-        ("LN_HUB_PIPELINE", "pipe cmd"),
+        ("LN_AGENTS_TERMINAL", terminal),
+        ("LN_AGENTS_PIPELINE", "pipe cmd"),
     ];
     let mut editor = Editor::start_with(&fake.url, &token_file(dir), &env);
     editor.call(
@@ -778,7 +778,7 @@ fn decide_opens_a_terminal_for_the_document_that_was_written_and_for_nothing_els
     let exe = std::path::PathBuf::from(&words[0]);
     assert_eq!(
         exe.canonicalize().unwrap(),
-        Path::new(env!("CARGO_BIN_EXE_ln-hub"))
+        Path::new(env!("CARGO_BIN_EXE_ln-agents"))
             .canonicalize()
             .unwrap()
     );

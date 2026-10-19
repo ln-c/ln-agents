@@ -287,7 +287,7 @@ class PipelineService:
         from agentic_pipeline.approvals import signing_command
 
         draft = write_approval_document(self.root, self.run_dir(run_id), **fields)
-        document = draft.path.resolve()  # absolute: ln-hub and a human by hand both use it
+        document = draft.path.resolve()  # absolute: ln-agents and a human by hand both use it
         return {
             "node": draft.node,
             "decision": fields["decision"],

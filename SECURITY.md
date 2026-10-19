@@ -18,7 +18,7 @@ pipeline promises, for example:
   veto, or impersonates the human (see `policy/approvers.yaml` and `src/agentic_pipeline/approvals.py`);
 - escaping the build sandbox or writing outside an operation's allowed paths;
 - sending data a data class forbids to a cloud model (`policy/data_classes.yaml`);
-- the A2A server or `ln-hub` accepting a request from anything but loopback with the token;
+- the A2A server or `ln-agents` accepting a request from anything but loopback with the token;
 - forging or replaying a signed approval, or breaking the provenance hash chain.
 
 ## Out of scope

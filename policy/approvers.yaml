@@ -10,7 +10,7 @@
 # (policy drift) until it is re-run under the new policy.
 #
 # The key is a dedicated approval key (~/.ssh/id_ed25519_ln_approval, the default of
-# `run approve`'s signing command and of ln-hub's /decide): not the approver's login or
+# `run approve`'s signing command and of the ln-agents /decide): not the approver's login or
 # git-signing key, protected by a passphrase, and never loaded into an ssh-agent.
 version: 1
 namespace: agentic-pipeline-approval

@@ -1,11 +1,11 @@
 //! The two things only a human does, run in a terminal window the human is looking at:
 //! `/decide` signs an approval document with the human's SSH key and records the decision,
-//! `/resume` records that a paused run may go on. `ln-hub acp` opens the window ([`Terminal`]);
+//! `/resume` records that a paused run may go on. `ln-agents acp` opens the window ([`Terminal`]);
 //! what runs in it ([`decide`], [`resume`]) shows what is at stake, asks the human to type the
 //! run id, and lets `ssh-keygen` ask for the passphrase on that terminal. The orchestrator still
 //! verifies the signature against `policy/approvers.yaml` and takes the edge itself.
 //!
-//! This is the only place in the ln-hub workspace that starts a process (`ln-acp` and `ln-a2a`
+//! This is the only place in the ln-agents workspace that starts a process (`ln-acp` and `ln-a2a`
 //! never do), and only the slash commands reach it, never a model's output.
 
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -19,7 +19,7 @@ use serde_json::Value;
 /// Environment that would let `ssh-keygen` sign without asking the human: a loaded ssh-agent
 /// signs silently, and a forced askpass moves the question out of the window.
 const SIGNING_ENV_REMOVED: [&str; 2] = ["SSH_AUTH_SOCK", "SSH_ASKPASS_REQUIRE"];
-/// How long a freshly opened window may take to fail before ln-hub says it did not open.
+/// How long a freshly opened window may take to fail before ln-agents says it did not open.
 const OPEN_WAIT: Duration = Duration::from_millis(500);
 
 fn on_path(program: &str) -> bool {
@@ -43,10 +43,10 @@ impl Window for Terminal {
         let mut words =
             terminal_words(&self.0, std::env::var("TERMINAL").ok().as_deref(), &on_path)?;
         let program =
-            std::env::current_exe().map_err(|e| format!("cannot find ln-hub itself: {e}"))?;
+            std::env::current_exe().map_err(|e| format!("cannot find ln-agents itself: {e}"))?;
         words.push(program.display().to_string());
         words.extend(args.iter().cloned());
-        let (first, rest) = words.split_first().expect("a terminal word and ln-hub");
+        let (first, rest) = words.split_first().expect("a terminal word and ln-agents");
         let mut child = Command::new(first)
             .args(rest)
             .current_dir(cwd)
@@ -116,7 +116,7 @@ impl Console for Tty {
     }
 }
 
-/// What `ln-hub decide` is asked to sign and record.
+/// What `ln-agents decide` is asked to sign and record.
 pub struct Decision<'a> {
     pub run: &'a str,
     pub approval: &'a Path,
@@ -219,7 +219,7 @@ fn decide_steps(decision: &Decision, console: &mut dyn Console) -> i32 {
             decision.runs_dir.display().to_string(),
         ],
     ) else {
-        console.say("ERROR: no command for the orchestrator (LN_HUB_PIPELINE is empty)");
+        console.say("ERROR: no command for the orchestrator (LN_AGENTS_PIPELINE is empty)");
         return 1;
     };
     let typed = console.ask(&format!(
@@ -296,7 +296,7 @@ fn decide_steps(decision: &Decision, console: &mut dyn Console) -> i32 {
     }
 }
 
-/// What `ln-hub resume` is asked to record.
+/// What `ln-agents resume` is asked to record.
 pub struct Resumption<'a> {
     pub run: &'a str,
     pub by: &'a str,
@@ -326,7 +326,7 @@ pub fn resume(resumption: &Resumption, console: &mut dyn Console) -> i32 {
             resumption.runs_dir.display().to_string(),
         ],
     ) else {
-        console.say("ERROR: no command for the orchestrator (LN_HUB_PIPELINE is empty)");
+        console.say("ERROR: no command for the orchestrator (LN_AGENTS_PIPELINE is empty)");
         return 1;
     };
     let code = match console.run(&program, &args, &[]) {
@@ -398,7 +398,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ln-hub-human-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ln-agents-human-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -594,7 +595,7 @@ mod tests {
         assert!(without.is_empty());
         assert!(
             console.asked.iter().all(|p| p.starts_with("Press Enter")),
-            "ln-hub never types the run id for the orchestrator: {:?}",
+            "ln-agents never types the run id for the orchestrator: {:?}",
             console.asked
         );
 

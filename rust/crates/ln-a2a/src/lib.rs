@@ -1,4 +1,4 @@
-//! A2A client: `ln-hub` talks to the Python orchestrator (`a2a_server.py`, agent `ln-pipeline`)
+//! A2A client: `ln-agents` talks to the Python orchestrator (`a2a_server.py`, agent `ln-pipeline`)
 //! over JSON-RPC and SSE on loopback.
 //!
 //! The client can express exactly the server's six skills ([`Request`]); none of them signs,

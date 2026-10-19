@@ -82,7 +82,7 @@ class Pipeline:
         self.client = TestClient(app)
 
     reply: Any = staticmethod(lambda prompt: "A summary written by the fake coordinator.")
-    setup: Setup | None = Setup("gemini_3_8_flash_high", None, "", ROOT / "LN-HUB.md")
+    setup: Setup | None = Setup("gemini_3_8_flash_high", None, "", ROOT / "LN-AGENTS.md")
 
     def _coordinator(self, root: Path, run_dir: Path) -> Coordinator:
         """The run's coordinator, played by a fake model (or absent when `setup` is None)."""
