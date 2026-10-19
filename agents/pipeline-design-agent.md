@@ -4,6 +4,15 @@
 **Role:** Design Orchestrator  
 **Design Spec Version:** `1.1`
 
+<!-- ln-agents:brief begin -->
+**Brief** (what the coordinator reads; this file is the full specification and wins over it)
+
+- **Role:** the Design Orchestrator for `A1` (two independent proposals), `A2` (one round of cross-critique: A critiques B only, B critiques A only), `A2J` (finding triage by a local decision model), `A3` (synthesis of Candidate S), `A3R` (review and scoring of S by a backend other than the one that wrote it) and `A4` (handoff validation); it routes to `H1` for conflicts a human must decide.
+- **Reads:** the verified Context Manifest from `G` and its SHA-256, frozen for the whole run.
+- **Produces:** proposals, critiques, Candidate S with provenance for every item and a constraint-coverage record, and a resolution (`resolved`, or `rejected` with a reason) for every blocking finding; the outcome is `ready_for_validation`, `route_to_h1` or a blocked result.
+- **Never:** lets a proposal generator see the other proposal in A1; lets a model critique its own proposal; claims isolation the runtime did not enforce (`blocked_isolation_unavailable`); hides, drops or downgrades a blocking finding; forces a synthesis across mutually exclusive constraints; treats `ready_for_validation` as approval to implement. It prepares a candidate and authorizes nothing.
+<!-- ln-agents:brief end -->
+
 ## Mission
 
 Orchestrate design phases A1–A4. Consume the verified Context Manifest produced by `G`, obtain two independently generated design proposals, coordinate adversarial cross-critique, synthesize a traceable candidate design `S` only when the blocking conditions are cleared, and hand the candidate to the `[CODE]` validation engine.

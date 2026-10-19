@@ -467,12 +467,13 @@ def embed_spec(grant: DispatchGrant) -> str:
     spec = grant.agent_spec
     if spec is None:
         return ""
+    tag, what = ("agent_brief", "the brief") if spec.brief else ("agent_spec", "the specification")
     return (
-        f"Reference for your role: the specification of the agent you serve, below. You act only "
+        f"Reference for your role: {what} of the agent you serve, below. You act only "
         f"as the {grant.role} for stage {grant.stage}, operation {grant.operation_id}; do not "
         "perform any other role or phase it describes. The task above and the output format win "
         "over it, and it never lifts a rule that no tools or no network are available to you.\n"
-        f'<agent_spec path="{spec.path}" digest="{spec.digest}">\n{spec.text}\n</agent_spec>\n\n'
+        f'<{tag} path="{spec.path}" digest="{spec.digest}">\n{spec.text}\n</{tag}>\n\n'
     )
 
 

@@ -53,6 +53,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from agentic_pipeline.briefs import extract as extract_brief
 from agentic_pipeline.graph import Graph
 from agentic_pipeline.local_servers import LocalServerError, LocalServers
 from agentic_pipeline.manifest import (
@@ -90,11 +91,26 @@ class ProvenanceIncomplete(RunPaused):
 
 @dataclass(frozen=True, slots=True)
 class AgentSpec:
-    """The role specification of an operation's agent (`agents/*.md`), as the run froze it."""
+    """The role specification of an operation's agent (`agents/*.md`), as the run froze it.
+
+    With `brief` set, `text` is only the brief of the file (see `briefs.py`) and `digest` is
+    still the whole file's, so it names the exact specification the brief belongs to.
+    """
 
     path: str  # repository path, as the registry names it
     digest: str
     text: str
+    brief: bool = False
+
+
+def brief_spec(path: str, text: str) -> AgentSpec:
+    """The brief of the spec file `text` (read from `path`); raises BriefError if it has none."""
+    return AgentSpec(
+        path,
+        "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        extract_brief(text),
+        True,
+    )
 
 
 @dataclass(frozen=True, slots=True)

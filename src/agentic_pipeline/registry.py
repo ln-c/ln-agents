@@ -26,6 +26,9 @@ R19  a provider the dispatcher may start (`launch`) is local and binds exactly t
      host and port its readiness probe checks
 R20  every agent spec has a model: each `agents/*.md` is the `spec` of exactly one agents entry,
      and an entry with a `spec` names at least one catalog model in a backend slot
+R21  every agent spec in the repository has one short brief (between the markers in
+     `briefs.py`), which is what a coordinator reads in place of the file; a run's frozen copy is
+     not held to it, so a run started before briefs existed keeps going
 """
 
 from __future__ import annotations
@@ -35,6 +38,8 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from agentic_pipeline.briefs import BriefError
+from agentic_pipeline.briefs import extract as extract_brief
 from agentic_pipeline.graph import Graph
 from agentic_pipeline.schemas import ValidationError, validator
 
@@ -203,7 +208,8 @@ def validate_registry(
     """Return a list of invariant violations (empty means valid).
 
     `root` holds the schemas. Repository paths (R2) and the agent specs (R20) are looked for in
-    `policy_root` when it holds an `agents/` folder (a run's frozen copy), else in `root`.
+    `policy_root` when it holds an `agents/` folder (a run's frozen copy), else in `root`; the
+    briefs (R21) are checked only in `root`'s own specs.
     """
     try:
         validator("model_registry", root / "schemas")(registry)
@@ -307,6 +313,17 @@ def validate_registry(
     for path in sorted((repo / "agents").glob("*.md")):
         if f"agents/{path.name}" not in owners:
             errors.append(f"registry R20: agents/{path.name} is not the spec of any agents entry")
+
+    # R21. Every spec carries the brief a coordinator reads in its place. It guards what a new
+    # run would freeze: a run's frozen copy keeps the specs it started with, briefed or not.
+    for spec, name in owners.items():
+        path = repo / spec
+        if base is not root or not path.is_file():
+            continue  # a frozen copy, or a spec R2 has already reported missing
+        try:
+            extract_brief(path.read_text(encoding="utf-8"))
+        except (BriefError, UnicodeDecodeError) as exc:
+            errors.append(f"registry R21 agents.{name}: {spec!r} {exc}")
 
     # R3. Backend references name a model, or a provider that is not a model provider.
     for where, ref in _backend_refs(agents, "agents"):
