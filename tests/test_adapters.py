@@ -18,6 +18,7 @@ from agentic_pipeline.adapters import (
     AGY_MOUNT,
     CLAUDE_CONFIG_DIR,
     CLAUDE_MOUNT,
+    PI_AGENT_SPEC,
     PI_CONFIG_DIR,
     PI_MOUNT,
     AgyAdapter,
@@ -28,7 +29,7 @@ from agentic_pipeline.adapters import (
     find_sandbox_node,
 )
 from agentic_pipeline.broker import BrokerStats, InferenceBroker
-from agentic_pipeline.dispatch import DispatchGrant
+from agentic_pipeline.dispatch import AgentSpec, DispatchGrant
 from agentic_pipeline.graph import load_yaml
 from agentic_pipeline.sandbox import (
     HOME,
@@ -734,3 +735,70 @@ def test_pi_adapter_builds_for_a_llamacpp_model_with_its_template_defaults(tmp_p
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ── Agent specs ──────────────────────────────────────────────────────────────
+
+SPEC = AgentSpec(
+    "agents/pipeline-build-agent.md", "sha256:abc123", "# Build agent\nOrchestrate E1-E4.\n"
+)
+
+
+def with_spec(tmp_path: Path, inputs: Mapping[str, Path] | None = None) -> DispatchGrant:
+    return dataclasses.replace(grant(tmp_path, inputs), agent_spec=SPEC)
+
+
+def test_claude_prompt_frames_the_spec_as_reference_for_this_operation(tmp_path: Path) -> None:
+    (tmp_path / "req.md").write_text("build a cache")
+    g = with_spec(tmp_path, {"requirements": tmp_path / "req.md"})
+    user = json.loads(claude(tmp_path).prepare(g).prompt)["user"]
+    assert '<agent_spec path="agents/pipeline-build-agent.md" digest="sha256:abc123">' in user
+    assert "Orchestrate E1-E4." in user
+    assert "You act only as the patch_author for stage E1, operation implementation_patch" in user
+    assert user.index("Reference for your role") < user.index("<agent_spec")
+    assert user.index("</agent_spec>") < user.index('<input artifact="requirements"')
+
+
+def test_a_grant_without_a_spec_leaves_the_prompts_as_they_were(tmp_path: Path) -> None:
+    (tmp_path / "req.md").write_text("build a cache")
+    g = grant(tmp_path, {"requirements": tmp_path / "req.md"})
+    assert "agent_spec" not in json.loads(claude(tmp_path).prepare(g).prompt)["user"]
+    assert "agent_spec" not in agy(tmp_path).prepare(g).prompt.decode()
+    assert "role specification" not in adapter(tmp_path).prepare(g).prompt.decode()
+
+
+def test_agy_prompt_carries_the_spec_and_counts_it_against_the_size_cap(tmp_path: Path) -> None:
+    text = agy(tmp_path).prepare(with_spec(tmp_path)).prompt.decode()
+    assert "<agent_spec" in text and "Orchestrate E1-E4." in text
+    big = dataclasses.replace(SPEC, text="x" * (121 * 1024))
+    with pytest.raises(ValueError, match="too large"):
+        agy(tmp_path).prepare(dataclasses.replace(with_spec(tmp_path / "b"), agent_spec=big))
+
+
+def test_pi_reads_the_spec_from_a_read_only_file_not_the_prompt(tmp_path: Path) -> None:
+    seen: dict[str, str] = {}
+
+    class Reads(Capture):
+        def __call__(self, spec: SandboxSpec, broker: InferenceBroker) -> SandboxResult:
+            seen["spec"] = spec.ro_binds[
+                PI_AGENT_SPEC
+            ].read_text()  # the file exists during the run
+            return super().__call__(spec, broker)
+
+    run = Reads()
+    a = adapter(tmp_path, run=run)
+    g = with_spec(tmp_path)
+    prompt = a.prepare(g).prompt.decode()
+    assert (
+        PI_AGENT_SPEC in prompt and "sha256:abc123" in prompt and "Orchestrate E1-E4." not in prompt
+    )
+    assert a.invoke(g, a.prepare(g)).status == "ok"
+    assert seen["spec"] == SPEC.text
+
+
+def test_pi_without_a_spec_binds_nothing_extra(tmp_path: Path) -> None:
+    run = Capture()
+    a = adapter(tmp_path, run=run)
+    g = grant(tmp_path)
+    a.invoke(g, a.prepare(g))
+    assert PI_AGENT_SPEC not in run.spec.ro_binds

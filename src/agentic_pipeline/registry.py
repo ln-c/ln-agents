@@ -24,6 +24,8 @@ R17  every model provider declares family patterns; every model names a model pr
 R18  every model an operation may run on declares the capabilities the operation requires
 R19  a provider the dispatcher may start (`launch`) is local and binds exactly the loopback
      host and port its readiness probe checks
+R20  every agent spec has a model: each `agents/*.md` is the `spec` of exactly one agents entry,
+     and an entry with a `spec` names at least one catalog model in a backend slot
 """
 
 from __future__ import annotations
@@ -80,6 +82,14 @@ def resolve_agent(agents: Mapping[str, Any], dotted: str) -> Mapping[str, Any] |
             return None
         node = node[part]
     return node if isinstance(node, Mapping) else None
+
+
+def agent_spec_path(registry: Mapping[str, Any], dotted: str) -> str | None:
+    """The spec file of the agent an operation's dotted name belongs to (`design.proposal_a`
+    belongs to `design`), or None if that agent has none."""
+    agent = registry["agents"].get(dotted.split(".")[0])
+    spec = agent.get("spec") if isinstance(agent, Mapping) else None
+    return PurePosixPath(spec).as_posix() if isinstance(spec, str) else None
 
 
 def pattern_family(provider: Mapping[str, Any], model_id: str) -> str | None:
@@ -187,8 +197,14 @@ def _backend_refs(node: Mapping[str, Any], prefix: str) -> Iterator[tuple[str, s
                 yield where, ref
 
 
-def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> list[str]:
-    """Return a list of invariant violations (empty means valid)."""
+def validate_registry(
+    registry: Mapping[str, Any], graph: Graph, root: Path, policy_root: Path | None = None
+) -> list[str]:
+    """Return a list of invariant violations (empty means valid).
+
+    `root` holds the schemas. Repository paths (R2) and the agent specs (R20) are looked for in
+    `policy_root` when it holds an `agents/` folder (a run's frozen copy), else in `root`.
+    """
     try:
         validator("model_registry", root / "schemas")(registry)
     except ValidationError as exc:
@@ -265,7 +281,8 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
             )
 
     # R2. Repo paths exist and do not escape the root.
-    repo = root.resolve()
+    base = policy_root if policy_root is not None and (policy_root / "agents").is_dir() else root
+    repo = base.resolve()
     for where, rel in _repo_paths(registry):
         path = (repo / rel).resolve()
         if not path.is_relative_to(repo):
@@ -273,8 +290,25 @@ def validate_registry(registry: Mapping[str, Any], graph: Graph, root: Path) -> 
         elif not path.is_file():
             errors.append(f"registry R2 {where}: {rel!r} does not exist")
 
-    # R3. Backend references name a model, or a provider that is not a model provider.
+    # R20. Every agent spec has a model: one owner per spec file, and a model it may run on.
     models = registry["models"]
+    owners: dict[str, str] = {}
+    for name, agent in agents.items():
+        spec = agent_spec_path(registry, name)
+        if spec is None:
+            continue
+        if spec in owners:
+            errors.append(
+                f"registry R20 agents.{name}: {spec!r} is also agents.{owners[spec]}'s spec"
+            )
+        owners.setdefault(spec, name)
+        if not any(ref in models for _, ref in _backend_refs(agent, f"agents.{name}")):
+            errors.append(f"registry R20 agents.{name}: its spec {spec!r} names no catalog model")
+    for path in sorted((repo / "agents").glob("*.md")):
+        if f"agents/{path.name}" not in owners:
+            errors.append(f"registry R20: agents/{path.name} is not the spec of any agents entry")
+
+    # R3. Backend references name a model, or a provider that is not a model provider.
     for where, ref in _backend_refs(agents, "agents"):
         if ref in models:
             continue

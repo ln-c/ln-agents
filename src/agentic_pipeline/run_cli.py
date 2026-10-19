@@ -130,6 +130,7 @@ def _dispatcher_factory(root: Path, run_dir: Path) -> MakeDispatcher:
             data_classes=policy.data_classes,
             guards=guards,
             servers=LocalServers(policy.registry, run_dir.parent / SERVER_LOGS),
+            specs=policy.specs,
         )
 
     return make

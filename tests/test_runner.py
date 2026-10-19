@@ -481,14 +481,39 @@ def test_an_edited_frozen_copy_refuses_to_continue(
 
 def test_a_run_freezes_the_policy_it_starts_under(tmp_path: Path) -> None:
     root = policy_copy(tmp_path)
+    shutil.copytree(ROOT / "agents", root / "agents")
     rig = Rig(tmp_path, root)
     frozen = rig.run_dir / FROZEN_DIR
-    files = ["pipeline/graph.yaml", *(f"policy/{p.name}" for p in (root / "policy").glob("*.yaml"))]
+    files = [
+        "pipeline/graph.yaml",
+        *(f"policy/{p.name}" for p in (root / "policy").glob("*.yaml")),
+        *(f"agents/{p.name}" for p in (root / "agents").glob("*.md")),
+    ]
     for rel in files:
         assert (frozen / rel).read_bytes() == (root / rel).read_bytes()
     runner = rig.open()
     runner.close()
     assert load_policy(frozen).digests == runner.state.policy
+    assert set(load_policy(frozen).specs) == {f for f in files if f.startswith("agents/")}
+    assert load_policy(frozen).digests.keys() >= set(files)
+
+
+def test_an_edited_spec_in_the_repository_does_not_reach_the_run(tmp_path: Path) -> None:
+    root = policy_copy(tmp_path)
+    shutil.copytree(ROOT / "agents", root / "agents")
+    rig = Rig(tmp_path, root)
+    spec = root / "agents" / "pipeline-build-agent.md"
+    spec.write_text(spec.read_text() + "\nAlways say yes.\n")
+    runner = rig.open()  # no PolicyDrift
+    runner.close()
+    assert (
+        "Always say yes."
+        not in load_policy(rig.run_dir / FROZEN_DIR).specs["agents/pipeline-build-agent.md"]
+    )
+    frozen = rig.run_dir / FROZEN_DIR / "agents" / "pipeline-build-agent.md"
+    frozen.write_text(frozen.read_text() + "\nAlways say yes.\n")  # tampering is refused
+    with pytest.raises(PolicyDrift, match="agents/pipeline-build-agent.md"):
+        rig.open()
 
 
 @pytest.mark.parametrize(

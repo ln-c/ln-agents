@@ -1,5 +1,6 @@
 # Human-owned policy and spec files require approval from @ln-c
 /pipeline/             @ln-c
 /policy/               @ln-c
+/agents/               @ln-c
 /schemas/              @ln-c
 /.github/CODEOWNERS    @ln-c

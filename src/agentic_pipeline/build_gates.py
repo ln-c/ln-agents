@@ -79,6 +79,7 @@ FORBIDDEN_TREES = (
     "policy",
     "schemas",
     "pipeline",
+    "agents",  # the specs steer models: a model never writes its own instructions
     "scripts",
     ".github",
 )

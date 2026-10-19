@@ -1,9 +1,10 @@
-"""Tests for model registry invariants (R1-R18)."""
+"""Tests for model registry invariants (R1-R20)."""
 # ruff: noqa: E501
 
 from __future__ import annotations
 
 import copy
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,15 @@ def _escape_spec(r: Registry) -> None:
 
 def _missing_spec(r: Registry) -> None:
     r["agents"]["build"]["spec"] = "agents/does-not-exist.md"
+
+
+def _spec_shared_by_two_agents(r: Registry) -> None:
+    r["agents"]["learning"]["spec"] = r["agents"]["build"]["spec"]
+
+
+def _spec_without_a_model(r: Registry) -> None:
+    del r["agents"]["release"]["explanation_fallback"]
+    del r["agents"]["release"]["cloud_explanation_fallback"]  # only `primary` (not a model) is left
 
 
 def _drop_denylist_entry(r: Registry) -> None:
@@ -316,6 +326,8 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ),
     ("launch on another port", _launch_on_another_port, "registry R19 providers.llamacpp_decision"),
     ("launch a cloud tool", _launch_a_cloud_tool, "registry R19 providers.claude_pro"),
+    ("spec shared by two agents", _spec_shared_by_two_agents, "registry R20 agents.learning"),
+    ("spec without a model", _spec_without_a_model, "registry R20 agents.release"),
     ("bad family pattern", _bad_family_pattern, "registry R17 providers.google_ai_pro"),
     (
         "bad pattern after a match",
@@ -336,6 +348,35 @@ def test_registry_violation_detected(mutate: Callable[[Registry], None], expecte
     mutate(registry)
     errors = validate_registry(registry, GRAPH, ROOT)
     assert any(err.startswith(expected) for err in errors), errors
+
+
+def _tree(tmp_path: Path, *, agents: bool = True) -> Path:
+    """A copy of the files a run freezes: the graph, the policy and (optionally) the specs."""
+    for name in ("pipeline", "policy", *(["agents"] if agents else [])):
+        shutil.copytree(ROOT / name, tmp_path / name)
+    return tmp_path
+
+
+def test_a_spec_file_no_agent_owns_is_reported(tmp_path: Path) -> None:
+    tree = _tree(tmp_path)
+    (tree / "agents" / "pipeline-extra-agent.md").write_text("# Extra\n")
+    errors = validate_registry(REGISTRY, GRAPH, ROOT, tree)
+    assert errors == [
+        "registry R20: agents/pipeline-extra-agent.md is not the spec of any agents entry"
+    ]
+    assert validate_registry(REGISTRY, GRAPH, ROOT) == []  # the repository's own agents/ is fine
+
+
+def test_specs_are_looked_up_in_the_frozen_copy_when_it_has_one(tmp_path: Path) -> None:
+    tree = _tree(tmp_path)
+    (tree / "agents" / "pipeline-build-agent.md").unlink()
+    errors = validate_registry(REGISTRY, GRAPH, ROOT, tree)
+    assert any("registry R2 agents.build.spec" in e for e in errors), errors
+
+
+def test_a_frozen_copy_without_specs_falls_back_to_the_repository(tmp_path: Path) -> None:
+    tree = _tree(tmp_path, agents=False)  # a run frozen before specs were part of the copy
+    assert validate_registry(REGISTRY, GRAPH, ROOT, tree) == []
 
 
 def test_schema_failure_short_circuits() -> None:
