@@ -115,3 +115,18 @@ def atomic_write_json(path: Path, document: Mapping[str, Any]) -> None:
     finally:
         tmp.unlink(missing_ok=True)
     fsync_dir(path.parent)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Like `atomic_write_json`, for a text file that humans also read and edit."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{uuid.uuid4().hex}")
+    try:
+        with tmp.open("x", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        retry_sharing(lambda: os.replace(tmp, path))
+    finally:
+        tmp.unlink(missing_ok=True)
+    fsync_dir(path.parent)

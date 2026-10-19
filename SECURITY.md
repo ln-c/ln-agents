@@ -20,6 +20,7 @@ pipeline promises, for example:
 - sending data a data class forbids to a cloud model (`policy/data_classes.yaml`);
 - the A2A server or `ln-agents` accepting a request from anything but loopback with the token;
 - forging or replaying a signed approval, or breaking the provenance hash chain.
+- the A2A `apply_change` skill writing anything but a registry change that `registry_change` drafted, checked and stored, or any file other than `policy/model_registry.yaml`.
 
 ## Out of scope
 

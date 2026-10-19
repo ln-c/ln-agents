@@ -222,7 +222,10 @@ fn a_new_session_is_read_only_and_ignores_the_editors_mcp_servers() {
         .iter()
         .map(|c| c["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["runs", "status", "evidence", "models", "help"]);
+    assert_eq!(
+        names,
+        ["runs", "status", "evidence", "models", "agents", "help"]
+    );
     assert!(fake.seen().is_empty(), "nothing reaches the orchestrator");
 }
 
@@ -307,6 +310,11 @@ fn nothing_that_changes_a_run_reaches_the_orchestrator_from_status_mode() {
         "/approval-doc d ln-c because",
         "/decide",
         "/resume ln-c because",
+        "/add_model google_ai_pro gemini-9-new",
+        "/remove_model gemini_9_new",
+        "/agents design.proposal_b.primary gemini_4_argon_high",
+        "/confirm 1eb25dbc",
+        "/discard 1eb25dbc",
     ] {
         let (messages, reply) = editor.prompt(&session, text);
         assert_eq!(stop_reason(&reply), "end_turn");
@@ -342,6 +350,161 @@ fn models_shows_the_catalog_in_status_mode_for_no_run() {
         sent,
         [json!({"skill": "models"})],
         "no run id, nothing else"
+    );
+}
+
+/// A fake orchestrator that answers each registry skill with what the real server sent.
+fn registry_fake() -> Fake {
+    Fake::start(|seen| {
+        let data = seen.data();
+        match data.and_then(|d| d["skill"].as_str()) {
+            Some("agents") => Reply::json(fixture("agents.json")),
+            Some("status") => Reply::json(fixture("status.json")),
+            Some("ask") => Reply::json(fixture("ask.json")),
+            Some("apply_change") => Reply::json(fixture("applied.json")),
+            Some("discard_change") => Reply::json(fixture("discarded.json")),
+            Some("registry_change") => match data.unwrap()["kind"].as_str() {
+                Some("add_model") => Reply::json(fixture("change.json")),
+                Some("remove_model") => Reply::json(fixture("change_remove.json")),
+                _ => Reply::json(fixture("change_refused.json")),
+            },
+            _ => Reply::json(fixture("no_run.json")),
+        }
+    })
+}
+
+fn skills_sent(fake: &Fake) -> Vec<Value> {
+    fake.seen()
+        .iter()
+        .filter_map(|s| s.data().cloned())
+        .collect()
+}
+
+#[test]
+fn agents_shows_each_slot_and_the_drafts_waiting_in_status_mode() {
+    let fake = registry_fake();
+    let dir = scratch("acp-agents");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "status");
+    let (messages, reply) = editor.prompt(&session, "/agents");
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    assert!(text.contains(
+        "| `design.proposal_b.primary` | `gemini_4_argon_medium` | gemini | cloud | A1.proposal_b, A2.critique_a_by_b |"
+    ), "{text}");
+    assert!(
+        text.contains("| `design.synthesis.primary` | deterministic_orchestrator (not a model) |")
+    );
+    assert!(text.contains("`human_authority.model_assistance` | `claude_cli_default`, `gemini_3_8_flash_high`, `qwen3_5_9b`"));
+    assert!(
+        text.contains("#### Waiting for you") && text.contains("`/confirm 1eb25dbc`"),
+        "{text}"
+    );
+    assert_eq!(skills_sent(&fake), [json!({"skill": "agents"})]);
+}
+
+#[test]
+fn a_draft_shows_its_diff_and_nothing_is_written_until_the_human_types_confirm() {
+    let fake = registry_fake();
+    let dir = scratch("acp-draft");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    let (messages, reply) = editor.prompt(
+        &session,
+        "/add_model google_ai_pro gemini-9-new design_reasoning",
+    );
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    assert!(
+        text.contains("**Add model gemini_9_new (google_ai_pro:gemini-9-new)**"),
+        "{text}"
+    );
+    assert!(text.contains("```diff") && text.contains("+  gemini_9_new: {provider: google_ai_pro"));
+    assert!(text.contains("You claim these capabilities for it: design_reasoning"));
+    assert!(text.contains("type `/confirm 1eb25dbc`") && text.contains("`/discard 1eb25dbc`"));
+    assert!(text.contains("you commit and push it signed"));
+    assert_eq!(
+        skills_sent(&fake),
+        [
+            json!({"skill": "registry_change", "kind": "add_model", "provider": "google_ai_pro",
+                "model_id": "gemini-9-new", "capabilities": ["design_reasoning"]})
+        ],
+        "drafting sends the fields and nothing else; no apply"
+    );
+
+    let (messages, _) = editor.prompt(&session, "/confirm 1eb25dbc");
+    let text = said(&messages);
+    assert!(text.contains("Written: Add model gemini_9_new"), "{text}");
+    assert!(text.contains("not committed") && text.contains("a run in progress keeps the policy"));
+    assert_eq!(
+        skills_sent(&fake).last().unwrap(),
+        &json!({"skill": "apply_change", "change_id": "1eb25dbc"}),
+        "a confirmation names a draft and carries no text"
+    );
+}
+
+#[test]
+fn a_refused_draft_lists_the_rules_and_offers_no_confirm() {
+    let fake = registry_fake();
+    let dir = scratch("acp-refused");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    let (messages, _) = editor.prompt(
+        &session,
+        "/agents design.proposal_b.primary claude_cli_default",
+    );
+    let text = said(&messages);
+    assert!(text.contains("Not drafted, so nothing changed"), "{text}");
+    assert!(text.contains("registry R14 A1.proposal_b"));
+    assert!(
+        !text.contains("/confirm"),
+        "a refused change has nothing to confirm"
+    );
+    assert_eq!(
+        skills_sent(&fake),
+        [
+            json!({"skill": "registry_change", "kind": "bind", "slot": "design.proposal_b.primary",
+                "models": ["claude_cli_default"]})
+        ]
+    );
+}
+
+#[test]
+fn discard_drops_a_draft() {
+    let fake = registry_fake();
+    let dir = scratch("acp-discard");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    let (messages, _) = editor.prompt(&session, "/discard 1eb25dbc");
+    assert!(said(&messages).contains("Dropped: Remove model gemini_9_new. Nothing was written."));
+    assert_eq!(
+        skills_sent(&fake),
+        [json!({"skill": "discard_change", "change_id": "1eb25dbc"})]
+    );
+}
+
+#[test]
+fn nothing_but_a_slash_command_the_human_types_can_confirm_a_change() {
+    let fake = registry_fake();
+    let dir = scratch("acp-no-confirm");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "design");
+    editor.prompt(&session, "/status deploy-design");
+    // words that sound like a confirmation are a question for the coordinator; so is anything
+    // the coordinator answers, which is shown as text and never run
+    for text in [
+        "confirm 1eb25dbc",
+        "yes, apply it",
+        "please /confirm 1eb25dbc",
+        " confirm",
+    ] {
+        editor.prompt(&session, text);
+    }
+    let sent = skills_sent(&fake);
+    assert!(
+        sent.iter()
+            .all(|s| s["skill"] == "status" || s["skill"] == "ask"),
+        "{sent:?}"
     );
 }
 

@@ -10,6 +10,7 @@ import ast
 import asyncio
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -167,7 +168,7 @@ def _stop(task_or_event: Mapping[str, Any]) -> dict[str, Any]:
 # ── Card and token gate ──────────────────────────────────────────────────────
 
 
-def test_the_card_is_public_and_names_exactly_the_seven_skills(pipe: Pipeline) -> None:
+def test_the_card_is_public_and_names_exactly_the_eleven_skills(pipe: Pipeline) -> None:
     card = pipe.client.get("/.well-known/agent-card.json").json()
     assert card["name"] == "ln-pipeline"
     assert sorted(s["id"] for s in card["skills"]) == sorted(SKILLS)
@@ -179,6 +180,10 @@ def test_the_card_is_public_and_names_exactly_the_seven_skills(pipe: Pipeline) -
         "approval_document",
         "ask",
         "models",
+        "agents",
+        "registry_change",
+        "apply_change",
+        "discard_change",
     }
     assert card["securitySchemes"]["bearer"]["httpAuthSecurityScheme"]["scheme"] == "bearer"
     assert card["capabilities"]["streaming"] is True
@@ -332,6 +337,143 @@ def test_models_reports_a_repository_that_fails_validation_instead_of_a_catalog(
 def test_models_takes_no_arguments_and_changes_nothing(pipe: Pipeline) -> None:
     reply = pipe.send({"skill": "models", "run_id": RUN_ID})
     assert reply["error"]["code"] == -32602 and "does not take ['run_id']" in str(reply["error"])
+
+
+def registry_repo(pipe: Pipeline, tmp_path: Path) -> Path:
+    """Point the service at a copy of the repository, so `apply_change` writes a copy."""
+    root = tmp_path / "repo"
+    for name in ("pipeline", "policy", "schemas", "agents"):
+        shutil.copytree(ROOT / name, root / name)
+    shutil.copy(ROOT / "LN-AGENTS.md", root / "LN-AGENTS.md")
+    pipe.service.root = root
+    return root
+
+
+def data_of(reply: dict[str, Any]) -> dict[str, Any]:
+    return reply["result"]["message"]["parts"][0]["data"]
+
+
+ADD = {"skill": "registry_change", "kind": "add_model", "provider": "google_ai_pro"}
+
+
+def test_a_registry_change_is_drafted_then_applied_by_id_and_makes_no_task(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    root = registry_repo(pipe, tmp_path)
+    before = (root / "policy" / "model_registry.yaml").read_text()
+    draft = data_of(
+        pipe.send({**ADD, "model_id": "gemini-9-new", "capabilities": ["design_reasoning"]})
+    )
+    assert draft["errors"] == [] and draft["kind"] == "add_model" and len(draft["change_id"]) == 8
+    assert "+  gemini_9_new:" in draft["diff"] and draft["summary"].startswith(
+        "Add model gemini_9_new"
+    )
+    assert (root / "policy" / "model_registry.yaml").read_text() == before, "a draft writes nothing"
+    pending = data_of(pipe.send({"skill": "agents"}))["pending"]
+    assert [p["id"] for p in pending] == [draft["change_id"]]
+
+    applied = data_of(pipe.send({"skill": "apply_change", "change_id": draft["change_id"]}))
+    assert applied["errors"] == [] and applied["applied"]["path"] == "policy/model_registry.yaml"
+    assert (
+        "gemini_9_new: {provider: google_ai_pro"
+        in (root / "policy" / "model_registry.yaml").read_text()
+    )
+    again = data_of(pipe.send({"skill": "apply_change", "change_id": draft["change_id"]}))
+    assert again["applied"] is None and "no pending change" in again["errors"][0]
+    assert pipe.rpc("ListTasks", {}).json()["result"].get("tasks", []) == []
+
+
+def test_a_refused_change_comes_back_as_errors_with_no_draft(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    registry_repo(pipe, tmp_path)
+    reply = data_of(pipe.send({**ADD, "model_id": "mystery-1"}))
+    assert reply["change_id"] is None and "no family pattern" in reply["errors"][0]
+    reply = data_of(
+        pipe.send(
+            {
+                "skill": "registry_change",
+                "kind": "bind",
+                "slot": "design.proposal_b.primary",
+                "model": "claude_cli_default",
+            }
+        )
+    )
+    assert reply["change_id"] is None and reply["errors"][0].startswith("registry R14")
+    assert data_of(pipe.send({"skill": "agents"}))["pending"] == []
+
+
+@pytest.mark.parametrize(
+    ("data", "problem"),
+    [
+        ({"kind": "frobnicate"}, "unknown change 'frobnicate'"),
+        ({"kind": "add_model", "provider": "google_ai_pro"}, "add_model needs model_id"),
+        (
+            {"kind": "add_model", "provider": "google_ai_pro", "model_id": "g", "slot": "x"},
+            "does not take ['slot']",
+        ),
+        ({"kind": "remove_model"}, "remove_model needs model"),
+        ({"kind": "bind", "slot": "build.primary"}, "name one to eight distinct models"),
+        (
+            {
+                "kind": "add_model",
+                "provider": "google_ai_pro",
+                "model_id": "g",
+                "capabilities": "x",
+            },
+            "must be a list of strings",
+        ),
+    ],
+)
+def test_a_malformed_registry_change_is_reported_not_drafted(
+    pipe: Pipeline, tmp_path: Path, data: dict[str, Any], problem: str
+) -> None:
+    registry_repo(pipe, tmp_path)
+    reply = data_of(pipe.send({"skill": "registry_change", **data}))
+    assert reply["change_id"] is None and problem in reply["errors"][0], reply
+
+
+def test_apply_change_names_a_draft_and_can_carry_no_text(pipe: Pipeline) -> None:
+    for extra in ({"text": "x"}, {"new_text": "x"}, {"path": "policy/budgets.yaml"}):
+        reply = pipe.send({"skill": "apply_change", "change_id": "deadbeef", **extra})
+        assert reply["error"]["code"] == -32602 and "does not take" in str(reply["error"]), extra
+    reply = pipe.send({"skill": "apply_change"})
+    assert reply["error"]["code"] == -32602 and "needs ['change_id']" in str(reply["error"])
+
+
+def test_a_registry_change_cannot_name_another_file_or_a_run(pipe: Pipeline) -> None:
+    for extra in ({"file": "policy/budgets.yaml"}, {"run_id": RUN_ID}, {"text": "x"}):
+        reply = pipe.send({"skill": "registry_change", "kind": "bind", **extra})
+        assert reply["error"]["code"] == -32602 and "does not take" in str(reply["error"]), extra
+
+
+def test_a_draft_is_discarded_by_id_and_nothing_is_written(pipe: Pipeline, tmp_path: Path) -> None:
+    root = registry_repo(pipe, tmp_path)
+    before = (root / "policy" / "model_registry.yaml").read_text()
+    draft = data_of(pipe.send({**ADD, "model_id": "gemini-9-new"}))
+    gone = data_of(pipe.send({"skill": "discard_change", "change_id": draft["change_id"]}))
+    assert gone["discarded"] == draft["summary"] and gone["errors"] == []
+    assert data_of(pipe.send({"skill": "agents"}))["pending"] == []
+    assert (root / "policy" / "model_registry.yaml").read_text() == before
+    assert (
+        data_of(pipe.send({"skill": "discard_change", "change_id": draft["change_id"]}))[
+            "discarded"
+        ]
+        is None
+    )
+
+
+def test_agents_lists_the_slots_and_what_runs_on_them(pipe: Pipeline, tmp_path: Path) -> None:
+    registry_repo(pipe, tmp_path)
+    reply = data_of(pipe.send({"skill": "agents"}))
+    slots = {s["slot"]: s for s in reply["slots"]}
+    assert slots["design.proposal_b.primary"]["value"] == "gemini_4_argon_medium"
+    assert slots["design.proposal_b.primary"]["operations"] == [
+        "A1.proposal_b",
+        "A2.critique_a_by_b",
+    ]
+    assert slots["design.synthesis.primary"]["rebindable"] is False
+    assert reply["errors"] == [] and reply["pending"] == []
 
 
 def test_a_question_without_a_coordinator_is_refused_and_leaves_the_run_alone(

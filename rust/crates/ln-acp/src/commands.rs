@@ -37,8 +37,9 @@ impl Mode {
         match self {
             Mode::Status => "List runs and read their status and evidence; changes nothing.",
             Mode::Design => {
-                "Also start and advance runs, write unsigned approval documents, and open the \
-                 terminal where you sign a decision or resume a run."
+                "Also start and advance runs, write unsigned approval documents, open the \
+                 terminal where you sign a decision or resume a run, and draft and confirm \
+                 changes to the model registry."
             }
         }
     }
@@ -56,6 +57,30 @@ pub enum Command {
     },
     /// The model catalog of the repository's registry: read-only, about no run.
     Models,
+    /// Draft a model for the catalog (or capabilities for a known one). Nothing is written.
+    AddModel {
+        provider: String,
+        model_id: String,
+        capabilities: Vec<String>,
+    },
+    /// Draft the removal of a model nothing is bound to.
+    RemoveModel {
+        model: String,
+    },
+    /// Which model each agent slot is bound to, and the drafts waiting for a human.
+    Agents,
+    /// Draft binding an agent slot to a model (or a list of models for a list slot).
+    Bind {
+        slot: String,
+        models: Vec<String>,
+    },
+    /// Write a draft the server stored: the human's own command, never a model's.
+    Confirm {
+        id: String,
+    },
+    Discard {
+        id: String,
+    },
     /// Anything that is not a slash command: a question for the coordinator model, answered in
     /// text. It is never parsed into an action.
     Ask {
@@ -106,6 +131,11 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
             "",
             "The model catalog: what each model is, what it is bound to, whether it is ready",
         ),
+        (
+            "agents",
+            "",
+            "Which model each agent is bound to, and the registry changes waiting for you",
+        ),
         ("help", "", "What ln-agents can and cannot do"),
     ];
     if mode == Mode::Design {
@@ -135,6 +165,27 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
                 "<who> <reason>",
                 "Open a terminal where you resume the run after a pause",
             ),
+            (
+                "add_model",
+                "<provider> <model_id> [capability ...]",
+                "Draft adding a model to the catalog, or claiming capabilities for a known one",
+            ),
+            (
+                "remove_model",
+                "<model>",
+                "Draft removing a model nothing is bound to",
+            ),
+            (
+                "agents",
+                "<slot> <model>[,<model> ...]",
+                "Draft binding an agent slot to a model",
+            ),
+            (
+                "confirm",
+                "<id>",
+                "Write the drafted registry change you checked; you then commit and push it signed",
+            ),
+            ("discard", "<id>", "Drop a drafted registry change"),
         ]);
     }
     commands
@@ -180,6 +231,52 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
         "models" => match args.as_slice() {
             [] => Command::Models,
             _ => return Err(Refusal("usage: /models (it takes no arguments)".into())),
+        },
+        "agents" => match args.as_slice() {
+            [] => Command::Agents,
+            [slot, models] => Command::Bind {
+                slot: slot.to_string(),
+                models: models
+                    .split(',')
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            },
+            _ => {
+                return Err(Refusal(
+                    "usage: /agents, or /agents <slot> <model>[,<model> ...]".into(),
+                ));
+            }
+        },
+        "add_model" => match args.as_slice() {
+            [provider, model_id, capabilities @ ..] => Command::AddModel {
+                provider: provider.to_string(),
+                model_id: model_id.to_string(),
+                capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
+            },
+            _ => {
+                return Err(Refusal(
+                    "usage: /add_model <provider> <model_id> [capability ...]".into(),
+                ));
+            }
+        },
+        "remove_model" => match args.as_slice() {
+            [model] => Command::RemoveModel {
+                model: model.to_string(),
+            },
+            _ => return Err(Refusal("usage: /remove_model <model>".into())),
+        },
+        "confirm" => match args.as_slice() {
+            [id] => Command::Confirm { id: id.to_string() },
+            _ => {
+                return Err(Refusal(
+                    "usage: /confirm <id> (the id a draft gave you)".into(),
+                ));
+            }
+        },
+        "discard" => match args.as_slice() {
+            [id] => Command::Discard { id: id.to_string() },
+            _ => return Err(Refusal("usage: /discard <id>".into())),
         },
         "advance" => Command::Advance {
             run: optional_run(&args)?,
@@ -237,6 +334,11 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
             | Command::ApprovalDoc { .. }
             | Command::Decide
             | Command::Resume { .. }
+            | Command::AddModel { .. }
+            | Command::RemoveModel { .. }
+            | Command::Bind { .. }
+            | Command::Confirm { .. }
+            | Command::Discard { .. }
     );
     if changes && mode == Mode::Status {
         return Err(Refusal(format!(
@@ -272,7 +374,8 @@ pub fn help(mode: Mode) -> String {
 pub const HUMAN_ONLY: &str = "\nNothing here approves for you. `/decide` opens a terminal \
      where you check what you sign, type the run id and your SSH passphrase; `/resume` opens one \
      where you confirm a resume. Whatever you type here is never your signature, and \
-     `/approve`, `/sign` and `/reject` are not commands.";
+     `/approve`, `/sign` and `/reject` are not commands. `/confirm <id>` writes only a registry \
+     change that a draft showed you, and only when you type it: no reply from a model is one.";
 
 #[cfg(test)]
 mod tests {
@@ -337,6 +440,65 @@ mod tests {
             parse("/models qwen", design).is_err(),
             "it takes no argument"
         );
+        assert_eq!(
+            parse(
+                "/add_model google_ai_pro gemini-9-new design_reasoning coordination",
+                design
+            ),
+            Ok(Command::AddModel {
+                provider: "google_ai_pro".into(),
+                model_id: "gemini-9-new".into(),
+                capabilities: vec!["design_reasoning".into(), "coordination".into()],
+            })
+        );
+        assert_eq!(
+            parse("/add_model google_ai_pro gemini-9-new", design),
+            Ok(Command::AddModel {
+                provider: "google_ai_pro".into(),
+                model_id: "gemini-9-new".into(),
+                capabilities: vec![],
+            })
+        );
+        assert!(parse("/add_model google_ai_pro", design).is_err());
+        assert_eq!(
+            parse("/remove_model gemini_9_new", design),
+            Ok(Command::RemoveModel {
+                model: "gemini_9_new".into()
+            })
+        );
+        assert!(parse("/remove_model", design).is_err());
+        assert_eq!(parse("/agents", design), Ok(Command::Agents));
+        assert_eq!(
+            parse(
+                "/agents design.proposal_b.primary gemini_4_argon_high",
+                design
+            ),
+            Ok(Command::Bind {
+                slot: "design.proposal_b.primary".into(),
+                models: vec!["gemini_4_argon_high".into()],
+            })
+        );
+        assert_eq!(
+            parse("/agents human_authority.model_assistance a,b,c", design),
+            Ok(Command::Bind {
+                slot: "human_authority.model_assistance".into(),
+                models: vec!["a".into(), "b".into(), "c".into()],
+            })
+        );
+        assert!(parse("/agents only-a-slot x y", design).is_err());
+        assert_eq!(
+            parse("/confirm 1eb25dbc", design),
+            Ok(Command::Confirm {
+                id: "1eb25dbc".into()
+            })
+        );
+        assert_eq!(
+            parse("/discard 1eb25dbc", design),
+            Ok(Command::Discard {
+                id: "1eb25dbc".into()
+            })
+        );
+        assert!(parse("/confirm", design).is_err() && parse("/confirm a b", design).is_err());
         assert_eq!(parse("/decide", design), Ok(Command::Decide));
         assert_eq!(
             parse("/resume ln-c quota is back", design),
@@ -363,11 +525,23 @@ mod tests {
             "/approval-doc d a why",
             "/decide",
             "/resume ln-c why",
+            "/add_model google_ai_pro gemini-9-new",
+            "/remove_model gemini_9_new",
+            "/agents design.proposal_b.primary gemini_4_argon_high",
+            "/confirm 1eb25dbc",
+            "/discard 1eb25dbc",
         ] {
             let refused = parse(text, Mode::Status).unwrap_err();
             assert!(refused.0.contains("read-only"), "{text}: {refused}");
         }
-        for text in ["/runs", "/status", "/evidence", "/models", "/help"] {
+        for text in [
+            "/runs",
+            "/status",
+            "/evidence",
+            "/models",
+            "/agents",
+            "/help",
+        ] {
             assert!(parse(text, Mode::Status).is_ok(), "{text}");
         }
     }
@@ -391,6 +565,14 @@ mod tests {
         let offered = |mode| -> Vec<&'static str> { available(mode).iter().map(|c| c.0).collect() };
         for mode in Mode::ALL {
             assert!(offered(mode).contains(&"models"), "the catalog only reads");
+            assert!(offered(mode).contains(&"agents"), "the mapping only reads");
+        }
+        for name in ["add_model", "remove_model", "confirm", "discard"] {
+            assert!(
+                !offered(Mode::Status).contains(&name),
+                "{name} changes a file"
+            );
+            assert!(offered(Mode::Design).contains(&name));
         }
         assert!(!offered(Mode::Status).contains(&"decide"));
         assert!(!offered(Mode::Status).contains(&"resume"));

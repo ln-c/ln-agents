@@ -27,6 +27,10 @@ fn every_captured_reply_deserializes() {
             "evidence",
             "ask",
             "models",
+            "agents",
+            "registry_change",
+            "apply_change",
+            "discard_change",
             "approval_document"
         ]
     );
@@ -35,6 +39,12 @@ fn every_captured_reply_deserializes() {
         "evidence.json",
         "ask.json",
         "models.json",
+        "agents.json",
+        "change.json",
+        "change_refused.json",
+        "change_remove.json",
+        "applied.json",
+        "discarded.json",
         "approval_document.json",
     ] {
         let reply: SendMessageResponse = serde_json::from_value(result(name)).unwrap();
@@ -126,7 +136,7 @@ fn a_token_file_others_can_read_is_refused() {
 }
 
 #[test]
-fn a_request_is_one_data_part_naming_one_of_the_seven_skills() {
+fn a_request_is_one_data_part_naming_one_of_the_eleven_skills() {
     let message = Request::approval_document(
         "r",
         "approve_design_and_no_security_veto",
@@ -172,6 +182,10 @@ fn a_request_is_one_data_part_naming_one_of_the_seven_skills() {
         Request::evidence("r"),
         Request::ask(None, "why?"),
         Request::models(),
+        Request::agents(),
+        Request::add_model("p", "m", &[]),
+        Request::apply_change("deadbeef"),
+        Request::discard_change("deadbeef"),
         Request::approval_document("r", "d", "a", "why", None),
     ]
     .iter()
@@ -180,6 +194,52 @@ fn a_request_is_one_data_part_naming_one_of_the_seven_skills() {
     let card: AgentCard = serde_json::from_str(&fixture("card.json")).unwrap();
     let served: Vec<&str> = card.skills.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(skills, served);
+}
+
+fn sent(request: &Request) -> serde_json::Value {
+    let message = request.message();
+    let [part] = message.parts.as_slice() else {
+        panic!("one part")
+    };
+    let PartContent::Data(data) = &part.content else {
+        panic!("a data part")
+    };
+    data.clone()
+}
+
+#[test]
+fn registry_changes_name_fields_and_a_confirmation_carries_only_an_id() {
+    assert_eq!(
+        sent(&Request::add_model(
+            "google_ai_pro",
+            "gemini-9-new",
+            &["design_reasoning".to_string()]
+        )),
+        json!({"skill": "registry_change", "kind": "add_model", "provider": "google_ai_pro",
+               "model_id": "gemini-9-new", "capabilities": ["design_reasoning"]})
+    );
+    assert_eq!(
+        sent(&Request::remove_model("gemini_9_new")),
+        json!({"skill": "registry_change", "kind": "remove_model", "model": "gemini_9_new"})
+    );
+    assert_eq!(
+        sent(&Request::bind(
+            "design.proposal_b.primary",
+            &["gemini_4_argon_high".to_string()]
+        )),
+        json!({"skill": "registry_change", "kind": "bind", "slot": "design.proposal_b.primary",
+               "models": ["gemini_4_argon_high"]})
+    );
+    // what is written is whatever the server drafted and checked: the request holds no text
+    assert_eq!(
+        sent(&Request::apply_change("1eb25dbc")),
+        json!({"skill": "apply_change", "change_id": "1eb25dbc"})
+    );
+    assert_eq!(
+        sent(&Request::discard_change("1eb25dbc")),
+        json!({"skill": "discard_change", "change_id": "1eb25dbc"})
+    );
+    assert_eq!(sent(&Request::agents()), json!({"skill": "agents"}));
 }
 
 #[test]

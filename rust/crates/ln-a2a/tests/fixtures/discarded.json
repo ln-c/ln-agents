@@ -1,0 +1,19 @@
+{
+ "result": {
+  "message": {
+   "messageId": "e4511f83-da32-4465-b4ca-5dc5ee577d7b",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "discarded": "Remove model gemini_9_new",
+      "errors": [],
+      "skill": "discard_change"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

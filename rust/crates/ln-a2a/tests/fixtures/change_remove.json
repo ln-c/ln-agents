@@ -1,0 +1,25 @@
+{
+ "result": {
+  "message": {
+   "messageId": "e9080382-5895-4c9f-a254-fcd49133b8c9",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "errors": [],
+      "change_id": "de59ca26",
+      "notes": [
+       "Nothing is bound to it. Conformance records under .conformance/ are left in place."
+      ],
+      "kind": "remove_model",
+      "diff": "--- a/policy/model_registry.yaml\n+++ b/policy/model_registry.yaml\n@@ -224,5 +224,4 @@\n   claude_sonnet_5_5_high: {provider: google_ai_pro, model_id: claude-sonnet-5-5-high, alias: \"Claude Sonnet 5.5 (High)\", family: claude, capabilities: []}\n   gpt_oss_120b_medium: {provider: google_ai_pro, model_id: gpt-oss-120b-medium, alias: \"GPT-OSS 120B (Medium)\", family: gpt_oss, capabilities: [design_reasoning]}\n-  gemini_9_new: {provider: google_ai_pro, model_id: \"gemini-9-new\", alias: \"gemini-9-new\", family: gemini, capabilities: [design_reasoning]}\n \n agents:\n",
+      "skill": "registry_change",
+      "summary": "Remove model gemini_9_new"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

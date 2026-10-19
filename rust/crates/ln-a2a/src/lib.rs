@@ -63,7 +63,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// One skill call. Only these seven exist on the server; there is no way to build another.
+/// One skill call. Only these eleven exist on the server; there is no way to build another.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     skill: &'static str,
@@ -128,6 +128,50 @@ impl Request {
     /// so it takes no run id; read-only, and no model is called.
     pub fn models() -> Self {
         Self::new("models", json!({}))
+    }
+
+    /// Which model each agent slot of the registry is bound to, and the drafts waiting for a
+    /// human. About the repository, not a run; read-only.
+    pub fn agents() -> Self {
+        Self::new("agents", json!({}))
+    }
+
+    /// A draft that adds a model (or claims capabilities for a known one). The server checks it
+    /// against every registry rule and stores it with a diff; nothing in `policy/` changes.
+    pub fn add_model(provider: &str, model_id: &str, capabilities: &[String]) -> Self {
+        Self::new(
+            "registry_change",
+            json!({"kind": "add_model", "provider": provider, "model_id": model_id,
+                   "capabilities": capabilities}),
+        )
+    }
+
+    /// A draft that removes a model nothing is bound to.
+    pub fn remove_model(model: &str) -> Self {
+        Self::new(
+            "registry_change",
+            json!({"kind": "remove_model", "model": model}),
+        )
+    }
+
+    /// A draft that binds an agent slot (`design.proposal_b.primary`) to a model, or a list of
+    /// them for a list slot.
+    pub fn bind(slot: &str, models: &[String]) -> Self {
+        Self::new(
+            "registry_change",
+            json!({"kind": "bind", "slot": slot, "models": models}),
+        )
+    }
+
+    /// Write a stored draft: only its id is sent, never text, so nothing but what the server
+    /// drafted and checked can be written. A human's `/confirm`.
+    pub fn apply_change(change_id: &str) -> Self {
+        Self::new("apply_change", json!({"change_id": change_id}))
+    }
+
+    /// Drop a stored draft. A human's `/discard`.
+    pub fn discard_change(change_id: &str) -> Self {
+        Self::new("discard_change", json!({"change_id": change_id}))
     }
 
     pub fn skill(&self) -> &'static str {
