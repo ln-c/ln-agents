@@ -494,6 +494,35 @@ impl Prompt {
                 let catalog = skill_reply(&client()?, &Request::models()).map_err(a2a)?;
                 self.say(render::models_text(&catalog));
             }
+            Command::Agents => {
+                let reply = skill_reply(&client()?, &Request::agents()).map_err(a2a)?;
+                self.say(render::agents_text(&reply));
+            }
+            Command::AddModel {
+                provider,
+                model_id,
+                capabilities,
+            } => {
+                let request = Request::add_model(&provider, &model_id, &capabilities);
+                let reply = skill_reply(&client()?, &request).map_err(a2a)?;
+                self.say(render::change_text(&reply));
+            }
+            Command::RemoveModel { model } => {
+                let reply = skill_reply(&client()?, &Request::remove_model(&model)).map_err(a2a)?;
+                self.say(render::change_text(&reply));
+            }
+            Command::Bind { slot, models } => {
+                let reply = skill_reply(&client()?, &Request::bind(&slot, &models)).map_err(a2a)?;
+                self.say(render::change_text(&reply));
+            }
+            Command::Confirm { id } => {
+                let reply = skill_reply(&client()?, &Request::apply_change(&id)).map_err(a2a)?;
+                self.say(render::applied_text(&reply));
+            }
+            Command::Discard { id } => {
+                let reply = skill_reply(&client()?, &Request::discard_change(&id)).map_err(a2a)?;
+                self.say(render::discarded_text(&reply));
+            }
             Command::Ask { question } => {
                 let run = self.the_run(None)?;
                 let request = Request::ask(Some(&run), &question);

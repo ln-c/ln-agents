@@ -1,0 +1,22 @@
+{
+ "result": {
+  "message": {
+   "messageId": "e743278d-8efc-480f-8d72-f294d93c70a6",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "change_id": null,
+      "errors": [
+       "registry R14 A1.proposal_b: backend 'claude_cli_default' shares model family 'claude' with A1.proposal_a",
+       "registry R14 A2.critique_a_by_b: backend 'claude_cli_default' shares model family 'claude' with A2.critique_b_by_a"
+      ],
+      "skill": "registry_change"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

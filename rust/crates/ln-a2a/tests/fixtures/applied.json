@@ -1,0 +1,23 @@
+{
+ "result": {
+  "message": {
+   "messageId": "c5ec30f7-c8b4-43cb-875f-2d7032860228",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "applied": {
+       "path": "policy/model_registry.yaml",
+       "change_id": "1eb25dbc",
+       "summary": "Add model gemini_9_new (google_ai_pro:gemini-9-new)"
+      },
+      "errors": [],
+      "skill": "apply_change"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

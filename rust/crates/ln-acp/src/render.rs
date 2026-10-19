@@ -435,6 +435,175 @@ pub fn models_text(catalog: &Value) -> String {
     text
 }
 
+/// The errors of a registry skill reply, as a list (empty when there are none).
+fn reply_errors(reply: &Value) -> Vec<&str> {
+    reply
+        .get("errors")
+        .and_then(Value::as_array)
+        .map(|e| e.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// A `registry_change` reply: the refusal, or the draft with its diff and the two ways on.
+pub fn change_text(reply: &Value) -> String {
+    let errors = reply_errors(reply);
+    let id = reply.get("change_id").and_then(Value::as_str);
+    let (Some(id), true) = (id, errors.is_empty()) else {
+        let mut text = String::from("\nNot drafted, so nothing changed:\n\n");
+        for error in errors {
+            text.push_str(&format!("- {error}\n"));
+        }
+        return text;
+    };
+    let summary = reply.get("summary").and_then(Value::as_str).unwrap_or("");
+    let mut text = format!("\n**{summary}**\n\n");
+    for note in reply
+        .get("notes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        text.push_str(&format!("- {note}\n"));
+    }
+    if let Some(diff) = reply.get("diff").and_then(Value::as_str) {
+        text.push_str(&format!("\n```diff\n{}\n```\n", diff.trim_end()));
+    }
+    text.push_str(&format!(
+        "\nIt passed every registry rule and nothing is written yet. To write it, type \
+         `/confirm {id}`; to drop it, `/discard {id}`. A confirmed change is only an edit to \
+         your working tree: you commit and push it signed.\n"
+    ));
+    text
+}
+
+/// An `apply_change` reply.
+pub fn applied_text(reply: &Value) -> String {
+    let errors = reply_errors(reply);
+    let Some(applied) = reply.get("applied").filter(|a| a.is_object()) else {
+        let mut text = String::from("\nNot written, so nothing changed:\n\n");
+        for error in errors {
+            text.push_str(&format!("- {error}\n"));
+        }
+        return text;
+    };
+    let field = |k: &str| applied.get(k).and_then(Value::as_str).unwrap_or("-");
+    format!(
+        "\nWritten: {}. `{}` is changed in your working tree and not committed. Review it with \
+         `git diff`, then commit and push it signed. Runs you start after that use it; a run in \
+         progress keeps the policy it started with.\n",
+        field("summary"),
+        field("path")
+    )
+}
+
+/// A `discard_change` reply.
+pub fn discarded_text(reply: &Value) -> String {
+    match reply.get("discarded").and_then(Value::as_str) {
+        Some(summary) => format!("\nDropped: {summary}. Nothing was written.\n"),
+        None => {
+            let mut text = String::from("\nNothing to drop:\n\n");
+            for error in reply_errors(reply) {
+                text.push_str(&format!("- {error}\n"));
+            }
+            text
+        }
+    }
+}
+
+/// An `agents` reply: the slots as a table, then the drafts waiting for a human.
+pub fn agents_text(reply: &Value) -> String {
+    let errors = reply_errors(reply);
+    if !errors.is_empty() {
+        let mut text =
+            String::from("\nThe repository fails its checks, so there is no mapping:\n\n");
+        for error in errors {
+            text.push_str(&format!("- {error}\n"));
+        }
+        return text;
+    }
+    let list = |row: &Value, key: &str| -> Vec<String> {
+        row.get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut text = String::from(
+        "\n#### Agents and their models\n\n| slot | bound to | family | where | serves |\n|---|---|---|---|---|\n",
+    );
+    for row in reply
+        .get("slots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let slot = row.get("slot").and_then(Value::as_str).unwrap_or("-");
+        let models = row
+            .get("models")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let name = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).unwrap_or("-").to_string();
+        let (bound, family, place) = if row.get("rebindable") == Some(&Value::Bool(true)) {
+            (
+                models
+                    .iter()
+                    .map(|m| format!("`{}`", name(m, "name")))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                models
+                    .iter()
+                    .map(|m| name(m, "family"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                models
+                    .iter()
+                    .map(|m| name(m, "location"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        } else {
+            let fixed = match row.get("value") {
+                Some(Value::String(v)) => v.clone(),
+                other => other.map(Value::to_string).unwrap_or_default(),
+            };
+            (format!("{fixed} (not a model)"), "-".into(), "-".into())
+        };
+        let serves = list(row, "operations").join(", ");
+        text.push_str(&format!(
+            "| `{slot}` | {} | {family} | {place} | {} |\n",
+            bound.replace('|', "\\|"),
+            if serves.is_empty() { "-" } else { &serves }
+        ));
+    }
+    text.push_str(
+        "\nBind one with `/agents <slot> <model>`; list slots take several, separated by commas. \
+         `/models` shows what each model can do.\n",
+    );
+    let pending = reply
+        .get("pending")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if !pending.is_empty() {
+        text.push_str("\n#### Waiting for you\n\n");
+        for change in pending {
+            let field = |k: &str| change.get(k).and_then(Value::as_str).unwrap_or("-");
+            text.push_str(&format!(
+                "- `{}`: {} (`/confirm {0}` or `/discard {0}`)\n",
+                field("id"),
+                field("summary")
+            ));
+        }
+    }
+    text
+}
+
 /// An `approval_document` skill reply: where the document is and the two human steps.
 /// `/decide` or `/resume` opened a terminal window for the human.
 pub fn window_opened(run: &str, what: &str, command: &str) -> String {

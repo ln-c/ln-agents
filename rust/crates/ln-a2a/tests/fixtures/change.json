@@ -1,0 +1,26 @@
+{
+ "result": {
+  "message": {
+   "messageId": "11a4f83d-b0a1-4375-a358-0a255ef0c1b8",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "errors": [],
+      "change_id": "1eb25dbc",
+      "notes": [
+       "gemini_9_new is a gemini model served through google_ai_pro (its traffic leaves this host).",
+       "You claim these capabilities for it: design_reasoning. A capability is declared, not measured; `python -m agentic_pipeline models test --model gemini_9_new` checks it once the model is bound."
+      ],
+      "kind": "add_model",
+      "diff": "--- a/policy/model_registry.yaml\n+++ b/policy/model_registry.yaml\n@@ -224,4 +224,5 @@\n   claude_sonnet_5_5_high: {provider: google_ai_pro, model_id: claude-sonnet-5-5-high, alias: \"Claude Sonnet 5.5 (High)\", family: claude, capabilities: []}\n   gpt_oss_120b_medium: {provider: google_ai_pro, model_id: gpt-oss-120b-medium, alias: \"GPT-OSS 120B (Medium)\", family: gpt_oss, capabilities: [design_reasoning]}\n+  gemini_9_new: {provider: google_ai_pro, model_id: \"gemini-9-new\", alias: \"gemini-9-new\", family: gemini, capabilities: [design_reasoning]}\n \n agents:\n",
+      "skill": "registry_change",
+      "summary": "Add model gemini_9_new (google_ai_pro:gemini-9-new)"
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}

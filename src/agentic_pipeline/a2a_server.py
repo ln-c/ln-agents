@@ -7,10 +7,19 @@
   ListTasks, CancelTask (a2a-sdk's JSON-RPC binding, protocol 1.0).
 
 A request is one A2A message whose single data part names a skill: `start_run`, `advance`,
-`status`, `evidence`, `ask`, `approval_document` or `models`. Every skill calls the same code as
-the CLI. None
-of them can sign an approval, take a human edge, resume a paused run or change policy: a human
-signs with ssh-keygen and runs `run decide` (or `run resume`). An A2A message never approves.
+`status`, `evidence`, `ask`, `approval_document`, `models`, `agents`, `registry_change`,
+`apply_change` or `discard_change`. Every skill calls the same code as the CLI. None of them can
+sign an approval, take a human edge or resume a paused run: a human signs with ssh-keygen and
+runs `run decide` (or `run resume`). An A2A message never approves.
+
+One policy file can change, in one way: `policy/model_registry.yaml`, through `registry_change`
+(a draft that code checks against every registry rule and stores with a diff, writing nothing)
+and `apply_change` (which takes a draft's id, never text, and writes it only if the file is
+still the one the draft was made from). They add a model, claim capabilities for one, remove an
+unbound one, or bind an agent slot to a model; budgets, vetoes, approvers and the graph cannot
+be reached. ln-agents calls `apply_change` only for the `/confirm` a human types, and the edit
+is a change to the working tree that the human then commits and pushes signed. The bearer token
+is what protects it: whoever holds it can draft and apply.
 
 A request is checked, and `start_run` creates its run, before any task is touched, so a refused
 request is a JSON-RPC error and leaves every task as it was (the SDK fails a task terminally
@@ -96,11 +105,13 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 
+from agentic_pipeline import registry_changes
 from agentic_pipeline.coordinator import Coordinator, StopInfo
 from agentic_pipeline.coordinator import for_run as coordinator_for_run
 from agentic_pipeline.fsutil import WINDOWS, atomic_write_json
 from agentic_pipeline.models_cli import CatalogError, Deps, catalog_rows
 from agentic_pipeline.provenance import JsonlProvenanceLog
+from agentic_pipeline.registry_changes import ChangeError
 from agentic_pipeline.run_cli import (
     _dispatcher_factory,
     save_evidence_report,
@@ -133,6 +144,13 @@ SKILLS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
     "evidence": (frozenset(), frozenset({"run_id"})),
     "ask": (frozenset({"question"}), frozenset({"run_id"})),
     "models": (frozenset(), frozenset()),
+    "agents": (frozenset(), frozenset()),
+    "registry_change": (
+        frozenset({"kind"}),
+        frozenset({"provider", "model_id", "capabilities", "model", "models", "slot"}),
+    ),
+    "apply_change": (frozenset({"change_id"}), frozenset()),
+    "discard_change": (frozenset({"change_id"}), frozenset()),
     "approval_document": (
         frozenset({"decision", "approver", "reason"}),
         frozenset({"run_id", "candidate", "remediation_cause"}),
@@ -155,6 +173,22 @@ SKILL_TEXT = {
         "capabilities, what it is bound to and, when bound, its readiness and conformance. "
         "Read-only; it needs no run and calls no model."
     ),
+    "agents": (
+        "Which model each agent slot of the registry is bound to (and what runs on it), and the "
+        "registry changes waiting for a human. Read-only; it needs no run."
+    ),
+    "registry_change": (
+        "Draft one change to policy/model_registry.yaml: add a model (or claim capabilities for "
+        "one the catalog has), remove an unbound model, or bind an agent slot to a model. Code "
+        "checks it against every registry rule and stores it with a diff; nothing is written "
+        "to policy/ until a human's apply_change."
+    ),
+    "apply_change": (
+        "Write a stored draft to policy/model_registry.yaml, if the file is still the one the "
+        "draft was made from and the result still passes every rule. Takes a draft's id and "
+        "nothing else, so it cannot write anything a draft did not hold. The human's /confirm."
+    ),
+    "discard_change": "Drop a stored draft without writing it. The human's /discard.",
     "approval_document": (
         "Write the unsigned approval document and return the ssh-keygen and `run decide` "
         "commands. The human signs and decides; nothing here approves."
@@ -194,6 +228,7 @@ class PipelineService:
     coordinator_for: Callable[[Path, Path], Coordinator] = coordinator_for_run
     # (root) -> the model catalog rows; raises CatalogError when the repository fails validation
     catalog: Callable[[Path], list[dict[str, Any]]] = lambda root: catalog_rows(root, Deps())
+    _registry_lock: threading.Lock = field(default_factory=threading.Lock)
     _converting: set[str] = field(default_factory=set)
     _converting_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -244,6 +279,84 @@ class PipelineService:
             return {"models": self.catalog(self.root), "errors": []}
         except CatalogError as exc:
             return {"models": [], "errors": exc.errors}
+
+    def agents(self) -> dict[str, Any]:
+        """The agent slots and what each is bound to, and the drafts waiting for a human."""
+        try:
+            return {
+                "slots": registry_changes.mapping(self.root),
+                "pending": registry_changes.pending(self.runs_dir),
+                "errors": [],
+            }
+        except ChangeError as exc:
+            return {"slots": [], "pending": [], "errors": exc.errors}
+
+    def registry_change(self, kind: str, **fields: Any) -> dict[str, Any]:
+        """Draft a change to the registry. It is checked and stored with a diff, not applied."""
+        try:
+            with self._registry_lock:
+                draft = self._draft(kind, fields)
+        except ChangeError as exc:
+            return {"change_id": None, "errors": exc.errors}
+        return {
+            "change_id": draft.change_id,
+            "kind": draft.kind,
+            "summary": draft.summary,
+            "notes": draft.notes,
+            "diff": draft.diff,
+            "errors": [],
+        }
+
+    def _draft(self, kind: str, fields: Mapping[str, Any]) -> registry_changes.Draft:
+        def text(name: str) -> str:
+            value = fields.get(name)
+            if not isinstance(value, str) or not value:
+                raise ChangeError(f"{kind} needs {name} (a string)")
+            return value
+
+        def texts(name: str) -> list[str]:
+            value = fields.get(name, [])
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise ChangeError(f"{name} must be a list of strings")
+            return value
+
+        extra = sorted(set(fields) - ALLOWED_FIELDS.get(kind, frozenset()))
+        if kind not in ALLOWED_FIELDS:
+            raise ChangeError(f"unknown change {kind!r}; the changes are {sorted(ALLOWED_FIELDS)}")
+        if extra:
+            raise ChangeError(f"{kind} does not take {extra}")
+        if kind == "add_model":
+            return registry_changes.draft_add_model(
+                self.root, self.runs_dir, text("provider"), text("model_id"), texts("capabilities")
+            )
+        if kind == "remove_model":
+            return registry_changes.draft_remove_model(self.root, self.runs_dir, text("model"))
+        models = texts("models") or ([text("model")] if "model" in fields else [])
+        return registry_changes.draft_bind(self.root, self.runs_dir, text("slot"), models)
+
+    def apply_change(self, change_id: str) -> dict[str, Any]:
+        """Write a stored draft: the human's `/confirm`. The caller names a draft, never text."""
+        try:
+            with self._registry_lock:
+                applied = registry_changes.apply(self.root, self.runs_dir, change_id)
+        except ChangeError as exc:
+            return {"applied": None, "errors": exc.errors}
+        return {
+            "applied": {
+                "change_id": applied.change_id,
+                "summary": applied.summary,
+                "path": applied.path,
+            },
+            "errors": [],
+        }
+
+    def discard_change(self, change_id: str) -> dict[str, Any]:
+        try:
+            with self._registry_lock:
+                summary = registry_changes.discard(self.runs_dir, change_id)
+        except ChangeError as exc:
+            return {"discarded": None, "errors": exc.errors}
+        return {"discarded": summary, "errors": []}
 
     def coordinator(self, run_id: str) -> Coordinator:
         return self.coordinator_for(self.root, self.run_dir(run_id))
@@ -443,7 +556,14 @@ class RunTaskStore(TaskStore):
 
 
 QUERIES = frozenset({"status", "evidence", "approval_document", "ask"})
-RUNLESS = frozenset({"models"})  # answered outright, about the repository rather than a run
+# The fields each kind of registry change takes (anything else is refused).
+ALLOWED_FIELDS: Mapping[str, frozenset[str]] = {
+    "add_model": frozenset({"provider", "model_id", "capabilities"}),
+    "remove_model": frozenset({"model"}),
+    "bind": frozenset({"slot", "model", "models"}),
+}
+# Answered outright, about the repository rather than a run.
+RUNLESS = frozenset({"models", "agents", "registry_change", "apply_change", "discard_change"})
 
 
 def _request(message: Message | None) -> tuple[str, dict[str, Any]]:
@@ -508,7 +628,7 @@ class PipelineExecutor(AgentExecutor):
             )
         if skill in RUNLESS:
             return new_data_message(
-                {"skill": skill, **_json(await self._call(getattr(self.service, skill)))},
+                {"skill": skill, **_json(await self._call(getattr(self.service, skill), **args))},
                 context_id=message.context_id or None,
                 task_id=message.task_id or None,
             )

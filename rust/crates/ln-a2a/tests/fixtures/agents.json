@@ -1,0 +1,344 @@
+{
+ "result": {
+  "message": {
+   "messageId": "b938b364-73c8-4414-b44f-e22329fc4d67",
+   "role": "ROLE_AGENT",
+   "parts": [
+    {
+     "data": {
+      "errors": [],
+      "pending": [
+       {
+        "created_at": "2026-10-19T08:52:50.248694+00:00",
+        "summary": "Add model gemini_9_new (google_ai_pro:gemini-9-new)",
+        "id": "1eb25dbc"
+       }
+      ],
+      "skill": "agents",
+      "slots": [
+       {
+        "operations": [],
+        "agent": "grounding",
+        "slot": "grounding.primary",
+        "models": [
+         {
+          "family": "qwen3_5",
+          "location": "local",
+          "name": "qwen3_5_9b"
+         }
+        ],
+        "spec": "agents/pipeline-grounding-agent.md",
+        "value": "qwen3_5_9b",
+        "rebindable": true
+       },
+       {
+        "operations": [],
+        "agent": "grounding",
+        "slot": "grounding.escalation",
+        "models": [
+         {
+          "family": "claude",
+          "location": "cloud",
+          "name": "claude_cli_default"
+         }
+        ],
+        "spec": "agents/pipeline-grounding-agent.md",
+        "value": "claude_cli_default",
+        "rebindable": true
+       },
+       {
+        "operations": [
+         "A1.proposal_a",
+         "A2.critique_b_by_a"
+        ],
+        "agent": "design.proposal_a",
+        "slot": "design.proposal_a.primary",
+        "models": [
+         {
+          "family": "claude",
+          "location": "cloud",
+          "name": "claude_opus_5_5_high_cli"
+         }
+        ],
+        "spec": "agents/pipeline-design-agent.md",
+        "value": "claude_opus_5_5_high_cli",
+        "rebindable": true
+       },
+       {
+        "operations": [
+         "A1.proposal_b",
+         "A2.critique_a_by_b"
+        ],
+        "agent": "design.proposal_b",
+        "slot": "design.proposal_b.primary",
+        "models": [
+         {
+          "family": "gemini",
+          "location": "cloud",
+          "name": "gemini_4_argon_medium"
+         }
+        ],
+        "spec": "agents/pipeline-design-agent.md",
+        "value": "gemini_4_argon_medium",
+        "rebindable": true
+       },
+       {
+        "operations": [
+         "A2J.finding_verdicts"
+        ],
+        "agent": "design.finding_triage",
+        "slot": "design.finding_triage.primary",
+        "models": [
+         {
+          "family": "clef",
+          "location": "local",
+          "name": "clef_flash_local"
+         }
+        ],
+        "spec": "agents/pipeline-design-agent.md",
+        "value": "clef_flash_local",
+        "rebindable": true
+       },
+       {
+        "operations": [
+         "A3.synthesis"
+        ],
+        "agent": "design.synthesis",
+        "slot": "design.synthesis.primary",
+        "models": [],
+        "spec": "agents/pipeline-design-agent.md",
+        "value": "deterministic_orchestrator",
+        "rebindable": false
+       },
+       {
+        "operations": [
+         "A3.synthesis"
+        ],
+        "agent": "design.synthesis",
+        "slot": "design.synthesis.model_assistance",
+        "models": [
+         {
+          "family": "gpt_oss",
+          "location": "cloud",
+          "name": "gpt_oss_120b_medium"
+         }
+        ],
+        "spec": "agents/pipeline-design-agent.md",
+        "value": [
+         "gpt_oss_120b_medium"
+        ],
+        "rebindable": true
+       },
+       {
+        "operations": [
+         "A3R.synthesis_review"
+        ],
+        "agent": "design.synthesis_review",
+        "slot": "design.synthesis_review.primary",
+        "models": [],
+        "spec": "agents/pipeline-design-agent.md",
+        "value": "deterministic_orchestrator",
+        "rebindable": false
+       },
+       {
+        "operations": [
+         "A3R.synthesis_review"
+        ],
+        "agent": "design.synthesis_review",
+        "slot": "design.synthesis_review.model_assistance",
+        "models": [
+         {
+          "family": "gemini",
+          "location": "cloud",
+          "name": "gemini_3_8_flash_high"
+         },
+         {
+          "family": "claude",
+          "location": "cloud",
+          "name": "claude_cli_default"
+         }
+        ],
+        "spec": "agents/pipeline-design-agent.md",
+        "value": [
+         "gemini_3_8_flash_high",
+         "claude_cli_default"
+        ],
+        "rebindable": true
+       },
+       {
+        "operations": [],
+        "agent": "scoring_authorization",
+        "slot": "scoring_authorization.primary",
+        "models": [],
+        "spec": null,
+        "value": "deterministic_rules",
+        "rebindable": false
+       },
+       {
+        "operations": [
+         "C1.module_decomposition",
+         "D1.test_generation",
+         "E1.implementation_patch"
+        ],
+        "agent": "build",
+        "slot": "build.primary",
+        "models": [
+         {
+          "family": "qwen3_5",
+          "location": "local",
+          "name": "qwen3_5_9b"
+         }
+        ],
+        "spec": "agents/pipeline-build-agent.md",
+        "value": "qwen3_5_9b",
+        "rebindable": true
+       },
+       {
+        "operations": [],
+        "agent": "exception_router",
+        "slot": "exception_router.primary",
+        "models": [],
+        "spec": "agents/pipeline-exception-router.md",
+        "value": "deterministic_rules",
+        "rebindable": false
+       },
+       {
+        "operations": [],
+        "agent": "exception_router",
+        "slot": "exception_router.optional_classifier",
+        "models": [
+         {
+          "family": "clef",
+          "location": "cloud",
+          "name": "clef_flash"
+         }
+        ],
+        "spec": "agents/pipeline-exception-router.md",
+        "value": "clef_flash",
+        "rebindable": true
+       },
+       {
+        "operations": [],
+        "agent": "release",
+        "slot": "release.primary",
+        "models": [],
+        "spec": "agents/pipeline-release-agent.md",
+        "value": "deterministic_ci_git_policy",
+        "rebindable": false
+       },
+       {
+        "operations": [],
+        "agent": "release",
+        "slot": "release.explanation_fallback",
+        "models": [
+         {
+          "family": "qwen3_5",
+          "location": "local",
+          "name": "qwen3_5_9b"
+         }
+        ],
+        "spec": "agents/pipeline-release-agent.md",
+        "value": "qwen3_5_9b",
+        "rebindable": true
+       },
+       {
+        "operations": [],
+        "agent": "release",
+        "slot": "release.cloud_explanation_fallback",
+        "models": [
+         {
+          "family": "claude",
+          "location": "cloud",
+          "name": "claude_cli_default"
+         }
+        ],
+        "spec": "agents/pipeline-release-agent.md",
+        "value": "claude_cli_default",
+        "rebindable": true
+       },
+       {
+        "operations": [],
+        "agent": "learning",
+        "slot": "learning.primary",
+        "models": [],
+        "spec": "agents/pipeline-learning-agent.md",
+        "value": "local_ledger_and_deterministic_metrics",
+        "rebindable": false
+       },
+       {
+        "operations": [],
+        "agent": "learning",
+        "slot": "learning.analysis_fallback",
+        "models": [
+         {
+          "family": "qwen3_5",
+          "location": "local",
+          "name": "qwen3_5_9b"
+         }
+        ],
+        "spec": "agents/pipeline-learning-agent.md",
+        "value": "qwen3_5_9b",
+        "rebindable": true
+       },
+       {
+        "operations": [],
+        "agent": "learning",
+        "slot": "learning.subscription_analysis",
+        "models": [
+         {
+          "family": "claude",
+          "location": "cloud",
+          "name": "claude_cli_default"
+         }
+        ],
+        "spec": "agents/pipeline-learning-agent.md",
+        "value": "claude_cli_default",
+        "rebindable": true
+       },
+       {
+        "operations": [],
+        "agent": "human_authority",
+        "slot": "human_authority.primary",
+        "models": [],
+        "spec": "agents/pipeline-human-authority-agent.md",
+        "value": "human_approval_ui_and_deterministic_state_machine",
+        "rebindable": false
+       },
+       {
+        "operations": [],
+        "agent": "human_authority",
+        "slot": "human_authority.model_assistance",
+        "models": [
+         {
+          "family": "claude",
+          "location": "cloud",
+          "name": "claude_cli_default"
+         },
+         {
+          "family": "gemini",
+          "location": "cloud",
+          "name": "gemini_3_8_flash_high"
+         },
+         {
+          "family": "qwen3_5",
+          "location": "local",
+          "name": "qwen3_5_9b"
+         }
+        ],
+        "spec": "agents/pipeline-human-authority-agent.md",
+        "value": [
+         "claude_cli_default",
+         "gemini_3_8_flash_high",
+         "qwen3_5_9b"
+        ],
+        "rebindable": true
+       }
+      ]
+     }
+    }
+   ]
+  }
+ },
+ "id": 1,
+ "jsonrpc": "2.0"
+}
