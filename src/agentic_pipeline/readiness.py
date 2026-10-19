@@ -571,14 +571,16 @@ def run_preflight(
     root: Path = REPO_ROOT,
     host: Host | None = None,
     registry: Mapping[str, Any] | None = None,
+    policy_root: Path | None = None,
 ) -> Report:
-    """Probe the host. Pass `registry` to evaluate a run's frozen, drift-checked policy."""
-    errors = validate_repo(root)
+    """Probe the host. Pass `registry` (and `policy_root`, where the graph and policy are read
+    from) to evaluate a run's frozen, drift-checked policy."""
+    errors = validate_repo(root, policy_root)
     if errors:
         return Report(static_errors=errors)
     host = host or Host.real()
     if registry is None:
-        registry = load_yaml(root / "policy" / "model_registry.yaml")
+        registry = load_yaml((policy_root or root) / "policy" / "model_registry.yaml")
     report = Report(static_errors=[], registry=registry)
     report.global_checks.append(
         probe_credential_env(registry["policy"]["prohibited_credential_env_vars"], host.environ)

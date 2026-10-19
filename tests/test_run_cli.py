@@ -34,6 +34,37 @@ def test_init_status_and_blocked_step(tmp_path: Path, capsys: pytest.CaptureFixt
     assert RunStore(tmp_path / "demo").load().steps == 0
 
 
+def test_a_repository_policy_edit_does_not_stop_an_existing_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], human: None
+) -> None:
+    root = tmp_path / "repo"
+    for name in ("pipeline", "policy"):
+        shutil.copytree(REPO_ROOT / name, root / name)
+    runs = tmp_path / "runs"
+
+    def cli(*args: str) -> int:
+        return main(["run", args[0], *args[1:], "--runs-dir", str(runs), "--root", str(root)])
+
+    assert cli("init", "demo") == 0
+    store = RunStore(runs / "demo")
+    state = store.load()
+    state.pause("quota_exhausted")
+    store.save(state)
+    path = root / "policy" / "budgets.yaml"
+    path.write_text(path.read_text() + "\n# edited after the run started\n")
+    capsys.readouterr()
+
+    assert cli("status", "demo") == 0
+    assert "WILL REFUSE TO OPEN" not in capsys.readouterr().out
+    assert cli("resume", "demo", "--by", "ln", "--reason", "quota reset") == 0
+    assert store.load().status is Status.RUNNING
+
+    frozen = runs / "demo" / "frozen" / "policy" / "budgets.yaml"
+    frozen.write_text(frozen.read_text() + "\n# tampered\n")
+    assert cli("status", "demo") == 0
+    assert "WILL REFUSE TO OPEN" in capsys.readouterr().out
+
+
 def test_duplicate_and_bad_run_ids_are_errors(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -263,8 +294,11 @@ def test_dispatcher_readiness_uses_the_frozen_registry(
 
     seen: dict[str, object] = {}
 
-    def fake_preflight(root: Path, host: object = None, registry: object = None) -> object:
+    def fake_preflight(
+        root: Path, host: object = None, registry: object = None, policy_root: object = None
+    ) -> object:
         seen["registry"] = registry
+        seen["policy_root"] = policy_root
         return None
 
     monkeypatch.setattr(run_cli, "run_preflight", fake_preflight)
@@ -274,6 +308,7 @@ def test_dispatcher_readiness_uses_the_frozen_registry(
     )
     dispatcher.preflight()
     assert seen["registry"] is policy.registry
+    assert seen["policy_root"] == run_cli.REPO_ROOT  # no frozen copy in this run directory
 
 
 # ── Third review round ───────────────────────────────────────────────────────

@@ -15,9 +15,9 @@ class PolicyChanged(Exception):
 
 
 def frozen_policy(ctx: HandlerContext) -> PolicySnapshot:
-    """Policy as read now, which must still be the bytes this run froze at start."""
+    """Policy as read now from the run's own copy, which must still be the bytes it froze."""
     try:
-        snap = load_policy(ctx.root)
+        snap = load_policy(ctx.policy_root or ctx.root)
     except RunStateError as exc:
         raise PolicyChanged(str(exc)) from exc
     if snap.digests != dict(ctx.policy_digests):

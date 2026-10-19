@@ -43,14 +43,19 @@ def _capabilities(root: Path) -> list[str]:
         return []  # the registry check reports the unreadable schema
 
 
-def validate_repo(root: Path = REPO_ROOT) -> list[str]:
-    """Return every static invariant violation in the repository (empty means valid)."""
+def validate_repo(root: Path = REPO_ROOT, policy_root: Path | None = None) -> list[str]:
+    """Return every static invariant violation in the repository (empty means valid).
+
+    The graph and policy are read from `policy_root` (a run's frozen copy); the schemas and the
+    agent specs the registry names are checked in `root`.
+    """
     errors: list[str] = []
-    graph_raw = _load(root, "pipeline/graph.yaml", errors)
-    budgets = _load(root, "policy/budgets.yaml", errors)
-    routing = _load(root, "policy/routing.yaml", errors)
-    policy_docs = {name: _load(root, f"policy/{name}.yaml", errors) for name in POLICY_FILES}
-    registry = _load(root, "policy/model_registry.yaml", errors)
+    source = policy_root or root
+    graph_raw = _load(source, "pipeline/graph.yaml", errors)
+    budgets = _load(source, "policy/budgets.yaml", errors)
+    routing = _load(source, "policy/routing.yaml", errors)
+    policy_docs = {name: _load(source, f"policy/{name}.yaml", errors) for name in POLICY_FILES}
+    registry = _load(source, "policy/model_registry.yaml", errors)
 
     graph = Graph.from_mapping(graph_raw) if graph_raw is not None else None
     if graph is not None and budgets is not None and routing is not None:

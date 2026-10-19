@@ -648,10 +648,15 @@ def for_run(
     """The coordinator for one run, under the policy the run froze (drift refuses it)."""
     from agentic_pipeline.readiness import run_preflight
     from agentic_pipeline.run_cli import _adapter_factories
-    from agentic_pipeline.run_state import RunStore, check_policy, load_policy
+    from agentic_pipeline.run_state import (
+        RunStore,
+        check_policy,
+        load_run_policy,
+        run_policy_root,
+    )
 
     state = RunStore(run_dir).load()
-    policy = load_policy(root)
+    policy = load_run_policy(root, run_dir)
     check_policy(state, policy)
     factories = _adapter_factories()
 
@@ -670,7 +675,9 @@ def for_run(
         registry=policy.registry,
         data_classes=policy.data_classes,
         adapter_factory=adapter_factory or build,
-        preflight=lambda: run_preflight(root, registry=policy.registry),
+        preflight=lambda: run_preflight(
+            root, registry=policy.registry, policy_root=run_policy_root(root, run_dir)
+        ),
         setup=setup,
         setup_error=error,
     )

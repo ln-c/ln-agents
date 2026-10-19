@@ -63,8 +63,12 @@ from agentic_pipeline.run_state import (
     Status,
     check_policy,
     load_policy,
+    parse_policy,
+    read_policy,
     recover,
+    run_policy_root,
     validate_run_id,
+    write_frozen_policy,
 )
 from agentic_pipeline.transition import (
     BudgetExhausted,
@@ -86,6 +90,7 @@ class HandlerContext:
     graph: Graph
     registry: Mapping[str, Any]
     root: Path = REPO_ROOT  # repository whose pinned snapshot the run grounds
+    policy_root: Path | None = None  # where the run reads its policy; None means `root`
     policy_digests: Mapping[str, str] = field(default_factory=dict)  # frozen at run start
     provenance_tip: Callable[[], str] = lambda: GENESIS_HASH  # chain tip, for manifests
     entered_from: Callable[[], str | None] = lambda: None  # state this node was entered from
@@ -154,8 +159,10 @@ class Runner:
         handlers: Mapping[str, StateHandler] | None = None,
         budgets: Mapping[str, Any] | None = None,
         root: Path | None = None,
+        policy_root: Path | None = None,
     ) -> None:
-        self.root = root if root is not None else REPO_ROOT  # repo whose policy is frozen
+        self.root = root if root is not None else REPO_ROOT  # repo the run grounds
+        self.policy_root = policy_root if policy_root is not None else self.root
         self.graph, self.registry, self.store = graph, registry, store
         self.budgets = dict((budgets or {}).get("budgets") or {})
         self.log, self.ledger, self.dispatcher = log, ledger, dispatcher
@@ -183,14 +190,15 @@ class Runner:
         if st.status is Status.FINISHED:
             return StepResult(Outcome.FINISHED, st.current)
         try:
-            drifted = load_policy(self.root).digests != st.policy
+            drifted = load_policy(self.policy_root).digests != st.policy
         except RunStateError as exc:
             return StepResult(Outcome.BLOCKED, st.current, f"cannot read policy: {exc}")
         if drifted:
             return StepResult(
                 Outcome.BLOCKED,
                 st.current,
-                "graph or policy changed during this session; the run will refuse to reopen",
+                "the run's frozen graph or policy changed during this session; "
+                "it will refuse to reopen",
             )
 
         node = st.current
@@ -325,7 +333,7 @@ class Runner:
             raise ApprovalError(f"run is {st.status.value}; a decision needs awaiting_human")
         if st.current not in NODE_DECISION:
             raise ApprovalError(f"signed approvals are not wired for {st.current} yet")
-        policy = load_policy(self.root)
+        policy = load_policy(self.policy_root)
         check_policy(st, policy)
         try:
             gather = {"H1": approval_evidence, "R1": release_evidence, "R2": deploy_evidence}[
@@ -343,7 +351,7 @@ class Runner:
         who may sign it, and a Markdown report of it all (a view; only the evidence is signed)."""
         evidence = self.approval_evidence()
         node = self.state.current
-        policy = load_policy(self.root)
+        policy = load_policy(self.policy_root)
         offered = choices(node, [e.guard for e in self.graph.edges if e.src == node], evidence)
         kind = NODE_DECISION[node]
         try:
@@ -365,7 +373,7 @@ class Runner:
         st = self.state
         node = st.current
         evidence = self.approval_evidence()
-        policy = load_policy(self.root)
+        policy = load_policy(self.policy_root)
         verified: Verified = verify_approval(
             document,
             signature,
@@ -408,6 +416,7 @@ class Runner:
             self.graph,
             self.registry,
             root=self.root,
+            policy_root=self.policy_root,
             policy_digests=self.state.policy,
             provenance_tip=self.log.tip,
             entered_from=self._entered_from,
@@ -494,13 +503,17 @@ class Runner:
 def init_run(
     root: Path, run_dir: Path, run_id: str, entry: str, entry_spec: Path | None = None
 ) -> RunState:
-    """Create a new run at an entrypoint, freezing graph and policy digests.
+    """Create a new run at an entrypoint, freezing the graph and policy it starts under.
+
+    The frozen copy (`<run>/frozen`) is what the run reads from then on, so editing the
+    repository's policy changes new runs and leaves this one as it was.
 
     `entry_spec` is the grounding agent's payload; it is validated here so a bad one never
     creates a run, and copied into the run for START to seal. START validates it again.
     """
     validate_run_id(run_id)
-    policy = load_policy(root)
+    raw = read_policy(root)
+    policy = parse_policy(raw)
     if entry not in policy.graph.entrypoints:
         raise RunStateError(f"{entry!r} is not an entrypoint {policy.graph.entrypoints}")
     spec_bytes = None
@@ -513,6 +526,9 @@ def init_run(
     store = RunStore(run_dir)
     store.acquire()
     try:
+        if store.exists():
+            raise RunStateError(f"run already exists: {store.path}")
+        write_frozen_policy(raw, run_dir)
         store.provenance_dir.mkdir(parents=True, exist_ok=True)
         state = RunState(run_id=run_id, current=entry, policy=policy.digests)
         store.create(state)
@@ -537,7 +553,8 @@ def open_run(
     store.acquire()
     try:
         state = store.load()
-        policy = load_policy(root)  # one read; everything below uses these checked bytes
+        policy_root = run_policy_root(root, run_dir)
+        policy = load_policy(policy_root)  # one read; everything below uses these checked bytes
         check_policy(state, policy)
         try:
             ledger = BudgetLedger.from_policy(policy.budgets)
@@ -562,6 +579,7 @@ def open_run(
             handlers=handlers,
             budgets=policy.budgets,
             root=root,
+            policy_root=policy_root,
         )
     except BaseException:
         store.release()
