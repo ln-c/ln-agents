@@ -24,7 +24,7 @@ from agentic_pipeline.adapters import (
     requests_from_inputs,
 )
 from agentic_pipeline.conformance import ProbeEnv, check_decision_probe
-from agentic_pipeline.dispatch import DispatchGrant
+from agentic_pipeline.dispatch import AgentSpec, DispatchGrant
 from agentic_pipeline.graph import load_yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,6 +169,15 @@ def test_prepare_hashes_the_request_list_as_sent(tmp_path: Path) -> None:
     assert call.model == MODEL and "systemone" in call.access_method
     again = adapter().prepare(grant(tmp_path / "b"))
     assert again.prompt_hash == call.prompt_hash
+
+
+def test_a_spec_on_the_grant_does_not_change_the_decision_prompt(tmp_path: Path) -> None:
+    # The decision model answers in one batch and its threshold was calibrated on this exact
+    # prompt, so the agent spec is never added to it.
+    plain = grant(tmp_path)
+    spec = AgentSpec("agents/pipeline-design-agent.md", "sha256:abc", "# Design\n" * 1000)
+    with_spec = dataclasses.replace(grant(tmp_path / "b"), agent_spec=spec)
+    assert adapter().prepare(with_spec).prompt_hash == adapter().prepare(plain).prompt_hash
 
 
 @pytest.mark.parametrize(

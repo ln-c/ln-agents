@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -218,6 +219,22 @@ def test_grant_carries_only_declared_scope(tmp_path: Path, adapters: dict) -> No
     )
     assert grant.write_root == "proposal_a" and grant.run_id == "run-1"
     assert grant.output_schema == "proposal"  # from the registry, not the adapter
+
+
+def test_grant_carries_the_agents_frozen_spec(tmp_path: Path, adapters: dict) -> None:
+    d = make(tmp_path, adapters)
+    design, build = "agents/pipeline-design-agent.md", "agents/pipeline-build-agent.md"
+    d.specs = {design: "# Design\n", build: "# Build\n"}
+    d.dispatch_stage("G", "always", "A1", {})
+    for grants in (adapters[A].grants, adapters[B].grants):  # both sides serve the design agent
+        spec = grants[0].agent_spec
+        assert spec is not None and spec.path == design and spec.text == "# Design\n"
+        assert spec.digest == "sha256:" + hashlib.sha256(b"# Design\n").hexdigest()
+
+
+def test_a_run_that_froze_no_specs_gets_none(tmp_path: Path, adapters: dict) -> None:
+    make(tmp_path, adapters).dispatch_stage("G", "always", "A1", {})
+    assert adapters[A].grants[0].agent_spec is None
 
 
 def test_ineligible_stage_blocked_before_anything(tmp_path: Path, adapters: dict) -> None:

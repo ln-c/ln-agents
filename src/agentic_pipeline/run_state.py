@@ -126,11 +126,17 @@ class PolicySnapshot:
     ci: Mapping[str, Any]
     release: Mapping[str, Any]
     triage: Mapping[str, Any]
+    specs: Mapping[str, str] = field(default_factory=dict)  # agents/*.md, by repository path
 
 
 def read_policy(root: Path) -> dict[str, bytes]:
-    """The graph and every policy file under `root`, as bytes, keyed by their relative path."""
-    files = [root / "pipeline" / "graph.yaml", *sorted((root / "policy").glob("*.yaml"))]
+    """The graph, every policy file and every agent spec under `root`, as bytes, keyed by their
+    relative path. The specs steer models, so a run freezes them with the policy."""
+    files = [
+        root / "pipeline" / "graph.yaml",
+        *sorted((root / "policy").glob("*.yaml")),
+        *sorted((root / "agents").glob("*.md")),
+    ]
     try:
         return {p.relative_to(root).as_posix(): p.read_bytes() for p in files}
     except OSError as exc:
@@ -158,18 +164,19 @@ def parse_policy(raw: Mapping[str, bytes]) -> PolicySnapshot:
             ci=parsed["policy/ci.yaml"],
             release=parsed["policy/release.yaml"],
             triage=parsed["policy/triage.yaml"],
+            specs={rel: d.decode("utf-8") for rel, d in raw.items() if rel.startswith("agents/")},
         )
     except (KeyError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         raise RunStateError(f"cannot read graph or policy: {type(exc).__name__}: {exc}") from exc
 
 
 def load_policy(root: Path) -> PolicySnapshot:
-    """Read the graph and every policy file once; hash and parse those exact bytes."""
+    """Read the graph, policy and agent specs once; hash and parse those exact bytes."""
     return parse_policy(read_policy(root))
 
 
 def write_frozen_policy(raw: Mapping[str, bytes], run_root: Path) -> None:
-    """Put the policy a run starts under into `<run>/frozen`, byte for byte.
+    """Put the policy and specs a run starts under into `<run>/frozen`, byte for byte.
 
     `raw` is what `parse_policy` hashed, so the run's recorded digests describe exactly these
     files. Later edits to the repository's policy do not reach the run.

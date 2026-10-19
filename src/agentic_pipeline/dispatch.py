@@ -64,7 +64,7 @@ from agentic_pipeline.manifest import (
 )
 from agentic_pipeline.provenance import JsonlProvenanceLog
 from agentic_pipeline.readiness import Report, evaluate_stage
-from agentic_pipeline.registry import backend_location, operations
+from agentic_pipeline.registry import agent_spec_path, backend_location, operations
 from agentic_pipeline.schemas import ValidationError, validate
 from agentic_pipeline.transition import (
     BudgetLedger,
@@ -89,6 +89,15 @@ class ProvenanceIncomplete(RunPaused):
 
 
 @dataclass(frozen=True, slots=True)
+class AgentSpec:
+    """The role specification of an operation's agent (`agents/*.md`), as the run froze it."""
+
+    path: str  # repository path, as the registry names it
+    digest: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class DispatchGrant:
     """Everything one invocation is allowed to use; adapters receive nothing else."""
 
@@ -105,6 +114,9 @@ class DispatchGrant:
     attempt: str
     write_path: Path
     output_schema: str | None = None  # reply must be one JSON object of this shape
+    agent_spec: AgentSpec | None = (
+        None  # the agent's role spec; adapters that build a prompt pass it on
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +230,7 @@ class Dispatcher:
     guards: GuardEvaluator = deny_all_guards
     new_invocation_id: Callable[[], str] = _new_invocation_id
     servers: LocalServers | None = None  # starts local model servers on demand
+    specs: Mapping[str, str] = field(default_factory=dict)  # frozen agents/*.md, by path
     _committed: bool = field(default=False, init=False)
     _tip: str = field(default="", init=False)
 
@@ -309,10 +322,19 @@ class Dispatcher:
                 attempt=attempt,
                 write_path=self.run_root / ATTEMPTS_DIR / attempt / roots[op["write_root"]],
                 output_schema=op.get("output_schema"),
+                agent_spec=self._agent_spec(op),
             )
             grant, results[op["id"]] = self._invoke_checked(grant, reservation, op)
             grants.append(grant)
         return StageOutcome(stage, results, self._seal(stage, attempt, grants))
+
+    def _agent_spec(self, op: Mapping[str, Any]) -> AgentSpec | None:
+        """The frozen spec of the operation's agent; none for a run that froze no specs."""
+        path = agent_spec_path(self.registry, op["agent"])
+        text = self.specs.get(path) if path else None
+        if path is None or text is None:
+            return None
+        return AgentSpec(path, "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(), text)
 
     def _recheck_readiness(self, stage: str, op: Mapping[str, Any], backend: str) -> None:
         again = evaluate_stage(stage, self.preflight())

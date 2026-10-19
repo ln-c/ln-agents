@@ -63,7 +63,7 @@ def validate_repo(root: Path = REPO_ROOT, policy_root: Path | None = None) -> li
     if all(doc is not None for doc in policy_docs.values()):
         errors += validate_policies(policy_docs)
     if graph is not None and registry is not None:
-        errors += validate_registry(registry, graph, root)
+        errors += validate_registry(registry, graph, root, policy_root)
     if policy_docs["model_test_profiles"] is not None:
         errors += check_test_profiles(policy_docs["model_test_profiles"], _capabilities(root))
     if policy_docs["data_classes"] is not None and registry is not None:

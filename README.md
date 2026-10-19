@@ -148,13 +148,25 @@ Your instructions on tone and layout, in plain Markdown.
 - **Where it is logged:** in its own hash chain, `views/provenance_<run>.jsonl`, not the run's, because the evidence a human signs includes the run's provenance tip and an advisory call must not void an approval already written. It charges no budget and seals nothing.
 - **Policy:** which models may coordinate is human-owned: the `coordination` capability in `policy/model_registry.yaml`. `LN-AGENTS.md` only chooses among them.
 
+### Agent specifications
+
+Each `agents/*.md` is the role specification of one entry under `agents` in `policy/model_registry.yaml` (its `spec`). Registry rule R20 requires that every file in `agents/` is the `spec` of exactly one agent, and that an agent with a `spec` names at least one catalog model (`primary`, `escalation`, `model_assistance` and the other backend slots), so a new spec cannot be added without a model. `validate` fails otherwise.
+
+When an operation runs, its agent's spec goes to the model as reference for its role:
+
+- **Claude and agy** get it in the prompt, after the task and before the sealed inputs, inside a frame written by code: the model acts only as that operation's role, the task and the output format win over the spec, and the spec never lifts the no-tools and no-network rules. The design spec orchestrates `A1`–`A4`, for example, but a call performs one operation. agy's 120 KiB prompt cap includes the spec.
+- **Pi and Qwen** (the build stages) get the spec as a read-only file, `/agent/spec.md`, and a line in the prompt naming it and its digest. It is read on demand, so it does not use up the 16k context.
+- **The decision model** (Clef-Flash at `A2J`) never gets one: it answers in one batch and its threshold was calibrated on the current prompt.
+
+The specs go to the provider like the rest of the prompt, so they follow the same data-class rules. A run freezes `agents/*.md` with the graph and policy (`.runs/<run>/frozen/agents/`) and their digests are part of its recorded policy, so editing a spec changes later runs and not the ones in progress. `agents/` is in CODEOWNERS, and an implementation patch may not write to it, because the specs now steer models.
+
 ### CI checks
 
 `policy/ci.yaml` lists the checks that run at `E2` (acceptance, MC/DC, optional contract, performance and dead-code checks) and `F1` (integration, mutation). Each runs offline in the bwrap sandbox on a copy of the pinned tree with the patch overlaid, with a toolchain built from that tree's `uv.lock`. A required check that is unset is `not_evaluated`, never passed.
 
 - **MC/DC** uses `pymcdc`, which measures only `unittest.TestCase` tests. Pytest-style tests do not count, so `E2` cannot pass on this repository's own code until it has `unittest` tests; such a run routes `E2` → `X` → `H1`.
 - **Mutation** uses `mutmut` with a minimum score of 80.
-- `scripts/` and `policy/` are protected paths: an implementation patch may not change them.
+- `scripts/`, `policy/` and `agents/` are protected paths: an implementation patch may not change them.
 
 ### Release
 
@@ -187,7 +199,7 @@ The chain is tamper-evident, not tamper-proof; immutable storage is host configu
 │   ├── release.yaml           # merge branch rules and protected paths
 │   └── triage.yaml            # A2J threshold for a valid critique finding
 ├── schemas/                   # JSON Schema (Draft-07) for artifacts and provenance events
-├── agents/                    # role specifications (instructions, not a security boundary)
+├── agents/                    # role specifications, one per agent; each has a model (registry rule R20) and is passed to it (instructions, not a security boundary)
 ├── scripts/                   # MC/DC and mutation wrappers run by the CI checks
 ├── src/agentic_pipeline/      # runner, gates, adapters, sandbox, approvals, release
 ├── rust/                      # ln-agents: ACP agent and A2A client; MCP tool loop and sandbox launcher to come

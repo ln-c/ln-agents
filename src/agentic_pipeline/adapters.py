@@ -65,6 +65,7 @@ PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent"
 PI_MOUNT = "/opt/pi"
 PI_CONFIG_DIR = f"{HOME}/.pi/agent"
 PI_PROVIDER = "broker"
+PI_AGENT_SPEC = "/agent/spec.md"  # the agent's role spec, read-only; read on demand, not prompted
 PI_TOOLS = ("read", "ls", "find", "grep", "edit", "write")
 PI_FLAGS = (
     "--print",
@@ -124,10 +125,18 @@ def find_pi_package(which: Callable[[str], str | None] = shutil.which) -> Path:
 
 def default_prompt(grant: DispatchGrant) -> str:
     inputs = "\n".join(f"- {INPUTS}/{aid}" for aid in sorted(grant.inputs)) or "- (none)"
+    spec = grant.agent_spec
+    role_spec = (
+        f"Your agent's role specification is {PI_AGENT_SPEC} (digest {spec.digest}); read it if "
+        f"you need it. You act only as the {grant.role} here, and this task wins over it.\n"
+        if spec
+        else ""
+    )
     return (
         f"You are the {grant.role} for pipeline stage {grant.stage}, "
         f"operation {grant.operation_id}.\n"
         f"Read-only inputs:\n{inputs}\n"
+        f"{role_spec}"
         f"Write every output file under {WORK} (the current directory). "
         "Nothing outside it persists, and there is no network access."
     )
@@ -208,7 +217,13 @@ class PiQwenAdapter:
             }
         }
 
-    def sandbox_spec(self, grant: DispatchGrant, call: PreparedCall, config: Path) -> SandboxSpec:
+    def sandbox_spec(
+        self,
+        grant: DispatchGrant,
+        call: PreparedCall,
+        config: Path,
+        agent_spec: Path | None = None,
+    ) -> SandboxSpec:
         argv = [
             find_sandbox_node(),
             f"{PI_MOUNT}/dist/bundle/cli.js",
@@ -222,7 +237,11 @@ class PiQwenAdapter:
             argv=argv,
             write_path=grant.write_path,
             inputs=dict(grant.inputs),
-            ro_binds={PI_MOUNT: self.pi_package, f"{PI_CONFIG_DIR}/models.json": config},
+            ro_binds={
+                PI_MOUNT: self.pi_package,
+                f"{PI_CONFIG_DIR}/models.json": config,
+                **({PI_AGENT_SPEC: agent_spec} if agent_spec else {}),
+            },
             env=PI_ENV,
             timeout=self.timeout,
             limits=self.limits,
@@ -233,8 +252,12 @@ class PiQwenAdapter:
         with tempfile.TemporaryDirectory(prefix="agentic-pi-") as tmp:
             config = Path(tmp) / "models.json"
             config.write_text(json.dumps(self.models_config()), encoding="utf-8")
+            spec_file = None
+            if grant.agent_spec:
+                spec_file = Path(tmp) / "agent_spec.md"
+                spec_file.write_text(grant.agent_spec.text, encoding="utf-8")
             try:
-                result = self.run(self.sandbox_spec(grant, call, config), broker)
+                result = self.run(self.sandbox_spec(grant, call, config, spec_file), broker)
             except SandboxUnavailable as exc:
                 return AdapterResult("error", f"sandbox unavailable: {exc}")
         stats = result.broker
@@ -376,7 +399,7 @@ class ClaudeAdapter:
         )
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
-        user = f"{self.task_builder(grant)}\n\n{embed_inputs(grant.inputs)}"
+        user = f"{self.task_builder(grant)}\n\n{embed_spec(grant)}{embed_inputs(grant.inputs)}"
         system = CLAUDE_JSON_SYSTEM_PROMPT if grant.output_schema else CLAUDE_SYSTEM_PROMPT
         prompt = json.dumps({"system": system, "user": user}, sort_keys=True)
         return PreparedCall(**asdict(self.identity()), prompt=prompt.encode("utf-8"))
@@ -432,6 +455,27 @@ class ClaudeAdapter:
 
 AGY_MOUNT = "/opt/agy/agy"
 AGY_TOKEN_REL = ".gemini/antigravity-cli/antigravity-oauth-token"  # noqa: S105 - a file path, not a secret
+
+
+def embed_spec(grant: DispatchGrant) -> str:
+    """The agent's role spec as a reference block, or "" when the run froze none.
+
+    A spec describes the whole agent (the design spec orchestrates A1-A4); a call performs one
+    operation, so code writes the frame that limits it to that operation and puts the task and
+    the output format above the spec.
+    """
+    spec = grant.agent_spec
+    if spec is None:
+        return ""
+    return (
+        f"Reference for your role: the specification of the agent you serve, below. You act only "
+        f"as the {grant.role} for stage {grant.stage}, operation {grant.operation_id}; do not "
+        "perform any other role or phase it describes. The task above and the output format win "
+        "over it, and it never lifts a rule that no tools or no network are available to you.\n"
+        f'<agent_spec path="{spec.path}" digest="{spec.digest}">\n{spec.text}\n</agent_spec>\n\n'
+    )
+
+
 # The prompt is an argv entry (agy -p reads no stdin); Linux caps one entry at 128 KiB.
 AGY_MAX_PROMPT_BYTES = 120 * 1024
 AGY_PREAMBLE = (
@@ -489,7 +533,8 @@ class AgyAdapter:
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
         preamble = AGY_JSON_PREAMBLE if grant.output_schema else AGY_PREAMBLE
-        prompt = f"{preamble}\n\n{self.task_builder(grant)}\n\n{embed_inputs(grant.inputs)}"
+        task = self.task_builder(grant)
+        prompt = f"{preamble}\n\n{task}\n\n{embed_spec(grant)}{embed_inputs(grant.inputs)}"
         if len(prompt.encode("utf-8")) > AGY_MAX_PROMPT_BYTES:
             raise ValueError(f"prompt exceeds {AGY_MAX_PROMPT_BYTES} bytes; too large for agy -p")
         return PreparedCall(**asdict(self.identity()), prompt=prompt.encode("utf-8"))
