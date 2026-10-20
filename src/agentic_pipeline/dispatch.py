@@ -48,7 +48,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -229,6 +229,41 @@ class StageOutcome:
         return self.manifest is None
 
 
+def adapter_blockers(
+    registry: Mapping[str, Any],
+    stage: str,
+    backends: Mapping[str, str],
+    adapters: Mapping[str, BackendAdapter],
+    skip: Collection[str] = (),
+) -> list[str]:
+    """Why the adapters of the backends chosen for a stage (operation id -> backend) cannot
+    serve it: one has no adapter, or its adapter does not enforce an isolation check the
+    operation's profile needs. What dispatch refuses before any call; dispatch raises the first
+    and `/guideline` reports them all.
+
+    `skip` names backends whose adapter cannot be built yet: a local server's adapter asks the
+    server about its model, and dispatch starts the server first. `/guideline` skips those.
+    """
+    if missing := [b for b in sorted(set(backends.values()) - set(skip)) if b not in adapters]:
+        why = []
+        for backend in missing:
+            reason = (
+                adapters.unavailable(backend) if isinstance(adapters, ExplainsUnavailable) else None
+            )
+            why.append(f"{backend}: {reason}" if reason else backend)
+        return [f"{stage}: no adapter for {why}"]
+    profiles = registry["isolation_profiles"]
+    found = []
+    for _, op in operations({stage: registry["stage_requirements"][stage]}):
+        backend = backends[op["id"]]
+        if backend in skip:
+            continue
+        required = set(profiles[op["isolation_profile"]]) - DISPATCHER_ENFORCED
+        if gaps := sorted(required - adapters[backend].enforced_isolation):
+            found.append(f"{stage}.{op['id']}: {backend} adapter does not enforce {gaps}")
+    return found
+
+
 def _new_invocation_id() -> str:
     return uuid.uuid4().hex
 
@@ -281,27 +316,10 @@ class Dispatcher:
         verdict = evaluate_stage(stage, self.preflight())
         if not verdict.eligible:
             raise DispatchBlocked(f"{stage}: " + "; ".join(verdict.reasons))
-        needed = sorted(set(verdict.backends.values()))
-        if missing := [b for b in needed if b not in self.adapters]:
-            why = []
-            for backend in missing:
-                reason = (
-                    self.adapters.unavailable(backend)
-                    if isinstance(self.adapters, ExplainsUnavailable)
-                    else None
-                )
-                why.append(f"{backend}: {reason}" if reason else backend)
-            raise DispatchBlocked(f"{stage}: no adapter for {why}")
+        if blockers := adapter_blockers(self.registry, stage, verdict.backends, self.adapters):
+            raise DispatchBlocked(blockers[0])
         spec = self.registry["stage_requirements"][stage]
         ops = [op for _, op in operations({stage: spec})]
-        profiles = self.registry["isolation_profiles"]
-        for op in ops:
-            backend = verdict.backends[op["id"]]
-            required = set(profiles[op["isolation_profile"]]) - DISPATCHER_ENFORCED
-            if gaps := sorted(required - self.adapters[backend].enforced_isolation):
-                raise DispatchBlocked(
-                    f"{stage}.{op['id']}: {backend} adapter does not enforce {gaps}"
-                )
         checks = [self._inputs(op, verdict.backends[op["id"]])[2] for op in ops]
         if input_errors := [e for errors in checks for e in errors]:
             raise DispatchBlocked(f"{stage}: sealed inputs: " + "; ".join(input_errors))

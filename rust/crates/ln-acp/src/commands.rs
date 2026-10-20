@@ -69,6 +69,8 @@ pub enum Command {
     },
     /// Which model each agent slot is bound to, and the drafts waiting for a human.
     Agents,
+    /// The steps from naming a coordinator to a start nothing blocks: read-only, about no run.
+    Guideline,
     /// Draft binding an agent slot to a model (or a list of models for a list slot).
     Bind {
         slot: String,
@@ -140,6 +142,11 @@ pub fn available(mode: Mode) -> Vec<(&'static str, &'static str, &'static str)> 
             "agents",
             "",
             "Which model each agent is bound to, and the registry changes waiting for you",
+        ),
+        (
+            "guideline",
+            "",
+            "The steps from naming a coordinator to a start nothing blocks, and where each stands",
         ),
         ("help", "", "What ln-agents can and cannot do"),
     ];
@@ -240,6 +247,10 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
         "models" => match args.as_slice() {
             [] => Command::Models,
             _ => return Err(Refusal("usage: /models (it takes no arguments)".into())),
+        },
+        "guideline" => match args.as_slice() {
+            [] => Command::Guideline,
+            _ => return Err(Refusal("usage: /guideline (it takes no arguments)".into())),
         },
         "agents" => match args.as_slice() {
             [] => Command::Agents,
@@ -453,6 +464,13 @@ mod tests {
             parse("/models qwen", design).is_err(),
             "it takes no argument"
         );
+        for mode in Mode::ALL {
+            assert_eq!(parse("/guideline", mode), Ok(Command::Guideline));
+        }
+        assert!(
+            parse("/guideline now", design).is_err(),
+            "it takes no argument"
+        );
         assert_eq!(
             parse(
                 "/add_model google_ai_pro gemini-9-new design_reasoning coordination",
@@ -590,6 +608,10 @@ mod tests {
         for mode in Mode::ALL {
             assert!(offered(mode).contains(&"models"), "the catalog only reads");
             assert!(offered(mode).contains(&"agents"), "the mapping only reads");
+            assert!(
+                offered(mode).contains(&"guideline"),
+                "the guideline only reads"
+            );
         }
         for mode in Mode::ALL {
             let names = offered(mode);

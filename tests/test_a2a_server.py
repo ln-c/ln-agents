@@ -85,6 +85,7 @@ class Pipeline:
         # never the real authority: it would probe this host and could call a live model
         self.service.authority_for = self._authority
         self.service.gap_catalog = fake_catalog
+        self.service.guideline_for = lambda root, runs: {"ready": True, "steps": [], "notes": []}
         app, self.executor = build_app(self.service, TOKEN, "http://127.0.0.1:0/a2a/jsonrpc", 0.01)
         self.client = TestClient(app)
 
@@ -179,7 +180,7 @@ def _stop(task_or_event: Mapping[str, Any]) -> dict[str, Any]:
 # ── Card and token gate ──────────────────────────────────────────────────────
 
 
-def test_the_card_is_public_and_names_exactly_the_thirteen_skills(pipe: Pipeline) -> None:
+def test_the_card_is_public_and_names_exactly_the_fourteen_skills(pipe: Pipeline) -> None:
     card = pipe.client.get("/.well-known/agent-card.json").json()
     assert card["name"] == "ln-pipeline"
     assert sorted(s["id"] for s in card["skills"]) == sorted(SKILLS)
@@ -192,6 +193,7 @@ def test_the_card_is_public_and_names_exactly_the_thirteen_skills(pipe: Pipeline
         "ask",
         "models",
         "agents",
+        "guideline",
         "registry_change",
         "propose_mapping",
         "complete_mapping",
@@ -363,6 +365,42 @@ def test_models_reports_a_repository_that_fails_validation_instead_of_a_catalog(
 def test_models_takes_no_arguments_and_changes_nothing(pipe: Pipeline) -> None:
     reply = pipe.send({"skill": "models", "run_id": RUN_ID})
     assert reply["error"]["code"] == -32602 and "does not take ['run_id']" in str(reply["error"])
+
+
+def test_guideline_is_answered_by_message_without_a_run_or_a_task(pipe: Pipeline) -> None:
+    seen: list[tuple[Path, Path]] = []
+    steps = [{"id": "coordinator", "status": "done", "blocks": False}]
+
+    def fake(root: Path, runs: Path) -> dict[str, Any]:
+        seen.append((root, runs))
+        return {"ready": True, "steps": steps, "notes": ["n"], "errors": []}
+
+    pipe.service.guideline_for = fake
+    data = data_of(pipe.send({"skill": "guideline"}))
+    assert data == {
+        "skill": "guideline",
+        "ready": True,
+        "steps": steps,
+        "notes": ["n"],
+        "errors": [],
+    }
+    assert seen == [(ROOT, pipe.runs_dir)]
+    assert pipe.rpc("ListTasks", {}).json()["result"].get("tasks", []) == []  # no task was made
+
+
+def test_guideline_takes_no_arguments(pipe: Pipeline) -> None:
+    reply = pipe.send({"skill": "guideline", "run_id": RUN_ID})
+    assert reply["error"]["code"] == -32602 and "does not take ['run_id']" in str(reply["error"])
+
+
+def test_guideline_that_cannot_read_the_repository_answers_with_the_reason(pipe: Pipeline) -> None:
+    def broken(root: Path, runs: Path) -> dict[str, Any]:
+        raise OSError("policy/ is gone")
+
+    pipe.service.guideline_for = broken
+    data = data_of(pipe.send({"skill": "guideline"}))
+    assert data["ready"] is False and data["steps"] == []
+    assert data["errors"] == ["OSError: policy/ is gone"]
 
 
 def registry_repo(pipe: Pipeline, tmp_path: Path) -> Path:

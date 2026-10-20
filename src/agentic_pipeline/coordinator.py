@@ -271,7 +271,8 @@ class Coordinator:
             self._report = (now, self.preflight())
         return self._report[1]
 
-    def _problems(self, backend: str) -> list[str]:
+    def registry_problems(self, backend: str) -> list[str]:
+        """Why the registry alone rules `backend` out as a coordinator (nothing is probed)."""
         model = self.registry["models"].get(backend)
         if model is None:
             return [f"{backend}: not a model in the registry"]
@@ -279,6 +280,11 @@ class Coordinator:
             return [f"{backend}: the registry does not declare `{CAPABILITY}` for it"]
         if model["provider"] not in SUPPORTED_PROVIDERS:
             return [f"{backend}: provider {model['provider']} cannot coordinate (no task override)"]
+        return []
+
+    def _problems(self, backend: str) -> list[str]:
+        if problems := self.registry_problems(backend):
+            return problems
         report = self._report_now()
         problems = list(report.backend_blockers(backend))
         for check in self.registry["isolation_profiles"]["sealed_inputs_only"]:

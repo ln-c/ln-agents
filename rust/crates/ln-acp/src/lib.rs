@@ -498,6 +498,10 @@ impl Prompt {
                 let reply = skill_reply(&client()?, &Request::agents()).map_err(a2a)?;
                 self.say(render::agents_text(&reply));
             }
+            Command::Guideline => {
+                let reply = skill_reply(&client()?, &Request::guideline()).map_err(a2a)?;
+                self.say(render::guideline_text(&reply));
+            }
             Command::AddModel {
                 provider,
                 model_id,

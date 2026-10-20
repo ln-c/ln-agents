@@ -111,7 +111,7 @@ from google.protobuf.json_format import MessageToDict, ParseDict
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 
-from agentic_pipeline import authority, registry_changes
+from agentic_pipeline import authority, guideline, registry_changes
 from agentic_pipeline.coordinator import Coordinator, StopInfo
 from agentic_pipeline.coordinator import for_authority as authority_coordinator
 from agentic_pipeline.coordinator import for_run as coordinator_for_run
@@ -153,6 +153,7 @@ SKILLS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
     "ask": (frozenset({"question"}), frozenset({"run_id"})),
     "models": (frozenset(), frozenset()),
     "agents": (frozenset(), frozenset()),
+    "guideline": (frozenset(), frozenset()),
     "registry_change": (
         frozenset({"kind"}),
         frozenset({"provider", "model_id", "capabilities", "model", "models", "slot"}),
@@ -188,6 +189,13 @@ SKILL_TEXT = {
         "Which model each agent slot of the registry is bound to (and what runs on it), the "
         "agents that have no model, and the registry changes waiting for a human. Read-only; it "
         "needs no run."
+    ),
+    "guideline": (
+        "The steps from naming a coordinator in LN-AGENTS.md to a /start that nothing blocks, "
+        "and where each stands: the coordinator, the agents that have no model, the commit to "
+        "pin, the local servers, and a ready model for every stage a run can reach. Built from "
+        "the checks the start gate and dispatch apply. Read-only; it needs no run and calls no "
+        "model."
     ),
     "registry_change": (
         "Draft one change to policy/model_registry.yaml: add a model (or claim capabilities for "
@@ -262,6 +270,8 @@ class PipelineService:
     gap_catalog: Callable[[Path], list[dict[str, Any]]] = lambda root: catalog_rows(
         root, Deps(preflight=run_preflight_tolerating_gaps)
     )
+    # (root, runs directory) -> the steps from naming a coordinator to a start nothing blocks
+    guideline_for: Callable[[Path, Path], dict[str, Any]] = guideline.build
     _registry_lock: threading.Lock = field(default_factory=threading.Lock)
     _converting: set[str] = field(default_factory=set)
     _converting_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -308,6 +318,19 @@ class PipelineService:
     def status(self, run_id: str) -> dict[str, Any]:
         store = RunStore(self.run_dir(run_id))
         return {**store.load().to_dict(), "runner_active": store.is_locked()}
+
+    def guideline(self) -> dict[str, Any]:
+        """Where each step from naming a coordinator to a first start stands (`guideline.py`);
+        an error in reading the repository comes back as `errors`, with no steps."""
+        try:
+            return self.guideline_for(self.root, self.runs_dir)
+        except Exception as exc:  # the answer is the reason, not a fault of the server
+            return {
+                "ready": False,
+                "steps": [],
+                "notes": [],
+                "errors": [f"{type(exc).__name__}: {exc}"],
+            }
 
     def models(self) -> dict[str, Any]:
         """The catalog of the repository's registry, for choosing models before a run.
@@ -708,6 +731,7 @@ RUNLESS = frozenset(
     {
         "models",
         "agents",
+        "guideline",
         "registry_change",
         "propose_mapping",
         "complete_mapping",

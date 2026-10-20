@@ -1,0 +1,102 @@
+{
+ "id": 1,
+ "jsonrpc": "2.0",
+ "result": {
+  "message": {
+   "messageId": "0acece39-ee42-49d7-93a9-833b9a6f3494",
+   "parts": [
+    {
+     "data": {
+      "errors": [],
+      "notes": [
+       "This cannot see whether the provider tools are signed in or have quota left. A call that fails for either pauses the run and says so.",
+       "What the run's own inputs decide is checked when the run reaches them: the task class at START, and the data class G gives the project's files, which can keep a stage off the cloud.",
+       "A run waits at H1, R1 and R2 for your signed decision; that is by design, not a blocker."
+      ],
+      "ready": false,
+      "skill": "guideline",
+      "steps": [
+       {
+        "blocks": true,
+        "detail": "There is no LN-AGENTS.md. Models that can coordinate: gemini_3_8_flash_high (google_ai_pro, cloud; ready; bound to human_authority). You choose; nothing picks one for you. An agent has no model, and nothing can be proposed for it without a coordinator.",
+        "do": [
+         "Create LN-AGENTS.md in the project root, with the model you chose:"
+        ],
+        "id": "coordinator",
+        "snippet": "---\ncoordinator: <model>\n---\n",
+        "status": "todo",
+        "title": "Name a coordinator in LN-AGENTS.md"
+       },
+       {
+        "blocks": false,
+        "detail": "Not checked: name a coordinator first.",
+        "do": [],
+        "id": "coordinator_ready",
+        "snippet": null,
+        "status": "unchecked",
+        "title": "The coordinator is ready to be used"
+       },
+       {
+        "blocks": false,
+        "detail": "Not checked: name a coordinator first.",
+        "do": [],
+        "id": "authority",
+        "snippet": null,
+        "status": "unchecked",
+        "title": "The coordinator may choose models for you (optional)"
+       },
+       {
+        "blocks": true,
+        "detail": "The graph, policies and registry validate.",
+        "do": [],
+        "id": "repository",
+        "snippet": null,
+        "status": "done",
+        "title": "The repository passes its own checks"
+       },
+       {
+        "blocks": true,
+        "detail": "1 agent has no model: extra (agents/pipeline-extra-agent.md).",
+        "do": [
+         "Name a coordinator first (LN-AGENTS.md): nothing is proposed without one."
+        ],
+        "id": "mapping",
+        "snippet": null,
+        "status": "todo",
+        "title": "Every agent has a model"
+       },
+       {
+        "blocks": true,
+        "detail": "A run would pin 0123456789ab.",
+        "do": [],
+        "id": "commit",
+        "snippet": null,
+        "status": "done",
+        "title": "The project has a commit to pin"
+       },
+       {
+        "blocks": true,
+        "detail": "llamacpp_decision, llamacpp_local: not running now. Dispatch starts each when a stage needs it and stops it afterwards; its program and files are there.",
+        "do": [],
+        "id": "servers",
+        "snippet": null,
+        "status": "auto",
+        "title": "Local model servers can be started"
+       },
+       {
+        "blocks": true,
+        "detail": "Ready: A1, A2, A2J, A3, A3R, C1, D1, E1.",
+        "do": [],
+        "id": "stages",
+        "snippet": null,
+        "status": "done",
+        "title": "Every stage a run can reach has a ready model"
+       }
+      ]
+     }
+    }
+   ],
+   "role": "ROLE_AGENT"
+  }
+ }
+}
