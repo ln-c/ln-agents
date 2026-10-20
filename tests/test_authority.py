@@ -14,11 +14,14 @@ from test_dispatch import DATA_CLASSES, ISOLATION, report
 
 from agentic_pipeline import authority
 from agentic_pipeline import registry_changes as rc
+from agentic_pipeline.briefs import BEGIN, END
 from agentic_pipeline.briefs import extract as extract_brief
 from agentic_pipeline.coordinator import Coordinator, Setup, for_authority
 from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, PreparedCall
 from agentic_pipeline.graph import loads_yaml
+from agentic_pipeline.models_cli import CatalogError
 from agentic_pipeline.provenance import verify_provenance_chain
+from agentic_pipeline.readiness import Host, run_preflight
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "gemini_3_8_flash_high"  # the coordinator in LN-AGENTS.md, and a human_authority model
@@ -118,6 +121,9 @@ class Rig:
 
     def propose(self, intent: str = "") -> authority.Proposal:
         return authority.propose_mapping(self.repo, self.runs, intent, self.coordinator, catalog)
+
+    def fill(self, rows: Any = None) -> authority.Proposal:
+        return authority.propose_fill_gaps(self.repo, self.runs, self.coordinator, rows or catalog)
 
     @property
     def prompts(self) -> list[str]:
@@ -378,3 +384,226 @@ def test_the_default_coordinator_factory_reads_the_repository_policy(
     coordinator = for_authority(repo, runs)
     assert coordinator.run_dir == runs / ".authority" and coordinator.run_id == "authority"
     assert coordinator.setup is not None and coordinator.setup.coordinator == MODEL
+
+
+# ── Agents that have no model ────────────────────────────────────────────────
+
+NEW_FILE = "pipeline-extra-helper-agent.md"
+LEARNING_MODELS = (
+    "    analysis_fallback: qwen3_5_9b\n    subscription_analysis: claude_cli_default\n"
+)
+AUTHORITY_MODELS = "    model_assistance: [claude_cli_default, gemini_3_8_flash_high, qwen3_5_9b]\n"
+FILL = {
+    "gaps": [
+        {"agent": "extra_helper", "model": "qwen3_5_9b", "why": "It reads nothing sensitive."},
+        {"agent": "learning", "model": "claude_cli_default", "why": "Analysis suits Claude."},
+    ],
+    "summary": "A local model for the helper, Claude for the analysis.",
+}
+
+
+def add_spec(repo: Path, name: str = NEW_FILE, *, brief: bool = True) -> None:
+    """A spec file that no entry owns (the learning spec's text, which has a brief)."""
+    text = (ROOT / "agents" / "pipeline-learning-agent.md").read_text(encoding="utf-8")
+    if not brief:
+        text = text.replace(BEGIN, "").replace(END, "")
+    (repo / "agents" / name).write_text(text, encoding="utf-8")
+
+
+def drop(repo: Path, block: str) -> None:
+    text = (repo / rc.REGISTRY).read_text(encoding="utf-8")
+    assert text.count(block) == 1
+    (repo / rc.REGISTRY).write_text(text.replace(block, ""), encoding="utf-8")
+
+
+def two_gaps(repo: Path) -> None:
+    add_spec(repo)  # no entry owns it
+    drop(repo, LEARNING_MODELS)  # and the learning entry names no model
+
+
+def unavailable(rig: Rig, rows: Any = None) -> str:
+    with pytest.raises(authority.AuthorityUnavailable) as caught:
+        rig.fill(rows)
+    return str(caught.value)
+
+
+def test_the_authority_names_a_model_for_each_gap_and_code_writes_the_draft(
+    repo: Path, runs: Path
+) -> None:
+    two_gaps(repo)
+    before = (repo / rc.REGISTRY).read_text()
+    rig = Rig(repo, runs, FILL)
+    proposal = rig.fill()
+    draft = proposal.draft
+    assert proposal.model == MODEL and draft.kind == "fill_gaps"
+    assert draft.summary == f"Give 2 agents a model (proposed by {MODEL})"
+    assert "+    primary: qwen3_5_9b" in draft.diff and "claude_cli_default" in draft.diff
+    assert f"Why (proposed by {MODEL}): It reads nothing sensitive." in draft.notes
+    assert f"Why (proposed by {MODEL}): Analysis suits Claude." in draft.notes
+    assert any("no stage wiring" in n for n in draft.notes), "code says what a pick means"
+    assert draft.meta == {
+        "proposed_by": MODEL,
+        "authority_says": "A local model for the helper, Claude for the analysis.",
+    }
+    assert (repo / rc.REGISTRY).read_text() == before, "a proposal writes no policy file"
+    rc.apply(repo, runs, draft.change_id)
+    assert rc.gaps(repo) == []
+    assert registry(repo)["agents"]["extra_helper"]["primary"] == "qwen3_5_9b"
+    # a model is never a primary of an entry a human wrote: the learning agent only gets help
+    assert "claude_cli_default" in registry(repo)["agents"]["learning"]["model_assistance"]
+
+
+def test_the_model_is_shown_each_gaps_brief_and_not_the_whole_spec(repo: Path, runs: Path) -> None:
+    two_gaps(repo)
+    rig = Rig(repo, runs, FILL)
+    rig.fill()
+    grant, prompt = rig.seen[0]
+    spec = (repo / "agents" / NEW_FILE).read_text(encoding="utf-8")
+    assert grant.operation_id.startswith("fill_gaps")
+    assert grant.agent_spec is not None
+    assert grant.agent_spec.path == "agents/pipeline-human-authority-agent.md"
+    assert '<input artifact="gaps"' in prompt
+    assert extract_brief(spec) in prompt.replace("\\n", "\n")
+    assert "## Completion Checklist" not in prompt, "the whole spec is not sent for a gap"
+    assert '"kind": "no_entry"' in prompt and '"kind": "no_model"' in prompt
+    assert '"name": "qwen3_5_9b"' in prompt and "primary stays what a human wrote" in prompt
+    assert "Name every agent under `gaps` exactly once" in prompt
+    assert grant.data_class == "internal" and grant.role == "coordinator"
+
+
+def test_the_gap_call_is_logged_in_the_authoritys_own_chain(repo: Path, runs: Path) -> None:
+    two_gaps(repo)
+    Rig(repo, runs, FILL).fill()
+    chain = runs / ".authority" / "views" / "provenance_authority.jsonl"
+    events = [json.loads(line)["event"] for line in chain.read_text().splitlines()]
+    assert events == ["model_call", "model_result"] and verify_provenance_chain(chain).ok
+
+
+@pytest.mark.parametrize(
+    ("reply", "reason"),
+    [
+        ("I would pick qwen for both.", "did not reply with one JSON object"),
+        ({"gaps": "qwen3_5_9b"}, "`gaps` must be a list"),
+        ({"gaps": [{"agent": "learning"}]}, "needs an `agent` and a `model`"),
+        (
+            {"gaps": [{"agent": "learning", "model": "claude_cli_default"}]},
+            "left out ['extra_helper']",
+        ),
+        (
+            {**FILL, "gaps": [*FILL["gaps"], {"agent": "release", "model": "qwen3_5_9b"}]},
+            "named ['release'] that need none",
+        ),
+        (
+            {**FILL, "gaps": [*FILL["gaps"], {"agent": "learning", "model": "qwen3_5_9b"}]},
+            "names 'learning' twice",
+        ),
+        (
+            {"gaps": [{**FILL["gaps"][0], "model": "gpt_9"}, FILL["gaps"][1]]},
+            "not in the catalog: ['gpt_9']",
+        ),
+    ],
+)
+def test_an_answer_that_is_not_all_of_it_is_not_used_and_not_completed_by_code(
+    repo: Path, runs: Path, reply: Any, reason: str
+) -> None:
+    two_gaps(repo)
+    assert reason in unavailable(Rig(repo, runs, reply))
+    assert rc.pending(runs) == [], "no draft, not even a partial one"
+
+
+def test_the_models_words_in_a_reason_are_cut_and_made_plain(repo: Path, runs: Path) -> None:
+    two_gaps(repo)
+    wordy = {**FILL, "gaps": [dict(FILL["gaps"][0], why="<b>x</b> " * 200), FILL["gaps"][1]]}
+    note = next(n for n in Rig(repo, runs, wordy).fill().draft.notes if n.startswith("Why"))
+    assert len(note) < 400 and "<b>" not in note
+
+
+def test_a_choice_the_registry_rules_refuse_makes_the_authority_unavailable(
+    repo: Path, runs: Path
+) -> None:
+    add_spec(repo, "pipeline-foo-agent.md")  # both files would be agents.foo
+    add_spec(repo, "foo.md")
+    reply = {"gaps": [{"agent": "foo", "model": "qwen3_5_9b"}]}
+    why = unavailable(Rig(repo, runs, reply))
+    assert why.startswith("the registry rules refused") and "would both be agents.foo" in why
+    assert rc.pending(runs) == []
+
+
+def test_without_a_model_for_human_authority_no_model_can_act_and_none_is_called(
+    repo: Path, runs: Path
+) -> None:
+    drop(repo, AUTHORITY_MODELS)
+    rig = Rig(repo, runs, FILL)
+    assert "human_authority is one of the agents with no model" in unavailable(rig)
+    assert rig.seen == []
+
+
+def test_a_gap_spec_with_no_brief_is_not_worth_a_model_call(repo: Path, runs: Path) -> None:
+    add_spec(repo, brief=False)
+    rig = Rig(repo, runs, FILL)
+    assert "has no brief" in unavailable(rig) and "R21" in unavailable(rig)
+    assert rig.seen == []
+
+
+def test_a_coordinator_that_may_not_act_as_the_authority_is_not_called_for_the_gaps(
+    repo: Path, runs: Path
+) -> None:
+    two_gaps(repo)
+    setup = Setup("gemini_4_argon_low", None, "", repo / "LN-AGENTS.md")
+    rig = Rig(repo, runs, FILL, setup=setup)
+    assert "is not bound to human_authority" in unavailable(rig)
+    assert rig.seen == []
+
+
+def test_an_authority_that_is_not_ready_is_not_called_for_the_gaps(repo: Path, runs: Path) -> None:
+    two_gaps(repo)
+    rig = Rig(repo, runs, FILL, unready=(MODEL,))
+    assert "no model is ready" in unavailable(rig) and rig.seen == []
+
+
+def test_a_class_that_may_not_go_to_the_cloud_means_the_authority_is_not_used(
+    repo: Path, runs: Path
+) -> None:
+    two_gaps(repo)
+    classes = {
+        **DATA_CLASSES,
+        "classes": {**DATA_CLASSES["classes"], "internal": {"cloud_allowed": False}},
+    }
+    rig = Rig(repo, runs, FILL, data_classes=classes)
+    assert "may not be sent to" in unavailable(rig) and rig.seen == []
+
+
+def test_a_catalog_that_cannot_be_read_means_the_authority_is_not_used(
+    repo: Path, runs: Path
+) -> None:
+    two_gaps(repo)
+
+    def broken(root: Path) -> list[dict[str, Any]]:
+        raise CatalogError(["registry R21 agents.release: has no brief"])
+
+    rig = Rig(repo, runs, FILL)
+    assert "the model catalog cannot be read: registry R21" in unavailable(rig, broken)
+    assert rig.seen == []
+
+
+def test_nothing_is_asked_when_every_agent_has_a_model(repo: Path, runs: Path) -> None:
+    rig = Rig(repo, runs, FILL)
+    with pytest.raises(rc.ChangeError, match="every agent already has a model"):
+        rig.fill()
+    assert rig.seen == []
+
+
+def test_the_real_authority_coordinator_can_be_checked_for_readiness_in_the_gap_state(
+    repo: Path, runs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    two_gaps(repo)
+    host = Host(environ={}, home=tmp_path, which=lambda name: None)  # nothing is installed
+    monkeypatch.setattr(Host, "real", classmethod(lambda cls: host))
+    report = for_authority(repo, runs).preflight()
+    assert report.static_errors == [] and report.providers and report.registry["models"]
+    problems = for_authority(repo, runs)._problems(MODEL)
+    assert problems and not any("no readiness probe declared" in p for p in problems), problems
+    # what used to stop the authority: the default report knows nothing in this state
+    stopped = for_authority(repo, runs)
+    stopped.preflight = lambda: run_preflight(repo, host)
+    assert any("no readiness probe declared" in p for p in stopped._problems(MODEL))

@@ -82,6 +82,9 @@ class Pipeline:
         self.service = PipelineService(
             ROOT, tmp_path, self._factory, handlers, coordinator_for=self._coordinator
         )
+        # never the real authority: it would probe this host and could call a live model
+        self.service.authority_for = self._authority
+        self.service.gap_catalog = fake_catalog
         app, self.executor = build_app(self.service, TOKEN, "http://127.0.0.1:0/a2a/jsonrpc", 0.01)
         self.client = TestClient(app)
 
@@ -102,6 +105,12 @@ class Pipeline:
             preflight=report,
             setup=self.setup,
         )
+
+    def _authority(self, root: Path, runs: Path) -> Coordinator:
+        """The coordinator that acts as the authority, played by the same fake model."""
+        coordinator = self._coordinator(root, runs / ".authority")
+        coordinator.run_id = "authority"  # the directory's own name is not a valid run id
+        return coordinator
 
     def _factory(self, root: Path, run_dir: Path) -> Any:
         def make(policy: Any, log: Any, ledger: Any, guards: Any) -> Dispatcher:
@@ -462,34 +471,28 @@ PROPOSAL = {
 }
 
 
+def fake_catalog(root_: Path) -> list[dict[str, Any]]:
+    """Catalog rows from the registry alone: nothing is probed and no model is called."""
+    models = loads_yaml((root_ / "policy" / "model_registry.yaml").read_bytes())["models"]
+    return [
+        {
+            "name": name,
+            "family": m["family"],
+            "location": "cloud",
+            "capabilities": m["capabilities"],
+            "bound_to": [],
+            "readiness": None,
+            "conformance": None,
+        }
+        for name, m in models.items()
+    ]
+
+
 def authority_pipe(pipe: Pipeline, tmp_path: Path, reply: Any) -> Path:
     """A service whose authority is the fake model, over a copy of the repository."""
     root = registry_repo(pipe, tmp_path)
     pipe.reply = lambda prompt: reply if isinstance(reply, str) else json.dumps(reply)
-
-    def authority_for(root_: Path, runs: Path) -> Coordinator:
-        coordinator = pipe._coordinator(root_, runs / ".authority")
-        coordinator.run_id = "authority"  # the directory's own name is not a valid run id
-        return coordinator
-
-    pipe.service.authority_for = authority_for
-
-    def catalog(root_: Path) -> list[dict[str, Any]]:
-        models = loads_yaml((root_ / "policy" / "model_registry.yaml").read_bytes())["models"]
-        return [
-            {
-                "name": name,
-                "family": m["family"],
-                "location": "cloud",
-                "capabilities": m["capabilities"],
-                "bound_to": [],
-                "readiness": None,
-                "conformance": None,
-            }
-            for name, m in models.items()
-        ]
-
-    pipe.service.catalog = catalog
+    pipe.service.catalog = fake_catalog
     return root
 
 
@@ -744,6 +747,119 @@ def test_without_a_coordinator_the_gap_is_listed_with_the_way_to_name_one(
     reply = data_of(pipe.send({"skill": "complete_mapping"}))
     assert reply["change_id"] is None and [g["agent"] for g in reply["gaps"]] == ["extra_helper"]
     assert "names no coordinator" in reply["errors"][0] and "`coordinator:`" in reply["errors"][0]
+
+
+FILL = {
+    "gaps": [{"agent": "extra_helper", "model": "qwen3_5_9b", "why": "It reads nothing private."}],
+    "summary": "A local model suits the helper.",
+}
+
+
+def authority_fills(pipe: Pipeline, tmp_path: Path, reply: Any = FILL) -> Path:
+    """A service over a copy of the repository with one agent that has no model, whose authority
+    is the fake model answering `reply`."""
+    root = registry_repo(pipe, tmp_path)
+    give_a_spec_no_model(root)
+    pipe.reply = lambda prompt: reply if isinstance(reply, str) else json.dumps(reply)
+    return root
+
+
+def asked_for_gaps(pipe: Pipeline) -> int:
+    return sum("gaps.json" in call or '"gaps"' in call for call in pipe.calls)
+
+
+def test_the_authority_names_the_model_for_the_gap_and_the_reply_says_who(
+    tmp_path: Path,
+) -> None:
+    pipe = Pipeline(tmp_path)
+    root = authority_fills(pipe, tmp_path)
+    before = (root / "policy" / "model_registry.yaml").read_text()
+    draft = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert draft["errors"] == [] and draft["kind"] == "fill_gaps"
+    assert asked_for_gaps(pipe) == 1
+    assert draft["proposed_by"] == "gemini_3_8_flash_high"
+    assert draft["authority_says"] == "A local model suits the helper."
+    assert "authority_unavailable" not in draft and "reused" not in draft
+    assert "primary: qwen3_5_9b" in draft["diff"]
+    assert "Why (proposed by gemini_3_8_flash_high): It reads nothing private." in draft["notes"]
+    assert (root / "policy" / "model_registry.yaml").read_text() == before
+    assert not (tmp_path / "run-2").exists()
+    applied = data_of(pipe.send({"skill": "apply_change", "change_id": draft["change_id"]}))
+    assert applied["errors"] == []
+    assert data_of(pipe.send({"skill": "complete_mapping"}))["gaps"] == []
+
+
+def test_asking_again_shows_the_waiting_draft_and_does_not_call_the_model_again(
+    tmp_path: Path,
+) -> None:
+    pipe = Pipeline(tmp_path)
+    authority_fills(pipe, tmp_path)
+    first = data_of(pipe.send({"skill": "complete_mapping"}))
+    calls = len(pipe.calls)
+    again = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert len(pipe.calls) == calls, "no second model call"
+    assert again["change_id"] == first["change_id"] and again["reused"] is True
+    assert again["proposed_by"] == "gemini_3_8_flash_high"
+    assert again["authority_says"] == first["authority_says"], "the draft remembers who made it"
+    discarded = data_of(pipe.send({"skill": "discard_change", "change_id": first["change_id"]}))
+    assert discarded["errors"] == []
+    fresh = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert len(pipe.calls) == calls + 1 and "reused" not in fresh
+    assert fresh["change_id"] != first["change_id"], "a discarded draft asks the authority again"
+
+
+@pytest.mark.parametrize(
+    ("reply", "why"),
+    [
+        ("pick qwen3_5_9b", "did not reply with one JSON object"),
+        ({"gaps": []}, "left out ['extra_helper']"),
+        ({"gaps": [{"agent": "extra_helper", "model": "nope"}]}, "not in the catalog"),
+    ],
+)
+def test_an_authority_answer_that_cannot_be_used_falls_back_to_code_and_says_why(
+    tmp_path: Path, reply: Any, why: str
+) -> None:
+    pipe = Pipeline(tmp_path)
+    authority_fills(pipe, tmp_path, reply)
+    draft = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert draft["errors"] == [] and draft["proposed_by"] == "code"
+    assert why in draft["authority_unavailable"]
+    assert "primary: gemini_3_8_flash_high" in draft["diff"], "the coordinator, as code gives it"
+    assert "authority_says" not in draft
+    again = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert (
+        again["reused"] is True and again["authority_unavailable"] == draft["authority_unavailable"]
+    )
+
+
+def test_without_a_model_for_human_authority_code_fills_every_gap_and_no_model_is_called(
+    tmp_path: Path,
+) -> None:
+    pipe = Pipeline(tmp_path)
+    root = authority_fills(pipe, tmp_path)
+    path = root / "policy" / "model_registry.yaml"
+    models = "    model_assistance: [claude_cli_default, gemini_3_8_flash_high, qwen3_5_9b]\n"
+    text = path.read_text(encoding="utf-8")
+    assert text.count(models) == 1
+    path.write_text(text.replace(models, ""), encoding="utf-8")
+    draft = data_of(pipe.send({"skill": "complete_mapping"}))
+    assert [g["agent"] for g in draft["gaps"]] == ["human_authority", "extra_helper"]
+    assert draft["proposed_by"] == "code" and draft["errors"] == []
+    assert "human_authority is one of the agents with no model" in draft["authority_unavailable"]
+    assert asked_for_gaps(pipe) == 0
+
+
+def test_the_default_gap_catalog_probes_with_the_gap_tolerant_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentic_pipeline.readiness import run_preflight_tolerating_gaps
+
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        a2a_server, "catalog_rows", lambda root, deps: seen.append(deps.preflight) or []
+    )
+    a2a_server.PipelineService(ROOT, tmp_path).gap_catalog(ROOT)
+    assert seen == [run_preflight_tolerating_gaps]
 
 
 def test_complete_mapping_takes_no_arguments(pipe: Pipeline) -> None:

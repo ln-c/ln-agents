@@ -31,7 +31,7 @@ from typing import Any
 
 from agentic_pipeline.broker import BrokerPolicy, InferenceBroker
 from agentic_pipeline.graph import REPO_ROOT, load_yaml
-from agentic_pipeline.registry import op_backends, operations
+from agentic_pipeline.registry import op_backends, operations, spec_gaps
 from agentic_pipeline.sandbox import (
     ENTRY,
     SandboxResult,
@@ -578,9 +578,34 @@ def run_preflight(
     errors = validate_repo(root, policy_root)
     if errors:
         return Report(static_errors=errors)
-    host = host or Host.real()
     if registry is None:
         registry = load_yaml((policy_root or root) / "policy" / "model_registry.yaml")
+    return _probe(registry, host or Host.real())
+
+
+def run_preflight_tolerating_gaps(root: Path = REPO_ROOT, host: Host | None = None) -> Report:
+    """`run_preflight` for the one job that has to work while an agent has no model: asking the
+    authority which model each of them should get.
+
+    Registry rule R20 stops every run while an agent has no model, and so stops the readiness
+    report the authority itself needs. This drops exactly those R20 messages (the very text
+    `Gap.message` produces, not a pattern) and probes the host as usual. Any other violation,
+    including R21 for a spec with no brief, still comes back as a static error. The gate does not
+    move: `run_preflight` still fails on a gap, and nothing here lets a stage or a run proceed.
+    """
+    errors = validate_repo(root)
+    try:
+        registry = load_yaml(root / "policy" / "model_registry.yaml")
+        gaps = {gap.message() for gap in spec_gaps(registry, root)}
+    except Exception:  # an unreadable registry is already among `errors`
+        return Report(static_errors=errors)
+    if rest := [e for e in errors if e not in gaps]:
+        return Report(static_errors=rest)
+    return _probe(registry, host or Host.real())
+
+
+def _probe(registry: Mapping[str, Any], host: Host) -> Report:
+    """Probe the host for every provider and model of `registry`, which is already validated."""
     report = Report(static_errors=[], registry=registry)
     report.global_checks.append(
         probe_credential_env(registry["policy"]["prohibited_credential_env_vars"], host.environ)

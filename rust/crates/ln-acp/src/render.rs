@@ -526,8 +526,26 @@ pub fn gap_text(reply: &Value) -> String {
             ));
         }
     }
+    if reply.get("reused").and_then(Value::as_bool) == Some(true) {
+        text.push_str(
+            "\nThis is the draft from your earlier `/start`, shown again with no new model \
+             call. To get a fresh proposal, `/discard` it and start again.\n",
+        );
+    }
+    if let Some(why) = reply
+        .get("authority_unavailable")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        text.push_str(&format!(
+            "\nThe authority was not used: {why}. Code drafted the fill from the coordinator \
+             named in `LN-AGENTS.md`.\n"
+        ));
+    }
     let mut rest = reply.clone();
-    if let Some(fields) = rest.as_object_mut() {
+    if let Some(fields) = rest.as_object_mut()
+        && fields.get("proposed_by").and_then(Value::as_str) == Some("code")
+    {
         fields.remove("proposed_by"); // code made this one, and the draft's summary says so
     }
     text.push_str(&change_text(&rest));
@@ -934,6 +952,67 @@ mod tests {
             !text.contains("acting as the authority"),
             "code made this proposal, not the authority: {text}"
         );
+    }
+
+    #[test]
+    fn a_gap_reply_proposed_by_the_authority_names_it_and_what_it_said() {
+        let mut reply = gap_reply();
+        reply["proposed_by"] = json!("gemini_3_8_flash_high");
+        reply["authority_says"] = json!("A local model suits the helper.");
+        reply["summary"] = json!("Give 2 agents a model (proposed by gemini_3_8_flash_high)");
+        let text = gap_text(&reply);
+        assert!(
+            text.contains("Proposed by `gemini_3_8_flash_high`, acting as the authority"),
+            "{text}"
+        );
+        assert!(text.contains("- the authority says: A local model suits the helper."));
+        assert!(!text.contains("The authority was not used"), "{text}");
+        assert!(text.contains("`/confirm d10d897d`"));
+    }
+
+    #[test]
+    fn a_gap_reply_drafted_by_code_says_why_the_authority_was_not_used() {
+        let mut reply = gap_reply();
+        reply["authority_unavailable"] = json!("no model is ready: gemini_3_8_flash_high");
+        let text = gap_text(&reply);
+        assert!(
+            text.contains(
+                "The authority was not used: no model is ready: gemini_3_8_flash_high. Code \
+                 drafted the fill"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("acting as the authority"), "{text}");
+        assert!(text.contains("`/confirm d10d897d`"));
+    }
+
+    #[test]
+    fn a_refusal_still_says_why_the_authority_was_not_used() {
+        let reply = json!({
+            "gaps": [{"kind": "no_entry", "agent": "x", "spec": "agents/x.md"}],
+            "change_id": null,
+            "authority_unavailable": "the reply did not name every agent",
+            "errors": ["LN-AGENTS.md names no coordinator"],
+        });
+        let text = gap_text(&reply);
+        assert!(text.contains("The authority was not used: the reply did not name every agent"));
+        assert!(
+            text.contains("Not drafted") && !text.contains("`/confirm"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_draft_shown_again_says_so_and_how_to_get_a_new_one() {
+        let mut reply = gap_reply();
+        reply["reused"] = json!(true);
+        let text = gap_text(&reply);
+        assert!(
+            text.contains("shown again with no new model call"),
+            "{text}"
+        );
+        assert!(text.contains("`/discard` it and start again"), "{text}");
+        assert!(!gap_text(&gap_reply()).contains("shown again"));
     }
 
     #[test]

@@ -29,7 +29,7 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -77,6 +77,9 @@ class Draft:
     summary: str
     notes: list[str]
     diff: str
+    # who made it and why, as text for a human (`proposed_by`, `authority_says`, ...); kept with
+    # the draft so asking again shows the same thing, and never read as an instruction
+    meta: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +200,12 @@ def _same_pending(runs_dir: Path, kind: str, old: bytes, new_text: str) -> Draft
                 new_text,
             ):
                 return Draft(
-                    record["id"], record["kind"], record["summary"], record["notes"], record["diff"]
+                    record["id"],
+                    record["kind"],
+                    record["summary"],
+                    record["notes"],
+                    record["diff"],
+                    record.get("meta", {}),
                 )
         except (OSError, ValueError, KeyError):
             continue
@@ -215,6 +223,7 @@ def _finish(
     new_text: str,
     expected: Mapping[str, Any],
     reuse: bool = False,
+    meta: Mapping[str, str] | None = None,
 ) -> Draft:
     """Check the edited text and store it as a draft. With `reuse`, a draft already waiting
     for exactly this change is returned instead of a second one."""
@@ -244,10 +253,11 @@ def _finish(
             "diff": diff,
             "base": _digest(old),
             "new_text": new_text,
+            "meta": dict(meta or {}),
             "created_at": datetime.now(UTC).isoformat(),
         },
     )
-    return Draft(change_id, kind, summary, notes, diff)
+    return Draft(change_id, kind, summary, notes, diff, dict(meta or {}))
 
 
 def _model_name(model_id: str, taken: Mapping[str, Any]) -> str:
@@ -574,7 +584,13 @@ def refuse_start(found: Sequence[Gap]) -> MappingIncomplete:
 
 
 def draft_fill_gaps(
-    root: Path, runs_dir: Path, choices: Mapping[str, str], *, origin: str
+    root: Path,
+    runs_dir: Path,
+    choices: Mapping[str, str],
+    *,
+    origin: str,
+    reasons: Mapping[str, str] | None = None,
+    meta: Mapping[str, str] | None = None,
 ) -> Draft:
     """Give every agent that has no model one, as a single draft.
 
@@ -583,6 +599,8 @@ def draft_fill_gaps(
     an entry that exists gets the model as `model_assistance` (its `primary` stays what a human
     wrote: `human_authority` is a human, `exception_router` is deterministic), and a spec no
     entry owns gets a new entry, `{spec, primary}`, that has no stage wiring and serves nothing.
+    `reasons` is the proposer's one line per agent, shown with the diff; `meta` is kept with the
+    draft (who proposed it).
     """
     old = _registry_bytes(root)
     registry = _load(old)
@@ -633,6 +651,8 @@ def draft_fill_gaps(
                 )
         except registry_edit.EditError as exc:
             raise ChangeError(str(exc)) from exc
+        if reasons and gap.agent in reasons:
+            notes.append(f"Why ({origin}): {reasons[gap.agent]}")
         notes += _egress_notes(registry, {"agent": gap.agent}, [model])
     return _finish(
         root,
@@ -644,12 +664,44 @@ def draft_fill_gaps(
         new_text=text,
         expected=expected,
         reuse=True,
+        meta=meta,
     )
 
 
-def propose_fill(root: Path, runs_dir: Path) -> Draft:
+def pending_fill(root: Path, runs_dir: Path) -> Draft | None:
+    """The draft that already waits to close the gaps of today's registry, if it still passes
+    every rule: asking again shows it and does not make another (or ask a model again)."""
+    try:
+        base = _digest(_registry_bytes(root))
+    except ChangeError:
+        return None
+    newest: tuple[str, Draft] | None = None
+    for path in (runs_dir / CHANGES_DIR).glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if (record["kind"], record["base"]) != ("fill_gaps", base):
+                continue
+            if _validate(root, record["new_text"]):
+                continue
+            draft = Draft(
+                record["id"],
+                record["kind"],
+                record["summary"],
+                record["notes"],
+                record["diff"],
+                record.get("meta", {}),
+            )
+            if newest is None or record["created_at"] > newest[0]:
+                newest = (record["created_at"], draft)
+        except (OSError, ValueError, KeyError):
+            continue
+    return newest[1] if newest else None
+
+
+def propose_fill(root: Path, runs_dir: Path, *, unavailable: str = "") -> Draft:
     """The draft code makes when agents have no model: the coordinator named in `LN-AGENTS.md`
-    for each of them. No model chose it. Refused if there is no coordinator to give."""
+    for each of them. No model chose it. Refused if there is no coordinator to give.
+    `unavailable` is why the authority was not asked or not used, kept with the draft."""
     from agentic_pipeline.coordinator import SETUP_FILE, SetupError, load_setup
 
     registry = _load(_registry_bytes(root))
@@ -676,6 +728,10 @@ def propose_fill(root: Path, runs_dir: Path) -> Draft:
         runs_dir,
         {gap.agent: model for gap in found},
         origin=f"by code, from the coordinator in {SETUP_FILE}: no model chose this",
+        meta={
+            "proposed_by": "code",
+            **({"authority_unavailable": unavailable} if unavailable else {}),
+        },
     )
 
 

@@ -298,6 +298,64 @@ def test_two_files_that_would_share_a_name_are_refused_naming_both(repo: Path, r
     assert rc.pending(runs) == []
 
 
+def test_a_reason_for_each_agent_is_shown_with_the_draft_and_the_proposer_is_kept(
+    repo: Path, runs: Path
+) -> None:
+    add_spec(repo)
+    drop(repo, LEARNING_MODELS)
+    meta = {"proposed_by": "m1", "authority_says": "Two picks."}
+    choices = {"learning": COORDINATOR, "extra_helper": "qwen3_5_9b"}
+    draft = rc.draft_fill_gaps(
+        repo,
+        runs,
+        choices,
+        origin="proposed by m1",
+        reasons={"learning": "Suits analysis.", "extra_helper": "Local."},
+        meta=meta,
+    )
+    assert "Why (proposed by m1): Suits analysis." in draft.notes
+    assert "Why (proposed by m1): Local." in draft.notes
+    assert draft.meta == meta
+    waiting = rc.pending_fill(repo, runs)
+    assert waiting is not None and waiting.change_id == draft.change_id and waiting.meta == meta
+
+
+def test_a_draft_made_by_code_keeps_why_the_authority_was_not_used(repo: Path, runs: Path) -> None:
+    add_spec(repo)
+    by_code = rc.propose_fill(repo, runs, unavailable="no model is ready")
+    assert by_code.meta == {"proposed_by": "code", "authority_unavailable": "no model is ready"}
+    assert rc.propose_fill(repo, runs).meta == by_code.meta, "asking again returns the same draft"
+    other = rc.propose_fill(repo, runs / "elsewhere")
+    assert other.meta == {"proposed_by": "code"}, "without a reason, none is invented"
+
+
+def test_a_waiting_fill_is_found_only_while_it_still_fits_the_registry(
+    repo: Path, runs: Path
+) -> None:
+    assert rc.pending_fill(repo, runs) is None
+    add_spec(repo)
+    draft = rc.propose_fill(repo, runs)
+    assert rc.pending_fill(repo, runs).change_id == draft.change_id  # type: ignore[union-attr]
+    add_spec(repo, "pipeline-second-helper-agent.md")  # another gap: the draft no longer closes all
+    assert rc.pending_fill(repo, runs) is None
+    (repo / "agents" / "pipeline-second-helper-agent.md").unlink()
+    assert rc.pending_fill(repo, runs) is not None
+    (repo / rc.REGISTRY).write_text(registry_text(repo) + "\n# moved\n", encoding="utf-8")
+    assert rc.pending_fill(repo, runs) is None, "the registry changed since it was drafted"
+
+
+def test_the_newest_waiting_fill_wins(repo: Path, runs: Path) -> None:
+    add_spec(repo)
+    first = rc.draft_fill_gaps(repo, runs, {"extra_helper": COORDINATOR}, origin="one")
+    second = rc.draft_fill_gaps(repo, runs, {"extra_helper": "qwen3_5_9b"}, origin="two")
+    assert first.change_id != second.change_id
+    found = rc.pending_fill(repo, runs)
+    assert found is not None and found.change_id == second.change_id
+    rc.discard(runs, second.change_id)
+    found = rc.pending_fill(repo, runs)
+    assert found is not None and found.change_id == first.change_id
+
+
 def test_every_agent_already_having_a_model_is_not_a_draft(repo: Path, runs: Path) -> None:
     assert refused(rc.propose_fill, repo, runs) == ["every agent already has a model"]
     assert refused(rc.draft_fill_gaps, repo, runs, {}, origin="x") == [

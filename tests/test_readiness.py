@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from agentic_pipeline.briefs import BEGIN, END
 from agentic_pipeline.broker import BrokerStats
 from agentic_pipeline.cli import main
 from agentic_pipeline.graph import load_yaml
@@ -35,6 +36,7 @@ from agentic_pipeline.readiness import (
     probe_ovms,
     probe_sandbox,
     run_preflight,
+    run_preflight_tolerating_gaps,
 )
 from agentic_pipeline.sandbox import SandboxResult, SandboxUnavailable
 
@@ -652,6 +654,67 @@ def test_static_errors_block_and_skip_probes(tmp_path: Path) -> None:
     report = run_preflight(tmp_path, host)
     assert report.static_errors
     assert not evaluate_stage("A1", report).eligible
+
+
+# ── While an agent has no model ──────────────────────────────────────────────
+
+
+def gap_repo(tmp_path: Path) -> Path:
+    """A copy of the repository with one more spec that no `agents` entry owns."""
+    for name in ("pipeline", "policy", "schemas", "agents"):
+        shutil.copytree(ROOT / name, tmp_path / name)
+    text = (ROOT / "agents" / "pipeline-learning-agent.md").read_text(encoding="utf-8")
+    (tmp_path / "agents" / "pipeline-extra-helper-agent.md").write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def test_the_gap_tolerant_preflight_probes_where_the_default_one_stops(tmp_path: Path) -> None:
+    repo = gap_repo(tmp_path)
+    host = Host(environ={}, home=tmp_path, which=lambda name: None)
+    gap = "registry R20: agents/pipeline-extra-helper-agent.md is not the spec of any agents entry"
+    assert run_preflight(repo, host).static_errors == [gap]  # the gate has not moved
+    report = run_preflight_tolerating_gaps(repo, host)
+    assert report.static_errors == []
+    assert report.registry["models"] and report.providers and report.isolation
+    assert not evaluate_stage("A1", run_preflight(repo, host)).eligible
+
+
+def test_the_gap_tolerant_preflight_drops_the_gap_messages_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    repo = gap_repo(tmp_path)
+    release = repo / "agents" / "pipeline-release-agent.md"  # an owned spec that loses its brief
+    text = release.read_text(encoding="utf-8")
+    release.write_text(text.replace(BEGIN, "").replace(END, ""), encoding="utf-8")
+
+    def refuse(*args: object) -> Any:
+        raise AssertionError("host probed despite a static violation")
+
+    host = Host(environ={}, home=tmp_path, which=refuse, run=refuse)
+    errors = run_preflight_tolerating_gaps(repo, host).static_errors
+    assert len(errors) == 1 and errors[0].startswith("registry R21"), errors
+
+
+def test_two_entries_sharing_a_spec_is_not_tolerated(tmp_path: Path) -> None:
+    repo = gap_repo(tmp_path)
+    path = repo / "policy" / "model_registry.yaml"
+    text = path.read_text(encoding="utf-8")
+    old = "spec: agents/pipeline-release-agent.md"
+    assert text.count(old) == 1
+    path.write_text(text.replace(old, "spec: agents/pipeline-learning-agent.md"), encoding="utf-8")
+    host = Host(environ={}, home=tmp_path, which=lambda name: None)
+    errors = run_preflight_tolerating_gaps(repo, host).static_errors
+    assert any("is also agents." in e for e in errors), errors
+
+
+def test_the_gap_tolerant_preflight_is_the_default_one_when_there_is_no_gap(
+    tmp_path: Path,
+) -> None:
+    host = Host(environ={}, home=tmp_path, which=lambda name: None)
+    tolerant = run_preflight_tolerating_gaps(ROOT, host)
+    default = run_preflight(ROOT, host)
+    assert tolerant.static_errors == default.static_errors == []
+    assert tolerant.providers.keys() == default.providers.keys()
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
