@@ -316,6 +316,19 @@ def test_a_question_is_answered_by_message_and_changes_no_task(pipe: Pipeline) -
     assert any("why did it stop?" in call for call in pipe.calls)  # conversions share the list
 
 
+def test_a_second_question_about_a_run_is_given_the_first_and_its_answer(pipe: Pipeline) -> None:
+    first = pipe.send({"skill": "advance", "run_id": RUN_ID})["result"]["task"]
+    pipe.send({"skill": "ask", "question": "why did it stop?"}, taskId=first["id"])
+    reply = pipe.send({"skill": "ask", "question": "and who signs?"}, taskId=first["id"])
+    data = reply["result"]["message"]["parts"][0]["data"]
+    assert data["sources"][-1] == "your 1 earlier question"
+    # background conversions share the list of calls: take the one that holds the question
+    prompt = next(c for c in reversed(pipe.calls) if "and who signs?" in c)
+    notes = prompt[prompt.index("<earlier_turns>") : prompt.index("</earlier_turns>")]
+    assert "why did it stop?" in notes and "A summary written by the fake coordinator." in notes
+    assert "and who signs?" not in notes and "and who signs?" in prompt
+
+
 def test_models_is_answered_by_message_without_a_run_or_a_task(pipe: Pipeline) -> None:
     rows = [{"name": "qwen3_5_9b", "bound_to": ["E1.implementation_patch"]}]
     seen: list[Path] = []

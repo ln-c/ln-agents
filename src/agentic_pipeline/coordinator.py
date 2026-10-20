@@ -13,6 +13,9 @@ a human is needed), and answers questions from those views. It has no authority:
 * every call is logged in the coordinator's own hash chain (`views/provenance_<run>.jsonl`).
   It is deliberately not the run's chain: the evidence a human signs includes the run's
   provenance tip, and an advisory call must never void an approval already written;
+* what is asked about a run is remembered in `views/conversation.jsonl` (`conversation.py`)
+  and put back into the next answer's prompt as notes: data, never instructions, held to the
+  strictest data class among the turns and not used if the file was edited;
 * nothing is sealed and no budget is charged; the gates never read `views/`;
 * a model that cannot be used, or a reply that leaves out an identifier of the record, makes
   the view fall back to code (raw record, or the facts), so a human always has a Markdown file.
@@ -36,6 +39,10 @@ from typing import Any
 
 import yaml
 
+from agentic_pipeline.conversation import FILE as CONVERSATION_FILE
+from agentic_pipeline.conversation import Conversation, ConversationError
+from agentic_pipeline.conversation import notes as conversation_notes
+from agentic_pipeline.conversation import select as select_turns
 from agentic_pipeline.dispatch import AgentSpec, BackendAdapter, DispatchGrant
 from agentic_pipeline.manifest import resolve_sealed_inputs
 from agentic_pipeline.provenance import JsonlProvenanceLog
@@ -688,17 +695,42 @@ class Coordinator:
             + f"- paused reason: {state.get('paused_reason') or '-'}\n",
             encoding="utf-8",
         )
+        memory = Conversation(self.views / CONVERSATION_FILE)
+        recalled = memory.recall()
+        earlier = select_turns(recalled.turns)
+        _, documents = self._documents()
+        order = self.data_classes["order"]
+        classes = [
+            documents,
+            *(t.data_class if t.data_class in order else "unknown" for t in earlier),
+        ]
+        data_class = max(classes, key=order.index)  # the memory is held to the strictest class
         task = (
             "You are the coordinator of a delivery pipeline. You can only write text: you "
             "cannot run, approve, sign, resume or change anything. Answer the user's question "
             "using only the files below. If they do not say, say so and name the file the user "
             "should open. When the user must act, name the action in words; the tool lists the "
-            f"commands. Reply in Markdown.\n\nQuestion:\n<question>\n{question}\n</question>"
-            f"{self._style()}"
+            f"commands. Reply in Markdown.\n\n{conversation_notes(earlier)}"
+            f"Question:\n<question>\n{question}\n</question>{self._style()}"
         )
         inputs = {"status": status, **{n: p for n, p in files.items()}}
-        answer = self._call(f"answer_{self.new_id()[:8]}", task, inputs, backend)
-        return sanitize(answer, quote=False), given
+        answer = sanitize(
+            self._call(f"answer_{self.new_id()[:8]}", task, inputs, backend, data_class=data_class),
+            quote=False,
+        )
+        if earlier:
+            given.append(f"your {len(earlier)} earlier question{'s' * (len(earlier) != 1)}")
+        note = ""  # written by code, and not part of what is remembered
+        if recalled.problem:
+            note = f"Not remembered, and earlier questions were not used: {recalled.problem}"
+        else:
+            try:
+                memory.remember(question, answer, backend, data_class)
+            except ConversationError as exc:
+                note = f"This exchange was not remembered: {exc}"
+        if note:
+            answer += f"\n\n_{note}._"
+        return answer, given
 
 
 def for_run(
