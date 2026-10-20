@@ -68,7 +68,7 @@ import secrets
 import socket
 import tempfile
 import threading
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
@@ -181,11 +181,13 @@ SKILL_TEXT = {
     "models": (
         "The model catalog of the repository's registry: each model's provider, family, "
         "capabilities, what it is bound to and, when bound, its readiness and conformance. "
+        "While an agent has no model the catalog is still shown, with those agents as gaps. "
         "Read-only; it needs no run and calls no model."
     ),
     "agents": (
-        "Which model each agent slot of the registry is bound to (and what runs on it), and the "
-        "registry changes waiting for a human. Read-only; it needs no run."
+        "Which model each agent slot of the registry is bound to (and what runs on it), the "
+        "agents that have no model, and the registry changes waiting for a human. Read-only; it "
+        "needs no run."
     ),
     "registry_change": (
         "Draft one change to policy/model_registry.yaml: add a model (or claim capabilities for "
@@ -308,11 +310,24 @@ class PipelineService:
         return {**store.load().to_dict(), "runner_active": store.is_locked()}
 
     def models(self) -> dict[str, Any]:
-        """The catalog of the repository's registry, for choosing models before a run."""
+        """The catalog of the repository's registry, for choosing models before a run.
+
+        While an agent has no model the catalog is read with the gap-tolerant readiness check, and
+        the reply lists those agents as `gaps`, so the caller can say what to do about them."""
+        found = registry_changes.gaps(self.root)
+        gaps = self._gap_rows(found)
         try:
-            return {"models": self.catalog(self.root), "errors": []}
+            return {
+                "models": (self.gap_catalog if found else self.catalog)(self.root),
+                "gaps": gaps,
+                "errors": [],
+            }
         except CatalogError as exc:
-            return {"models": [], "errors": self._hinted(exc.errors)}
+            return {"models": [], "gaps": gaps, "errors": self._hinted(exc.errors)}
+
+    @staticmethod
+    def _gap_rows(found: Sequence[registry_changes.Gap]) -> list[dict[str, str]]:
+        return [{"kind": g.kind, "agent": g.agent, "spec": g.spec} for g in found]
 
     def _hinted(self, errors: list[str]) -> list[str]:
         """`errors`, with what to do about it when the cause is an agent with no model."""
@@ -322,15 +337,18 @@ class PipelineService:
         ]
 
     def agents(self) -> dict[str, Any]:
-        """The agent slots and what each is bound to, and the drafts waiting for a human."""
+        """The agent slots and what each is bound to, the agents with no model (`gaps`), and the
+        drafts waiting for a human."""
+        gaps = self._gap_rows(registry_changes.gaps(self.root))
         try:
             return {
                 "slots": registry_changes.mapping(self.root),
                 "pending": registry_changes.pending(self.runs_dir),
+                "gaps": gaps,
                 "errors": [],
             }
         except ChangeError as exc:
-            return {"slots": [], "pending": [], "errors": exc.errors}
+            return {"slots": [], "pending": [], "gaps": gaps, "errors": exc.errors}
 
     def registry_change(self, kind: str, **fields: Any) -> dict[str, Any]:
         """Draft a change to the registry. It is checked and stored with a diff, not applied."""
@@ -382,7 +400,7 @@ class PipelineService:
         the authority names a model for each; if it cannot be used, code drafts the fill from the
         coordinator and the reply says why."""
         found = registry_changes.gaps(self.root)
-        gaps = [{"kind": g.kind, "agent": g.agent, "spec": g.spec} for g in found]
+        gaps = self._gap_rows(found)
         if not found:
             return {"gaps": [], "change_id": None, "errors": []}
         with self._registry_lock:
