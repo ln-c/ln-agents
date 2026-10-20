@@ -16,8 +16,9 @@ approves.
 One policy file can change, in one way: `policy/model_registry.yaml`, through `registry_change`
 (a draft that code checks against every registry rule and stores with a diff, writing nothing),
 `propose_mapping` (the same, with the bindings proposed by a model acting as the authority),
-`complete_mapping` (the same, for agents that have no model, which code fills with the
-coordinator) and `apply_change` (which takes a draft's id, never text, and writes it only if the
+`complete_mapping` (the same, for agents that have no model: the authority names a catalog model
+for each, or, when it cannot be used, code gives each the coordinator, and says which) and
+`apply_change` (which takes a draft's id, never text, and writes it only if the
 file is still the one the draft was made from). They add a model, claim capabilities for one,
 remove an unbound one, bind an agent slot to a model, or give an agent that has none a model;
 budgets, vetoes, approvers and the graph cannot be reached. ln-agents calls `apply_change` only
@@ -117,6 +118,7 @@ from agentic_pipeline.coordinator import for_run as coordinator_for_run
 from agentic_pipeline.fsutil import WINDOWS, atomic_write_json
 from agentic_pipeline.models_cli import CatalogError, Deps, catalog_rows
 from agentic_pipeline.provenance import JsonlProvenanceLog
+from agentic_pipeline.readiness import run_preflight_tolerating_gaps
 from agentic_pipeline.registry_changes import ChangeError
 from agentic_pipeline.run_cli import (
     _dispatcher_factory,
@@ -200,9 +202,12 @@ SKILL_TEXT = {
     ),
     "complete_mapping": (
         "Without a run: if some agent (an agents/*.md) has no model, draft one change that gives "
-        "each the coordinator LN-AGENTS.md names, written by code (no model chooses it) and "
-        "stored with a diff like registry_change; nothing is written to policy/ until "
-        "apply_change. Replies with an empty gap list when every agent has a model."
+        "each a model: the authority (the model LN-AGENTS.md names, if the registry binds it to "
+        "human_authority) names one from the catalog for each, or, when it cannot be used, code "
+        "gives each the coordinator and says why. Stored with a diff like registry_change; "
+        "nothing is written to policy/ until apply_change. A draft already waiting is shown "
+        "again with no model call. Spends the model's subscription allowance when it asks. "
+        "Replies with an empty gap list when every agent has a model."
     ),
     "apply_change": (
         "Write a stored draft to policy/model_registry.yaml, if the file is still the one the "
@@ -251,6 +256,10 @@ class PipelineService:
     catalog: Callable[[Path], list[dict[str, Any]]] = lambda root: catalog_rows(root, Deps())
     # (root, runs directory) -> the coordinator that acts as the authority outside any run
     authority_for: Callable[[Path, Path], Coordinator] = authority_coordinator
+    # (root) -> the catalog rows, readable while agents have no model (registry rule R20)
+    gap_catalog: Callable[[Path], list[dict[str, Any]]] = lambda root: catalog_rows(
+        root, Deps(preflight=run_preflight_tolerating_gaps)
+    )
     _registry_lock: threading.Lock = field(default_factory=threading.Lock)
     _converting: set[str] = field(default_factory=set)
     _converting_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -367,25 +376,58 @@ class PipelineService:
         return registry_changes.draft_bind(self.root, self.runs_dir, text("slot"), models)
 
     def complete_mapping(self) -> dict[str, Any]:
-        """The draft that gives each agent with no model one, or the gaps and why it cannot."""
+        """The draft that gives each agent with no model one, or the gaps and why it cannot.
+
+        A draft already waiting for these gaps is shown again, with no new model call. Otherwise
+        the authority names a model for each; if it cannot be used, code drafts the fill from the
+        coordinator and the reply says why."""
         found = registry_changes.gaps(self.root)
         gaps = [{"kind": g.kind, "agent": g.agent, "spec": g.spec} for g in found]
         if not found:
             return {"gaps": [], "change_id": None, "errors": []}
+        with self._registry_lock:
+            waiting = registry_changes.pending_fill(self.root, self.runs_dir)
+        if waiting is not None:
+            return {"gaps": gaps, **self._filled(waiting), "reused": True, "errors": []}
+        draft: registry_changes.Draft | None = None
+        unavailable = ""
+        try:  # no lock: the model call takes a while, and a draft only adds a file
+            draft = authority.propose_fill_gaps(
+                self.root,
+                self.runs_dir,
+                self.authority_for(self.root, self.runs_dir),
+                self.gap_catalog,
+            ).draft
+        except (authority.AuthorityUnavailable, ChangeError, RunStateError) as exc:
+            unavailable = str(exc) or type(exc).__name__
+        if draft is not None:
+            return {"gaps": gaps, **self._filled(draft), "errors": []}
         try:
             with self._registry_lock:
-                draft = registry_changes.propose_fill(self.root, self.runs_dir)
+                draft = registry_changes.propose_fill(
+                    self.root, self.runs_dir, unavailable=unavailable
+                )
         except ChangeError as exc:
-            return {"gaps": gaps, "change_id": None, "errors": exc.errors}
+            return {
+                "gaps": gaps,
+                "change_id": None,
+                "authority_unavailable": unavailable,
+                "errors": exc.errors,
+            }
+        return {"gaps": gaps, **self._filled(draft), "errors": []}
+
+    @staticmethod
+    def _filled(draft: registry_changes.Draft) -> dict[str, Any]:
+        """A fill draft as a reply: who made it, and why the authority was not used if so."""
+        meta = draft.meta
         return {
-            "gaps": gaps,
             "change_id": draft.change_id,
             "kind": draft.kind,
             "summary": draft.summary,
             "notes": draft.notes,
             "diff": draft.diff,
-            "proposed_by": "code",
-            "errors": [],
+            "proposed_by": meta.get("proposed_by", "code"),
+            **{k: meta[k] for k in ("authority_says", "authority_unavailable") if k in meta},
         }
 
     def propose_mapping(self, intent: str = "") -> dict[str, Any]:

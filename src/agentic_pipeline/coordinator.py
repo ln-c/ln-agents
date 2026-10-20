@@ -778,8 +778,11 @@ def for_authority(
     root: Path, runs_dir: Path, adapter_factory: AdapterFactory | None = None
 ) -> Coordinator:
     """A coordinator for work that belongs to no run (the authority's registry proposals): it
-    reads the repository's own policy and keeps its calls under `<runs>/.authority`."""
-    from agentic_pipeline.readiness import run_preflight
+    reads the repository's own policy and keeps its calls under `<runs>/.authority`.
+
+    Its readiness report tolerates agents that have no model (registry rule R20), because the
+    authority is asked precisely when there are some; every other violation still blocks it."""
+    from agentic_pipeline.readiness import run_preflight_tolerating_gaps
     from agentic_pipeline.run_cli import _adapter_factories
     from agentic_pipeline.run_state import load_policy
 
@@ -801,7 +804,7 @@ def for_authority(
         registry=policy.registry,
         data_classes=policy.data_classes,
         adapter_factory=adapter_factory or build,
-        preflight=lambda: run_preflight(root),
+        preflight=lambda: run_preflight_tolerating_gaps(root),
         setup=setup,
         setup_error=error,
     )
