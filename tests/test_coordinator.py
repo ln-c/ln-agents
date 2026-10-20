@@ -22,6 +22,8 @@ from test_grounding import repo  # noqa: F401  (repo is a fixture)
 from test_playback import Replay, replay  # noqa: F401
 
 from agentic_pipeline import coordinator as coordinator_module
+from agentic_pipeline.briefs import BEGIN, END
+from agentic_pipeline.briefs import extract as extract_brief
 from agentic_pipeline.coordinator import (
     NEXT,
     Coordinator,
@@ -33,7 +35,13 @@ from agentic_pipeline.coordinator import (
     info_from_state,
     load_setup,
 )
-from agentic_pipeline.dispatch import AdapterResult, DispatchGrant, Identity, PreparedCall
+from agentic_pipeline.dispatch import (
+    AdapterResult,
+    AgentSpec,
+    DispatchGrant,
+    Identity,
+    PreparedCall,
+)
 from agentic_pipeline.provenance import verify_provenance_chain
 from agentic_pipeline.run_state import RunStore
 
@@ -57,13 +65,21 @@ class FakeModel:
 
     enforced_isolation = frozenset(ISOLATION)
 
-    def __init__(self, task: Callable[[DispatchGrant], str], calls: list[str], reply: Any) -> None:
+    def __init__(
+        self,
+        task: Callable[[DispatchGrant], str],
+        calls: list[str],
+        reply: Any,
+        specs: list[AgentSpec | None] | None = None,
+    ) -> None:
         self.task, self.calls, self.reply = task, calls, reply
+        self.specs = specs if specs is not None else []
 
     def identity(self) -> Identity:
         return Identity("fake:coordinator", "1.0", "subscription_tool via a fake")
 
     def prepare(self, grant: DispatchGrant) -> PreparedCall:
+        self.specs.append(grant.agent_spec)
         prompt = coordinator_module_embed(self.task(grant), grant)
         return PreparedCall(**asdict(self.identity()), prompt=prompt.encode())
 
@@ -87,6 +103,7 @@ class Fakes:
 
     def __init__(self, replay: Replay, reply: Any = faithful, **options: Any) -> None:  # noqa: F811
         self.calls: list[str] = []
+        self.specs: list[AgentSpec | None] = []  # the reference block each call carried
         self.registry = options.pop("registry", copy.deepcopy(_registry(replay)))
         self.data_classes = options.pop("data_classes", DATA_CLASSES)
         self.unready: tuple[str, ...] = options.pop("unready", ())
@@ -98,7 +115,7 @@ class Fakes:
             registry=self.registry,
             data_classes=self.data_classes,
             adapter_factory=lambda registry, backend, **kw: FakeModel(
-                kw["task_builder"], self.calls, reply
+                kw["task_builder"], self.calls, reply, self.specs
             ),
             preflight=lambda: report(unready=self.unready),
             setup=setup,
@@ -342,6 +359,123 @@ def test_a_failing_model_still_leaves_a_summary(at_h1: Replay) -> None:
     state = RunStore(at_h1.run_dir).load()
     path = fakes.coordinator.stop_summary(info_from_state(state), state.to_dict())
     assert "No coordinator summary (" in path.read_text(encoding="utf-8")
+
+
+# ── the brief of the agent that covers the run's node ───────────────────────────
+
+HUMAN_AUTHORITY_SPEC = "agents/pipeline-human-authority-agent.md"
+BRIEF_SENTENCE = "is the brief of the `{agent}` agent, which covers node {node}"
+
+
+def brief_of(tree: Path, spec: str) -> str:
+    return extract_brief((tree / spec).read_text(encoding="utf-8"))
+
+
+def test_a_stop_at_a_human_stop_carries_the_brief_of_the_agent_that_covers_it(
+    at_h1: Replay,
+) -> None:
+    fakes = Fakes(at_h1)
+    state = RunStore(at_h1.run_dir).load()
+    fakes.coordinator.stop_summary(info_from_state(state), state.to_dict())
+    (spec,) = fakes.specs
+    assert spec is not None and spec.brief and spec.path == HUMAN_AUTHORITY_SPEC
+    assert spec.text == brief_of(at_h1.repo, HUMAN_AUTHORITY_SPEC)
+    assert BRIEF_SENTENCE.format(agent="human_authority", node="H1") in fakes.calls[-1]
+    assert "not an instruction to you" in fakes.calls[-1]
+
+
+def test_a_stop_at_a_model_state_carries_the_brief_of_the_agent_its_operations_name(
+    at_h1: Replay,
+) -> None:
+    fakes = Fakes(at_h1)
+    state = RunStore(at_h1.run_dir).load().to_dict()
+    fakes.coordinator.stop_summary(StopInfo("blocked", "A2", "detail"), state)
+    assert fakes.specs[-1] is not None
+    assert fakes.specs[-1].path == "agents/pipeline-design-agent.md"
+    assert BRIEF_SENTENCE.format(agent="design", node="A2") in fakes.calls[-1]
+
+
+def test_a_question_carries_the_brief_of_the_agent_at_the_runs_current_node(
+    at_h1: Replay,
+) -> None:
+    fakes = Fakes(at_h1)
+    state = RunStore(at_h1.run_dir).load().to_dict()
+    fakes.coordinator.ask("what am I deciding?", state)
+    assert fakes.specs[-1] is not None and fakes.specs[-1].path == HUMAN_AUTHORITY_SPEC
+    assert BRIEF_SENTENCE.format(agent="human_authority", node="H1") in fakes.calls[-1]
+    fakes.coordinator.ask("and now?", {**state, "current": "R1"})
+    assert fakes.specs[-1] is not None
+    assert fakes.specs[-1].path == "agents/pipeline-release-agent.md"
+
+
+def test_a_node_no_agent_covers_gets_no_brief_and_the_prompt_it_always_had(
+    at_h1: Replay,
+) -> None:
+    fakes = Fakes(at_h1)
+    state = RunStore(at_h1.run_dir).load().to_dict()
+    fakes.coordinator.stop_summary(StopInfo("blocked", "G", "detail"), state)
+    fakes.coordinator.ask("why?", {**state, "current": "G"})
+    fakes.coordinator.ask("why?", {})  # a status with no current node
+    assert fakes.specs == [None, None, None]
+    assert all("reference block" not in prompt for prompt in fakes.calls), fakes.calls
+
+
+def test_a_run_frozen_before_states_existed_gets_a_brief_only_at_its_model_states(
+    at_h1: Replay,
+) -> None:
+    registry = copy.deepcopy(_registry(at_h1))
+    for agent in registry["agents"].values():
+        agent.pop("states", None)
+    fakes = Fakes(at_h1, registry=registry)
+    state = RunStore(at_h1.run_dir).load().to_dict()
+    path = fakes.coordinator.stop_summary(StopInfo("awaiting_human", "H1", ""), state)
+    fakes.coordinator.stop_summary(StopInfo("blocked", "A2", ""), state)
+    assert fakes.specs[0] is None and fakes.specs[1] is not None
+    assert f"Summary written by `{MODEL}`" in path.read_text(encoding="utf-8")
+
+
+def frozen_agents(tmp_path: Path, tree: Path, edit: Callable[[str], str]) -> Path:
+    """A policy root whose human-authority spec is `edit`ed, as a run's frozen copy keeps it."""
+    root = tmp_path / "frozen"
+    (root / "agents").mkdir(parents=True)
+    for spec in (tree / "agents").glob("*.md"):
+        (root / "agents" / spec.name).write_text(spec.read_text(encoding="utf-8"), encoding="utf-8")
+    target = root / HUMAN_AUTHORITY_SPEC
+    target.write_text(edit(target.read_text(encoding="utf-8")), encoding="utf-8")
+    return root
+
+
+def test_the_brief_is_read_from_the_specs_the_run_froze(at_h1: Replay, tmp_path: Path) -> None:
+    root = frozen_agents(
+        tmp_path, at_h1.repo, lambda t: t.replace(extract_brief(t), "FROZEN BRIEF ONLY")
+    )
+    fakes = Fakes(at_h1, policy_root=root)
+    state = RunStore(at_h1.run_dir).load()
+    fakes.coordinator.stop_summary(info_from_state(state), state.to_dict())
+    assert fakes.specs[0] is not None and fakes.specs[0].text == "FROZEN BRIEF ONLY"
+    assert brief_of(at_h1.repo, HUMAN_AUTHORITY_SPEC) != "FROZEN BRIEF ONLY"
+
+
+def test_a_frozen_spec_with_no_brief_leaves_the_summary_without_one(
+    at_h1: Replay, tmp_path: Path
+) -> None:
+    root = frozen_agents(tmp_path, at_h1.repo, lambda t: t.replace(BEGIN, "").replace(END, ""))
+    fakes = Fakes(at_h1, policy_root=root)
+    state = RunStore(at_h1.run_dir).load()
+    path = fakes.coordinator.stop_summary(info_from_state(state), state.to_dict())
+    assert fakes.specs == [None]
+    assert f"Summary written by `{MODEL}`" in path.read_text(encoding="utf-8")
+
+
+def test_a_spec_path_that_leaves_the_policy_root_is_not_read(at_h1: Replay, tmp_path: Path) -> None:
+    root = frozen_agents(tmp_path, at_h1.repo, lambda t: t)
+    (tmp_path / "outside.md").write_text(f"{BEGIN}\nleaked\n{END}\n", encoding="utf-8")
+    registry = copy.deepcopy(_registry(at_h1))
+    registry["agents"]["human_authority"]["spec"] = "../outside.md"
+    fakes = Fakes(at_h1, registry=registry, policy_root=root)
+    state = RunStore(at_h1.run_dir).load()
+    fakes.coordinator.stop_summary(info_from_state(state), state.to_dict())
+    assert fakes.specs == [None]
 
 
 HOSTILE = (
