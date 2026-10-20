@@ -694,6 +694,18 @@ pub fn agents_text(reply: &Value) -> String {
             if serves.is_empty() { "-" } else { &serves }
         ));
     }
+    for (kind, agent, spec) in gaps_of(reply) {
+        // an agent with no model has no slot to list, so it gets a row of its own
+        let (name, why) = if kind == "no_entry" {
+            (spec, "**no model** (no entry owns this spec)")
+        } else {
+            (agent, "**no model**")
+        };
+        text.push_str(&format!(
+            "| `{}` | {why} | - | - | - |\n",
+            name.replace('|', "\\|")
+        ));
+    }
     text.push_str(
         "\nBind one with `/agents <slot> <model>`; list slots take several, separated by commas. \
          `/models` shows what each model can do.\n",
@@ -1134,6 +1146,29 @@ mod tests {
                 && text.contains("| `build.primary` |"),
             "{text}"
         );
+        // each agent with no model has a row in the table, after the slots
+        let table = &text[text.find("#### Agents and their models").unwrap()..];
+        assert!(
+            table.contains("| `learning` | **no model** | - | - | - |\n"),
+            "{text}"
+        );
+        assert!(
+            table.contains(
+                "| `agents/extra-helper.md` | **no model** (no entry owns this spec) | - | - | - |\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            table.find("| `build.primary` |").unwrap() < table.find("| `learning` |").unwrap(),
+            "the rows follow the slots: {text}"
+        );
+    }
+
+    #[test]
+    fn a_pipe_in_a_gap_row_cannot_break_the_table() {
+        let reply = json!({"slots": [], "pending": [], "errors": [],
+                           "gaps": [{"kind": "no_entry", "agent": "x", "spec": "agents/a|b.md"}]});
+        assert!(agents_text(&reply).contains("| `agents/a\\|b.md` | **no model**"));
     }
 
     #[test]
