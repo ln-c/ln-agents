@@ -411,7 +411,8 @@ pub fn models_text(catalog: &Value) -> String {
             cell(&conformance),
         ));
     }
-    let mut text = String::from("\n#### Models in use\n\n");
+    let mut text = gap_notice(catalog);
+    text.push_str("\n#### Models in use\n\n");
     if bound.is_empty() {
         text.push_str("None is bound to an operation.\n");
     } else {
@@ -505,17 +506,20 @@ pub fn gaps_of(reply: &Value) -> Vec<(&str, &str, &str)> {
         .collect()
 }
 
-/// A `complete_mapping` reply that found agents with no model: no run was started. It lists
-/// them, then shows the draft (or why there is none) and the way on.
-pub fn gap_text(reply: &Value) -> String {
-    let gaps = gaps_of(reply);
-    let s = if gaps.len() == 1 { "" } else { "s" };
-    let mut text = format!(
-        "\n**{} agent{s} {} no model**, so no run was started:\n\n",
-        gaps.len(),
-        if gaps.len() == 1 { "has" } else { "have" }
-    );
-    for (kind, agent, spec) in &gaps {
+/// "1 agent has no model" or "3 agents have no model".
+fn gap_count(count: usize) -> String {
+    let (s, verb) = if count == 1 {
+        ("", "has")
+    } else {
+        ("s", "have")
+    };
+    format!("{count} agent{s} {verb} no model")
+}
+
+/// One line per agent that has no model, saying why.
+fn gap_lines(gaps: &[(&str, &str, &str)]) -> String {
+    let mut text = String::new();
+    for (kind, agent, spec) in gaps {
         if *kind == "no_entry" {
             text.push_str(&format!(
                 "- `{spec}`: no entry under `agents` owns this file\n"
@@ -526,6 +530,34 @@ pub fn gap_text(reply: &Value) -> String {
             ));
         }
     }
+    text
+}
+
+/// What `/models` and `/agents` say first while agents have no model (empty when none): they
+/// still answer, but no run starts and no other registry change can be drafted until `/start` gives
+/// each agent a model.
+fn gap_notice(reply: &Value) -> String {
+    let gaps = gaps_of(reply);
+    if gaps.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n**{}.** No run starts and no other registry change can be drafted until each has one. \
+         `/start` proposes a model for each, and `/confirm` writes it:\n\n{}",
+        gap_count(gaps.len()),
+        gap_lines(&gaps)
+    )
+}
+
+/// A `complete_mapping` reply that found agents with no model: no run was started. It lists
+/// them, then shows the draft (or why there is none) and the way on.
+pub fn gap_text(reply: &Value) -> String {
+    let gaps = gaps_of(reply);
+    let mut text = format!(
+        "\n**{}**, so no run was started:\n\n",
+        gap_count(gaps.len())
+    );
+    text.push_str(&gap_lines(&gaps));
     if reply.get("reused").and_then(Value::as_bool) == Some(true) {
         text.push_str(
             "\nThis is the draft from your earlier `/start`, shown again with no new model \
@@ -613,7 +645,8 @@ pub fn agents_text(reply: &Value) -> String {
             })
             .unwrap_or_default()
     };
-    let mut text = String::from(
+    let mut text = gap_notice(reply);
+    text.push_str(
         "\n#### Agents and their models\n\n| slot | bound to | family | where | serves |\n|---|---|---|---|---|\n",
     );
     for row in reply
@@ -659,6 +692,18 @@ pub fn agents_text(reply: &Value) -> String {
             "| `{slot}` | {} | {family} | {place} | {} |\n",
             bound.replace('|', "\\|"),
             if serves.is_empty() { "-" } else { &serves }
+        ));
+    }
+    for (kind, agent, spec) in gaps_of(reply) {
+        // an agent with no model has no slot to list, so it gets a row of its own
+        let (name, why) = if kind == "no_entry" {
+            (spec, "**no model** (no entry owns this spec)")
+        } else {
+            (agent, "**no model**")
+        };
+        text.push_str(&format!(
+            "| `{}` | {why} | - | - | - |\n",
+            name.replace('|', "\\|")
         ));
     }
     text.push_str(
@@ -1044,5 +1089,105 @@ mod tests {
             gaps_of(&broken).is_empty(),
             "an entry that is missing a field is skipped"
         );
+    }
+
+    fn catalog_with_gaps() -> Value {
+        json!({
+            "models": [{
+                "name": "qwen3_5_9b", "provider": "llama_cpp", "model_id": "qwen", "family": "qwen",
+                "location": "local", "capabilities": ["code"], "bound_to": ["E1.implementation_patch"],
+                "readiness": "ready", "conformance": {"status": "ok"},
+            }],
+            "gaps": [{"kind": "no_model", "agent": "learning", "spec": "agents/pipeline-learning-agent.md"}],
+            "errors": [],
+        })
+    }
+
+    #[test]
+    fn models_still_shows_the_catalog_and_says_first_that_an_agent_has_no_model() {
+        let text = models_text(&catalog_with_gaps());
+        let notice = text.find("**1 agent has no model.**").expect(&text);
+        assert!(text.contains("No run starts and no other registry change can be drafted"));
+        assert!(text.contains("`/start` proposes a model for each, and `/confirm` writes it"));
+        assert!(
+            text.contains(
+                "- `agents.learning`: its spec `agents/pipeline-learning-agent.md` names no model"
+            ),
+            "{text}"
+        );
+        let table = text.find("#### Models in use").expect(&text);
+        assert!(
+            notice < table && text.contains("| `qwen3_5_9b` |"),
+            "the notice comes before the catalog, which is still shown: {text}"
+        );
+    }
+
+    #[test]
+    fn agents_says_first_which_agents_have_no_model_and_keeps_the_mapping() {
+        let reply = json!({
+            "slots": [{"slot": "build.primary", "value": "qwen3_5_9b", "rebindable": true,
+                       "models": [{"name": "qwen3_5_9b", "family": "qwen", "location": "local"}],
+                       "operations": ["E1.implementation_patch"]}],
+            "pending": [],
+            "gaps": [
+                {"kind": "no_entry", "agent": "extra_helper", "spec": "agents/extra-helper.md"},
+                {"kind": "no_model", "agent": "learning", "spec": "agents/pipeline-learning-agent.md"},
+            ],
+            "errors": [],
+        });
+        let text = agents_text(&reply);
+        assert!(text.contains("**2 agents have no model.**"), "{text}");
+        assert!(
+            text.contains("- `agents/extra-helper.md`: no entry under `agents` owns this file")
+        );
+        assert!(
+            text.find("have no model").unwrap()
+                < text.find("#### Agents and their models").unwrap()
+                && text.contains("| `build.primary` |"),
+            "{text}"
+        );
+        // each agent with no model has a row in the table, after the slots
+        let table = &text[text.find("#### Agents and their models").unwrap()..];
+        assert!(
+            table.contains("| `learning` | **no model** | - | - | - |\n"),
+            "{text}"
+        );
+        assert!(
+            table.contains(
+                "| `agents/extra-helper.md` | **no model** (no entry owns this spec) | - | - | - |\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            table.find("| `build.primary` |").unwrap() < table.find("| `learning` |").unwrap(),
+            "the rows follow the slots: {text}"
+        );
+    }
+
+    #[test]
+    fn a_pipe_in_a_gap_row_cannot_break_the_table() {
+        let reply = json!({"slots": [], "pending": [], "errors": [],
+                           "gaps": [{"kind": "no_entry", "agent": "x", "spec": "agents/a|b.md"}]});
+        assert!(agents_text(&reply).contains("| `agents/a\\|b.md` | **no model**"));
+    }
+
+    #[test]
+    fn with_no_gap_models_and_agents_say_nothing_about_one() {
+        let mut catalog = catalog_with_gaps();
+        catalog["gaps"] = json!([]);
+        assert!(!models_text(&catalog).contains("no model"));
+        catalog.as_object_mut().unwrap().remove("gaps"); // an older server sends none
+        assert!(!models_text(&catalog).contains("no model"));
+        let agents = json!({"slots": [], "pending": [], "gaps": [], "errors": []});
+        assert!(!agents_text(&agents).contains("no model"));
+    }
+
+    #[test]
+    fn a_catalog_error_is_shown_instead_of_the_notice() {
+        let mut catalog = catalog_with_gaps();
+        catalog["models"] = json!([]);
+        catalog["errors"] = json!(["registry R1: broken"]);
+        let text = models_text(&catalog);
+        assert!(text.contains("registry R1: broken") && !text.contains("/confirm"));
     }
 }

@@ -866,17 +866,84 @@ def test_complete_mapping_takes_no_arguments(pipe: Pipeline) -> None:
     assert pipe.send({"skill": "complete_mapping", "model": "x"})["error"]["code"] == -32602
 
 
-def test_the_catalog_says_what_to_do_when_an_agent_has_no_model(
+EXTRA_HELPER_GAP = {
+    "kind": "no_entry",
+    "agent": "extra_helper",
+    "spec": "agents/pipeline-extra-helper-agent.md",
+}
+
+
+def test_models_shows_the_catalog_and_lists_the_agents_that_have_no_model(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    give_a_spec_no_model(registry_repo(pipe, tmp_path))
+    seen: list[Path] = []
+    pipe.service.gap_catalog = lambda root: seen.append(root) or fake_catalog(root)
+    pipe.service.catalog = lambda root: pytest.fail("the strict catalog refuses a gap")
+    reply = data_of(pipe.send({"skill": "models"}))
+    assert reply["errors"] == [] and reply["models"], "the rows are shown, not an error"
+    assert reply["gaps"] == [EXTRA_HELPER_GAP] and seen == [pipe.service.root]
+
+
+def test_models_with_no_gap_reads_the_strict_catalog_and_lists_no_gap(pipe: Pipeline) -> None:
+    pipe.service.catalog = lambda root: [{"name": "qwen3_5_9b"}]
+    pipe.service.gap_catalog = lambda root: pytest.fail("no agent lacks a model")
+    reply = data_of(pipe.send({"skill": "models"}))
+    assert reply["models"] == [{"name": "qwen3_5_9b"}] and reply["gaps"] == []
+
+
+def test_models_still_reports_any_other_violation_beside_the_gap(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    give_a_spec_no_model(registry_repo(pipe, tmp_path))
+
+    def broken(root: Path) -> list[dict[str, Any]]:
+        raise CatalogError(["registry R1: broken"])
+
+    pipe.service.gap_catalog = broken
+    reply = data_of(pipe.send({"skill": "models"}))
+    assert reply["models"] == [] and reply["errors"] == ["registry R1: broken", rc.NO_MODEL_HINT]
+    assert reply["gaps"] == [EXTRA_HELPER_GAP], "the gap is still listed"
+
+
+def test_the_default_catalog_for_a_gap_returns_rows_for_a_repository_that_fails_only_r20(
+    pipe: Pipeline, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agentic_pipeline.readiness import Host
+
+    root = registry_repo(pipe, tmp_path)
+    give_a_spec_no_model(root)
+    host = Host(environ={}, home=tmp_path, which=lambda name: None)  # nothing is installed
+    monkeypatch.setattr(Host, "real", classmethod(lambda cls: host))
+    # the strict catalog refuses this repository, which is why /models used to show nothing
+    with pytest.raises(CatalogError):
+        catalog_rows(root, Deps())
+    pipe.service.gap_catalog = a2a_server.PipelineService(root, tmp_path).gap_catalog
+    reply = data_of(pipe.send({"skill": "models"}))
+    assert reply["errors"] == [] and {m["name"] for m in reply["models"]} >= {"qwen3_5_9b"}
+    assert reply["gaps"] == [EXTRA_HELPER_GAP]
+
+
+def test_agents_lists_the_agents_that_have_no_model_beside_the_mapping(
+    pipe: Pipeline, tmp_path: Path
+) -> None:
+    give_a_spec_no_model(registry_repo(pipe, tmp_path))
+    reply = data_of(pipe.send({"skill": "agents"}))
+    assert reply["errors"] == [] and reply["slots"], "the mapping table still works"
+    assert reply["gaps"] == [EXTRA_HELPER_GAP]
+
+
+def test_agents_lists_no_gap_when_every_agent_has_a_model(pipe: Pipeline, tmp_path: Path) -> None:
+    registry_repo(pipe, tmp_path)
+    assert data_of(pipe.send({"skill": "agents"}))["gaps"] == []
+
+
+def test_the_authority_is_refused_with_the_way_out_while_an_agent_has_no_model(
     pipe: Pipeline, tmp_path: Path
 ) -> None:
     give_a_spec_no_model(registry_repo(pipe, tmp_path))
     # the real catalog, which refuses a repository that fails validation
     pipe.service.catalog = lambda root: catalog_rows(root, Deps())
-    reply = data_of(pipe.send({"skill": "models"}))
-    assert reply["models"] == [] and reply["errors"][-1] == rc.NO_MODEL_HINT
-    assert any("is not the spec of any agents entry" in e for e in reply["errors"])
-    slots = data_of(pipe.send({"skill": "agents"}))
-    assert slots["errors"] == [] and slots["slots"], "the mapping table still works"
     auto = data_of(pipe.send({"skill": "propose_mapping"}))
     assert auto["change_id"] is None and auto["errors"][-1] == rc.NO_MODEL_HINT, auto
 
