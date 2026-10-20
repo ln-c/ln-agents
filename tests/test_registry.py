@@ -1,4 +1,4 @@
-"""Tests for model registry invariants (R1-R20)."""
+"""Tests for model registry invariants (R1-R22)."""
 # ruff: noqa: E501
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from agentic_pipeline.registry import (
     backend_capabilities,
     backend_family,
     backend_location,
+    node_agent,
     op_backends,
     operations,
     pattern_family,
@@ -90,6 +91,26 @@ def _spec_shared_by_two_agents(r: Registry) -> None:
 def _spec_without_a_model(r: Registry) -> None:
     del r["agents"]["release"]["explanation_fallback"]
     del r["agents"]["release"]["cloud_explanation_fallback"]  # only `primary` (not a model) is left
+
+
+def _states_name_a_ghost(r: Registry) -> None:
+    r["agents"]["release"]["states"] = ["R1", "R2", "NOWHERE"]
+
+
+def _states_take_a_model_state(r: Registry) -> None:
+    r["agents"]["release"]["states"] = ["R1", "R2", "A1"]
+
+
+def _states_shared_by_two_agents(r: Registry) -> None:
+    r["agents"]["learning"]["states"] = ["HR", "R1"]  # release has R1
+
+
+def _states_not_a_list(r: Registry) -> None:
+    r["agents"]["human_authority"]["states"] = "H1"
+
+
+def _states_on_an_agent_with_no_spec(r: Registry) -> None:
+    r["agents"]["scoring_authorization"]["states"] = ["X"]
 
 
 def _drop_denylist_entry(r: Registry) -> None:
@@ -329,6 +350,23 @@ CASES: list[tuple[str, Callable[[Registry], None], str]] = [
     ("launch a cloud tool", _launch_a_cloud_tool, "registry R19 providers.claude_pro"),
     ("spec shared by two agents", _spec_shared_by_two_agents, "registry R20 agents.learning"),
     ("spec without a model", _spec_without_a_model, "registry R20 agents.release"),
+    ("states name a ghost", _states_name_a_ghost, "registry R22 agents.release.states: 'NOWHERE'"),
+    (
+        "states take a model state",
+        _states_take_a_model_state,
+        "registry R22 agents.release.states: 'A1' is already covered by ['design']",
+    ),
+    (
+        "states shared by two agents",
+        _states_shared_by_two_agents,
+        "registry R22 agents.learning.states: 'R1' is also agents.release's",
+    ),
+    ("states not a list", _states_not_a_list, "registry R22 agents.human_authority.states"),
+    (
+        "states on an agent with no spec",
+        _states_on_an_agent_with_no_spec,
+        "registry R22 agents.scoring_authorization.states: the agent has no spec",
+    ),
     ("bad family pattern", _bad_family_pattern, "registry R17 providers.google_ai_pro"),
     (
         "bad pattern after a match",
@@ -584,3 +622,49 @@ def test_design_b_cannot_use_a_claude_model_agy_serves_but_can_use_another_famil
         assert any(e.startswith("registry R14 A1.proposal_b") for e in errors), errors
     else:  # a family of its own is independent of design A
         assert not errors, errors
+
+
+# ── which agent covers a graph state (R22) ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("node", "agent"),
+    [
+        ("A1", "design"),  # from stage_requirements, whichever of design's operations it names
+        ("A2J", "design"),
+        ("A3R", "design"),
+        ("C1", "build"),
+        ("E1", "build"),
+        ("H1", "human_authority"),  # from `states`
+        ("R1", "release"),
+        ("R2", "release"),
+        ("HR", "learning"),
+        ("G", None),  # a code state no agent lists
+        ("BENCH", None),  # a model state that is disabled, so it names no operation
+        ("NOWHERE", None),
+    ],
+)
+def test_a_node_belongs_to_the_agent_that_covers_it(node: str, agent: str | None) -> None:
+    assert node_agent(REGISTRY, node) == agent
+
+
+def test_every_human_stop_has_an_agent_whose_brief_a_coordinator_can_read() -> None:
+    assert all(node_agent(REGISTRY, state) for state in GRAPH.human_states)
+
+
+def test_a_registry_written_before_states_existed_covers_only_the_model_states() -> None:
+    registry = copy.deepcopy(REGISTRY)
+    for agent in registry["agents"].values():
+        agent.pop("states", None)
+    assert [node_agent(registry, s) for s in ("A1", "H1", "R1", "HR")] == [
+        "design",
+        None,
+        None,
+        None,
+    ]
+
+
+def test_a_node_whose_operations_name_two_agents_belongs_to_neither() -> None:
+    registry = copy.deepcopy(REGISTRY)
+    op(registry, "A1", "proposal_b")["agent"] = "build"
+    assert node_agent(registry, "A1") is None

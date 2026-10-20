@@ -29,6 +29,9 @@ R20  every agent spec has a model: each `agents/*.md` is the `spec` of exactly o
 R21  every agent spec in the repository has one short brief (between the markers in
      `briefs.py`), which is what a coordinator reads in place of the file; a run's frozen copy is
      not held to it, so a run started before briefs existed keeps going
+R22  `states` lists the graph states an agent covers that `stage_requirements` does not give to
+     an agent (the human stops, for one), so every state has at most one agent and a coordinator
+     can find the brief of the agent whose node a run is at
 """
 
 from __future__ import annotations
@@ -96,6 +99,25 @@ def agent_spec_path(registry: Mapping[str, Any], dotted: str) -> str | None:
     agent = registry["agents"].get(dotted.split(".")[0])
     spec = agent.get("spec") if isinstance(agent, Mapping) else None
     return PurePosixPath(spec).as_posix() if isinstance(spec, str) else None
+
+
+def node_agent(registry: Mapping[str, Any], node: str) -> str | None:
+    """The agents entry that covers a graph state, or None when none does (or two would).
+
+    A state a model works is covered by the agent its `stage_requirements` operations name
+    (`design.proposal_a` is `design`); any other state by the entry that lists it under `states`
+    (R22). A registry written before `states` existed simply covers fewer states.
+    """
+    stage = (registry.get("stage_requirements") or {}).get(node)
+    named = {op["agent"].split(".")[0] for op in (stage or {}).get("operations") or ()}
+    if named:
+        return next(iter(named)) if len(named) == 1 else None
+    owners = [
+        name
+        for name, agent in registry["agents"].items()
+        if isinstance(agent, Mapping) and node in (agent.get("states") or ())
+    ]
+    return owners[0] if len(owners) == 1 else None
 
 
 def pattern_family(provider: Mapping[str, Any], model_id: str) -> str | None:
@@ -366,6 +388,35 @@ def validate_registry(
             extract_brief(path.read_text(encoding="utf-8"))
         except (BriefError, UnicodeDecodeError) as exc:
             errors.append(f"registry R21 agents.{name}: {spec!r} {exc}")
+
+    # R22. An agent covers the states it lists, which no operation of stage_requirements covers.
+    taken = {
+        stage: {op["agent"].split(".")[0] for op in req.get("operations") or ()}
+        for stage, req in stage_reqs.items()
+    }
+    claimed: dict[str, str] = {}
+    for name, agent in agents.items():
+        if "states" not in agent:
+            continue
+        where = f"registry R22 agents.{name}.states"
+        listed = agent["states"]
+        if not (isinstance(listed, list) and all(isinstance(s, str) for s in listed)):
+            errors.append(f"{where}: must be a list of graph state ids")
+            continue
+        if agent_spec_path(registry, name) is None:
+            errors.append(f"{where}: the agent has no spec to read a brief from")
+        for state in listed:
+            if state not in graph.states:
+                errors.append(f"{where}: {state!r} is not a graph state")
+            elif taken.get(state):
+                errors.append(
+                    f"{where}: {state!r} is already covered by {sorted(taken[state])} "
+                    "in stage_requirements"
+                )
+            elif state in claimed:
+                errors.append(f"{where}: {state!r} is also agents.{claimed[state]}'s")
+            else:
+                claimed[state] = name
 
     # R3. Backend references name a model, or a provider that is not a model provider.
     for where, ref in _backend_refs(agents, "agents"):

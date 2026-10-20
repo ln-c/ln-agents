@@ -2,6 +2,8 @@
 # This file assigns execution backends; it does not grant permissions or authorize transitions.
 # A model is bound only here: `agents.*.primary` then `model_assistance` (in preference order).
 # stage_requirements names none; its candidate backends are derived from the agent.
+# `states` on an agent lists the graph states it covers that no stage_requirements operation names
+# (the human stops); a coordinator reads that agent's brief there.
 # Resolve aliases to the exact supported tool/model version at runtime and record that resolution.
 version: 1
 registry_name: agentic-pipeline-budget
@@ -291,6 +293,8 @@ agents:
 
   release:
     spec: agents/pipeline-release-agent.md
+    # The human stops this agent covers; a coordinator reads this agent's brief there (R22).
+    states: [R1, R2]
     primary: deterministic_ci_git_policy
     explanation_fallback: qwen3_5_9b
     cloud_explanation_fallback: claude_cli_default
@@ -300,6 +304,7 @@ agents:
 
   learning:
     spec: agents/pipeline-learning-agent.md
+    states: [HR]  # the human review of calibration, rubric, threshold and allowlist proposals
     primary: local_ledger_and_deterministic_metrics
     analysis_fallback: qwen3_5_9b
     subscription_analysis: claude_cli_default
@@ -308,6 +313,7 @@ agents:
 
   human_authority:
     spec: agents/pipeline-human-authority-agent.md
+    states: [H1]
     primary: human_approval_ui_and_deterministic_state_machine
     model_assistance: [claude_cli_default, gemini_3_8_flash_high, qwen3_5_9b]
     approval_decider: human_only
