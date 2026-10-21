@@ -1,6 +1,6 @@
 # The coordinator
 
-Every sealed document and gate record is JSON, which the gates read and an approval binds to. A model, the **coordinator**, writes the readable version: a Markdown view of each document, a summary of every stop, and answers to questions. It is named in the project's `LN-AGENTS.md`:
+Every sealed document and gate record is JSON, which the gates read and an approval binds to. A model, the **coordinator**, writes the readable version: a Markdown view of each document, a summary of every stop, and answers to questions. It is named in the project's `LN-AGENTS.md` (not `AGENTS.md`, which instructs the agents that change `ln-agents`; see [Files at the root](../reference/repository-layout.md#files-at-the-root)):
 
 ```markdown
 ---

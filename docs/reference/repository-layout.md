@@ -25,3 +25,16 @@
 ├── rust/                      # ln-agents: ACP agent and A2A client; MCP tool loop and sandbox launcher to come
 └── tests/                     # invariant, policy, schema and runner tests
 ```
+
+## Files at the root
+
+Four files have similar names and different readers:
+
+| File | Written for | Read by | Changed by |
+|---|---|---|---|
+| [`AGENTS.md`](../../AGENTS.md) | The people and coding agents that change this repository | Coding tools such as Claude Code and Codex, while they work here. `ln-agents` never reads it. | The maintainer (CODEOWNERS) |
+| [`CLAUDE.md`](../../CLAUDE.md) | The same: it holds one line, an import of `AGENTS.md` | Claude Code | The maintainer (CODEOWNERS) |
+| [`agents/*.md`](../../agents/) | The pipeline's own agents | `ln-agents`, which sends each to its model and freezes it per run ([Agent specifications](../concepts/agent-specifications.md)) | The maintainer (CODEOWNERS) |
+| [`LN-AGENTS.md`](../../LN-AGENTS.md) | A project that runs `ln-agents` | `ln-agents`: the front matter names the coordinator, the body tells it how to write ([The coordinator](../concepts/coordinator.md)). Code never writes it. | Whoever runs the project; for this repository, its maintainer |
+
+The models a run calls do not load `AGENTS.md` or `CLAUDE.md` as instructions. The Claude adapter runs `claude -p` with `--safe-mode`, the Pi adapter with `--no-context-files`, and agy in a sandbox that does not mount the project. A project's own `AGENTS.md` is only a file in the pinned source tree, treated as data.
