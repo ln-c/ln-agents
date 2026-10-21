@@ -170,6 +170,7 @@ fn replaying() -> Fake {
             ("SendMessage", Some("evidence")) => Reply::json(fixture("evidence.json")),
             ("SendMessage", Some("ask")) => Reply::json(fixture("ask.json")),
             ("SendMessage", Some("models")) => Reply::json(fixture("models.json")),
+            ("SendMessage", Some("guideline")) => Reply::json(fixture("guideline.json")),
             ("SendMessage", Some("complete_mapping")) => {
                 Reply::json(fixture("complete_mapping_none.json"))
             }
@@ -227,7 +228,15 @@ fn a_new_session_is_read_only_and_ignores_the_editors_mcp_servers() {
         .collect();
     assert_eq!(
         names,
-        ["runs", "status", "evidence", "models", "agents", "help"]
+        [
+            "runs",
+            "status",
+            "evidence",
+            "models",
+            "agents",
+            "guideline",
+            "help"
+        ]
     );
     assert!(fake.seen().is_empty(), "nothing reaches the orchestrator");
 }
@@ -424,6 +433,50 @@ fn models_shows_the_catalog_in_status_mode_for_no_run() {
     assert_eq!(
         sent,
         [json!({"skill": "models"})],
+        "no run id, nothing else"
+    );
+}
+
+#[test]
+fn guideline_walks_a_new_user_to_a_start_in_status_mode_for_no_run() {
+    let fake = replaying();
+    let dir = scratch("acp-guideline");
+    let mut editor = Editor::initialized(&fake.url, &token_file(&dir));
+    let session = editor.new_session(&dir, "status");
+    let (messages, reply) = editor.prompt(&session, "/guideline");
+    assert_eq!(stop_reason(&reply), "end_turn");
+    let text = said(&messages);
+    assert!(text.contains("**Not ready.**"), "{text}");
+    // the user names the coordinator; the rest is the pipeline's, or says what is in the way
+    assert!(
+        text.contains("1. **Name a coordinator in LN-AGENTS.md**: to do"),
+        "{text}"
+    );
+    assert!(
+        text.contains("   ---\n   coordinator: <model>\n   ---\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("**Every agent has a model**: to do"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Name a coordinator first (LN-AGENTS.md)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("**Local model servers can be started**: automatic"),
+        "{text}"
+    );
+    assert!(text.contains("Not checked here:"), "{text}");
+    let sent: Vec<Value> = fake
+        .seen()
+        .iter()
+        .filter_map(|s| s.data().cloned())
+        .collect();
+    assert_eq!(
+        sent,
+        [json!({"skill": "guideline"})],
         "no run id, nothing else"
     );
 }

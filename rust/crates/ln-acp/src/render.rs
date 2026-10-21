@@ -506,6 +506,99 @@ pub fn gaps_of(reply: &Value) -> Vec<(&str, &str, &str)> {
         .collect()
 }
 
+/// A `guideline` reply: a verdict, then each step with where it stands, what to do and, for a
+/// file to create, how it should read. A step that is not done and keeps `/start` from working
+/// says so; one that does not (the coordinator, when no agent needs it) says that instead.
+pub fn guideline_text(reply: &Value) -> String {
+    let strings = |value: &Value, key: &str| -> Vec<String> {
+        value
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let errors = strings(reply, "errors");
+    if !errors.is_empty() {
+        let mut text =
+            String::from("\nThe repository could not be read, so there are no steps:\n\n");
+        for error in errors {
+            text.push_str(&format!("- {error}\n"));
+        }
+        return text;
+    }
+    let steps: &[Value] = reply
+        .get("steps")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if steps.is_empty() {
+        return "\nThe server sent no steps; it may be older than this tool.\n".into();
+    }
+    fn status(step: &Value) -> &str {
+        step.get("status").and_then(Value::as_str).unwrap_or("-")
+    }
+    let blocks = |step: &Value| step.get("blocks").and_then(Value::as_bool) == Some(true);
+    let open = steps
+        .iter()
+        .filter(|s| blocks(s) && matches!(status(s), "todo" | "unchecked"))
+        .count();
+    let mut text = String::from("\n#### Getting started\n\n");
+    if reply.get("ready").and_then(Value::as_bool) == Some(true) {
+        text.push_str(
+            "**Ready.** Nothing blocks `/start`: `/start <run> <entry_spec.json>` (design mode).\n",
+        );
+    } else {
+        let s = if open == 1 { "" } else { "s" };
+        text.push_str(&format!(
+            "**Not ready.** {open} step{s} below keep{} `/start` from working. Do them in order \
+             and run `/guideline` again.\n",
+            if open == 1 { "s" } else { "" }
+        ));
+    }
+    for (number, step) in steps.iter().enumerate() {
+        let field = |key: &str| step.get(key).and_then(Value::as_str).unwrap_or("");
+        let mark = match (status(step), blocks(step)) {
+            ("done", _) => "done",
+            ("auto", _) => "automatic",
+            ("unchecked", _) => "not checked yet",
+            ("todo", true) => "to do",
+            ("todo", false) => "to do, but it does not keep `/start` from working",
+            (other, _) => other,
+        };
+        text.push_str(&format!(
+            "\n{}. **{}**: {mark}\n",
+            number + 1,
+            field("title")
+        ));
+        if !field("detail").is_empty() {
+            text.push_str(&format!("   {}\n", field("detail")));
+        }
+        for line in strings(step, "do") {
+            text.push_str(&format!("   - {line}\n"));
+        }
+        if let Some(snippet) = step.get("snippet").and_then(Value::as_str) {
+            text.push_str("\n   ```\n");
+            for line in snippet.lines() {
+                text.push_str(&format!("   {line}\n"));
+            }
+            text.push_str("   ```\n");
+        }
+    }
+    let notes = strings(reply, "notes");
+    if !notes.is_empty() {
+        text.push_str("\nNot checked here:\n\n");
+        for note in notes {
+            text.push_str(&format!("- {note}\n"));
+        }
+    }
+    text
+}
+
 /// "1 agent has no model" or "3 agents have no model".
 fn gap_count(count: usize) -> String {
     let (s, verb) = if count == 1 {
@@ -1189,5 +1282,70 @@ mod tests {
         catalog["errors"] = json!(["registry R1: broken"]);
         let text = models_text(&catalog);
         assert!(text.contains("registry R1: broken") && !text.contains("/confirm"));
+    }
+    fn guideline_reply() -> Value {
+        json!({
+            "ready": false,
+            "steps": [
+                {"id": "coordinator", "title": "Name a coordinator in LN-AGENTS.md",
+                 "status": "todo", "blocks": true,
+                 "detail": "There is no LN-AGENTS.md.", "do": ["Create the file:"],
+                 "snippet": "---\ncoordinator: <model>\n---\n"},
+                {"id": "authority", "title": "The coordinator may choose models for you (optional)",
+                 "status": "todo", "blocks": false, "detail": "Not bound.", "do": [], "snippet": null},
+                {"id": "repository", "title": "The repository passes its own checks",
+                 "status": "done", "blocks": true, "detail": "They validate.", "do": [], "snippet": null},
+                {"id": "servers", "title": "Local model servers can be started",
+                 "status": "auto", "blocks": true, "detail": "Dispatch starts them.", "do": [], "snippet": null},
+                {"id": "stages", "title": "Every stage has a ready model",
+                 "status": "unchecked", "blocks": true, "detail": "Not checked.", "do": [], "snippet": null}
+            ],
+            "notes": ["Sign-in is not checked."],
+            "errors": []
+        })
+    }
+
+    #[test]
+    fn the_guideline_says_where_it_stands_then_lists_the_steps_in_order() {
+        let text = guideline_text(&guideline_reply());
+        assert!(text.contains("**Not ready.** 2 steps below keep `/start` from working"));
+        let order: Vec<usize> = [
+            "1. **Name a coordinator in LN-AGENTS.md**: to do\n",
+            "2. **The coordinator may choose models for you (optional)**: to do, but it does not keep `/start` from working\n",
+            "3. **The repository passes its own checks**: done\n",
+            "4. **Local model servers can be started**: automatic\n",
+            "5. **Every stage has a ready model**: not checked yet\n",
+        ]
+        .iter()
+        .map(|line| text.find(line).unwrap_or_else(|| panic!("{line}\n{text}")))
+        .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{text}");
+        assert!(text.contains("   There is no LN-AGENTS.md.\n   - Create the file:\n"));
+        assert!(
+            text.contains("   ```\n   ---\n   coordinator: <model>\n   ---\n   ```\n"),
+            "a file to create is shown as it should read: {text}"
+        );
+        assert!(text.ends_with("Not checked here:\n\n- Sign-in is not checked.\n"));
+    }
+
+    #[test]
+    fn a_ready_guideline_says_to_start_and_one_open_step_is_singular() {
+        let mut reply = guideline_reply();
+        reply["ready"] = json!(true);
+        let text = guideline_text(&reply);
+        assert!(text.contains("**Ready.** Nothing blocks `/start`"));
+        assert!(!text.contains("Not ready"));
+        let mut one = guideline_reply();
+        one["steps"] = json!([one["steps"][0].clone()]);
+        assert!(guideline_text(&one).contains("1 step below keeps `/start` from working"));
+    }
+
+    #[test]
+    fn a_guideline_that_could_not_read_the_repository_or_came_from_an_old_server() {
+        let broken =
+            guideline_text(&json!({"ready": false, "steps": [], "errors": ["OSError: gone"]}));
+        assert!(broken.contains("could not be read") && broken.contains("- OSError: gone"));
+        assert!(!broken.contains("Getting started"));
+        assert!(guideline_text(&json!({})).contains("older than this tool"));
     }
 }

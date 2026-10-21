@@ -136,6 +136,12 @@ impl Request {
         Self::new("agents", json!({}))
     }
 
+    /// The steps from naming a coordinator to a start nothing blocks, and where each stands.
+    /// About the repository, not a run; read-only, and no model is called.
+    pub fn guideline() -> Self {
+        Self::new("guideline", json!({}))
+    }
+
     /// A draft that adds a model (or claims capabilities for a known one). The server checks it
     /// against every registry rule and stores it with a diff; nothing in `policy/` changes.
     pub fn add_model(provider: &str, model_id: &str, capabilities: &[String]) -> Self {
