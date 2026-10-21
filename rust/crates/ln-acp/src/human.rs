@@ -1,4 +1,5 @@
-//! The two things only a human does, run in a terminal window the human is looking at:
+//! The two things only a human does, run in a terminal the human is looking at (a window opened
+//! for an editor's session; the terminal UI runs them in the terminal it is in):
 //! `/decide` signs an approval document with the human's SSH key and records the decision,
 //! `/resume` records that a paused run may go on. This crate never starts a process: it only
 //! works out the words of the window ([`decide_args`], [`resume_args`]) and hands them to a

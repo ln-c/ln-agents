@@ -22,7 +22,7 @@
 ├── agents/                    # role specifications, one per agent; each has a model (registry rule R20), a brief (R21), covers its nodes (R22), and is passed to its model (instructions, not a security boundary)
 ├── scripts/                   # MC/DC and mutation wrappers run by the CI checks
 ├── src/agentic_pipeline/      # runner, gates, adapters, sandbox, approvals, release
-├── rust/                      # ln-agents: ACP agent and A2A client; MCP tool loop and sandbox launcher to come
+├── rust/                      # ln-agents: terminal UI, ACP agent and A2A client; MCP tool loop and sandbox launcher to come
 └── tests/                     # invariant, policy, schema and runner tests
 ```
 

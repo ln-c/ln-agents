@@ -1,5 +1,6 @@
 //! Slash commands: every action is deterministic code over one A2A skill, never free text a
-//! model interprets. A prompt that is not a command gets the help text.
+//! model interprets. A prompt that is not a command is a question for the coordinator, answered
+//! in text and never parsed into an action.
 
 use std::fmt;
 

@@ -37,6 +37,10 @@ pub trait Host {
     /// `what` says what they do there, and `manual` is how to do it by hand. The host says what
     /// happened.
     fn hand_over(&self, args: &[String], run: &str, what: &str, manual: &str);
+    /// Say why a turn failed: the text was refused, or the command could not be carried out.
+    fn fail(&self, text: String) {
+        self.update(render::message(text));
+    }
 }
 
 pub(crate) enum Signal {
@@ -95,6 +99,14 @@ impl Cancel {
     }
 }
 
+/// How a turn ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outcome {
+    pub stop: StopReason,
+    /// The text was refused or the command could not be carried out.
+    pub failed: bool,
+}
+
 enum Ended {
     Done,
     Cancelled,
@@ -134,25 +146,35 @@ impl<H: Host> Prompt<H> {
 
     /// Run the prompt's text as one command and say how the turn ended.
     pub fn run(&self, text: &str, mode: Mode) -> StopReason {
+        self.run_outcome(text, mode).stop
+    }
+
+    /// Like [`Prompt::run`], and also whether the turn failed: the text was refused, or the
+    /// command could not be carried out (what went wrong was said as a message).
+    pub fn run_outcome(&self, text: &str, mode: Mode) -> Outcome {
+        let mut failed = false;
         let ended = match commands::parse(text, mode) {
             Err(refusal) => {
-                self.say(format!("{refusal}\n"));
+                failed = true;
+                self.host.fail(format!("{refusal}\n"));
                 Ok(Ended::Done)
             }
             Ok(command) => self.execute(command, mode),
         };
-        match ended {
+        let stop = match ended {
             Ok(Ended::Done) if !self.cancelled() => StopReason::EndTurn,
             Ok(_) => StopReason::Cancelled,
             Err(error) => {
-                self.say(format!("\n{error}\n"));
+                failed = true;
+                self.host.fail(format!("\n{error}\n"));
                 if self.cancelled() {
                     StopReason::Cancelled
                 } else {
                     StopReason::EndTurn
                 }
             }
-        }
+        };
+        Outcome { stop, failed }
     }
 
     fn the_run(&self, given: Option<String>) -> Result<String, String> {

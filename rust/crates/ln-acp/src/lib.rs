@@ -2,8 +2,9 @@
 //! start it and talk JSON-RPC over stdio. Every prompt is a slash command run as code over one
 //! A2A skill of `ln-pipeline` (see [`commands`]); nothing here approves, decides or resumes a
 //! run by itself, and editor-supplied MCP servers are accepted and ignored (pipeline tools are
-//! policy). `/decide` and `/resume` only open a terminal window where the human does it (see
-//! [`human`]).
+//! policy). `/decide` and `/resume` only put the human in a terminal where they do it: a window
+//! opened here (see [`human`]). The code that runs a prompt is [`turn`], shared with the terminal
+//! UI (`ln-tui`), which shows a turn its own way.
 //!
 //! An ACP session is a conversation about runs: `/start` or `/advance` binds it to a run, and
 //! `session/list` lists the runs the orchestrator knows (as `run/<id>`, loadable).
@@ -61,7 +62,9 @@ pub struct Config {
 }
 
 impl Config {
-    fn client(&self, cwd: &Path) -> Result<Client, String> {
+    /// The client for the orchestrator, with the token read from the configured file or from
+    /// `<cwd>/.runs/.a2a/token`.
+    pub fn client(&self, cwd: &Path) -> Result<Client, String> {
         let path = self
             .token_file
             .clone()

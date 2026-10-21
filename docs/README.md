@@ -19,5 +19,6 @@ Start with [Getting started](getting-started.md). The state table (what is built
 - [Command line](reference/cli.md): `validate`, `preflight`, `models`, `run`, `serve a2a`.
 - [A2A skills](reference/a2a-skills.md): what the orchestrator serves to other agents.
 - [Editor commands](reference/editor-commands.md): `ln-agents acp` and its slash commands.
+- [Terminal UI](reference/terminal-ui.md): `ln-agents` and `ln-agents -p`, the same commands in a terminal.
 - [CI checks](reference/ci-checks.md): the checks that run at `E2` and `F1`.
 - [Repository layout](reference/repository-layout.md): where each kind of file lives.

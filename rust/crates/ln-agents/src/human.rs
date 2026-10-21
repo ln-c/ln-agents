@@ -1,9 +1,11 @@
-//! The two things only a human does, run in a terminal window the human is looking at:
+//! The two things only a human does, run in a terminal the human is looking at:
 //! `/decide` signs an approval document with the human's SSH key and records the decision,
-//! `/resume` records that a paused run may go on. `ln-agents acp` opens the window ([`Terminal`]);
-//! what runs in it ([`decide`], [`resume`]) shows what is at stake, asks the human to type the
-//! run id, and lets `ssh-keygen` ask for the passphrase on that terminal. The orchestrator still
-//! verifies the signature against `policy/approvers.yaml` and takes the edge itself.
+//! `/resume` records that a paused run may go on. `ln-agents acp` opens a window for it
+//! ([`Terminal`]); `ln-agents` itself runs it in the terminal it is already in ([`Here`]), after
+//! its screen is given back. What runs there ([`decide`], [`resume`]) shows what is at stake, asks
+//! the human to type the run id, and lets `ssh-keygen` ask for the passphrase on that terminal.
+//! The orchestrator still verifies the signature against `policy/approvers.yaml` and takes the
+//! edge itself.
 //!
 //! This is the only place in the ln-agents workspace that starts a process (`ln-acp` and `ln-a2a`
 //! never do), and only the slash commands reach it, never a model's output.
@@ -30,6 +32,23 @@ fn on_path(program: &str) -> bool {
         let candidate = dir.join(program);
         candidate.is_file() || candidate.with_extension("exe").is_file()
     })
+}
+
+/// Runs a step of `ln-agents` on the terminal the terminal UI was using, and waits for it.
+#[derive(Debug)]
+pub struct Here;
+
+impl ln_tui::Foreground for Here {
+    fn run(&self, cwd: &Path, args: &[String]) -> Result<i32, String> {
+        let program =
+            std::env::current_exe().map_err(|e| format!("cannot find ln-agents itself: {e}"))?;
+        let status = Command::new(&program)
+            .args(args)
+            .current_dir(cwd)
+            .status()
+            .map_err(|e| format!("cannot run {}: {e}", program.display()))?;
+        Ok(status.code().unwrap_or(1))
+    }
 }
 
 /// Opens terminal windows as the machine's [`Setup`] says.
@@ -128,7 +147,7 @@ pub struct Decision<'a> {
 }
 
 fn finish(console: &mut dyn Console, code: i32) -> i32 {
-    console.ask("Press Enter to close this window.");
+    console.ask("Press Enter to continue.");
     code
 }
 
