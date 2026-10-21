@@ -12,13 +12,14 @@ pub mod commands;
 pub mod human;
 pub mod render;
 pub mod rpc;
+pub mod turn;
 
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use agent_client_protocol_schema::ProtocolVersion;
@@ -29,16 +30,16 @@ use agent_client_protocol_schema::v1::{
     NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
     PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SessionCapabilities, SessionInfo, SessionListCapabilities, SessionMode, SessionModeState,
-    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    ToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, ToolCall,
+    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     UnstructuredCommandInput,
 };
-use commands::{Command, Mode};
-use ln_a2a::types::{SendMessageResponse, StreamResponse, Task};
+use commands::Mode;
 use ln_a2a::{Client, Endpoint, Request};
 use rpc::{Connection, INVALID_PARAMS, Incoming, METHOD_NOT_FOUND};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use turn::{Host, Prompt, Signal, latest_per_run, skill_reply};
 
 /// A session id that names a run, as `session/list` reports it and `session/load` accepts it.
 pub const RUN_SESSION_PREFIX: &str = "run/";
@@ -70,12 +71,6 @@ impl Config {
         })?;
         Ok(Client::new(endpoint))
     }
-}
-
-enum Signal {
-    Event(Box<ln_a2a::Result<StreamResponse>>),
-    End,
-    Cancel,
 }
 
 struct Session {
@@ -319,14 +314,12 @@ impl Agent {
         let agent = self.clone();
         let id = id.clone();
         thread::spawn(move || {
-            let turn = Prompt {
+            let host = AcpHost {
                 agent: agent.clone(),
                 session_id: session_id.clone(),
-                cwd,
-                run,
-                tx,
-                rx,
+                cwd: cwd.clone(),
             };
+            let turn = Prompt::with_channel(host, cwd, run, tx, rx);
             let stop = turn.run(&text.join("\n"), mode);
             if let Some(session) = agent
                 .sessions
@@ -346,315 +339,53 @@ fn to_value(value: impl serde::Serialize) -> Value {
     serde_json::to_value(value).expect("ACP types serialize")
 }
 
-/// The data part of a task-less skill reply.
-fn skill_reply(client: &Client, request: &Request) -> ln_a2a::Result<Value> {
-    match client.send(request)? {
-        SendMessageResponse::Message(m) => ln_a2a::data(&m.parts).cloned().ok_or_else(|| {
-            ln_a2a::Error::Protocol(format!("{} reply has no data", request.skill()))
-        }),
-        SendMessageResponse::Task(_) => Err(ln_a2a::Error::Protocol(format!(
-            "{} answered with a task, not a message",
-            request.skill()
-        ))),
-    }
-}
-
-/// One task per run: the one whose status changed last.
-fn latest_per_run(tasks: Vec<Task>) -> Vec<(String, Task)> {
-    let mut latest: Vec<(String, Task)> = Vec::new();
-    for task in tasks {
-        let Some(run) = ln_a2a::run_id(&task).map(str::to_string) else {
-            continue;
-        };
-        match latest.iter_mut().find(|(r, _)| *r == run) {
-            Some(slot) if slot.1.status.timestamp <= task.status.timestamp => slot.1 = task,
-            Some(_) => {}
-            None => latest.push((run, task)),
-        }
-    }
-    latest.sort_by(|a, b| a.0.cmp(&b.0));
-    latest
-}
-
-/// One prompt turn, on its own thread so the reader keeps reading (cancel, permission replies).
-struct Prompt {
+/// An editor's session as the place a turn is shown: updates go out as `session/update`, and
+/// `/decide` and `/resume` open a terminal window.
+struct AcpHost {
     agent: Agent,
     session_id: String,
     cwd: PathBuf,
-    run: Option<String>,
-    tx: Sender<Signal>,
-    rx: Receiver<Signal>,
 }
 
-enum Ended {
-    Done,
-    Cancelled,
+impl AcpHost {
+    fn with_session<T>(&self, f: impl FnOnce(&mut Session) -> T) -> Option<T> {
+        let mut sessions = self
+            .agent
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        sessions.get_mut(&self.session_id).map(f)
+    }
 }
 
-impl Prompt {
-    fn say(&self, text: impl Into<String>) {
-        self.agent.say(&self.session_id, text);
+impl Host for AcpHost {
+    fn update(&self, update: SessionUpdate) {
+        self.agent.update(&self.session_id, update);
     }
 
-    fn cancelled(&self) -> bool {
-        matches!(self.rx.try_recv(), Ok(Signal::Cancel))
+    fn client(&self) -> Result<Client, String> {
+        self.agent.config.client(&self.cwd)
     }
 
-    fn run(&self, text: &str, mode: Mode) -> StopReason {
-        let ended = match commands::parse(text, mode) {
-            Err(refusal) => {
-                self.say(format!("{refusal}\n"));
-                Ok(Ended::Done)
-            }
-            Ok(command) => self.execute(command, mode),
-        };
-        match ended {
-            Ok(Ended::Done) if !self.cancelled() => StopReason::EndTurn,
-            Ok(_) => StopReason::Cancelled,
-            Err(error) => {
-                self.say(format!("\n{error}\n"));
-                if self.cancelled() {
-                    StopReason::Cancelled
-                } else {
-                    StopReason::EndTurn
-                }
-            }
-        }
-    }
-
-    fn the_run(&self, given: Option<String>) -> Result<String, String> {
-        given.or_else(|| self.run.clone()).ok_or_else(|| {
-            "No run in this session: name one (`/status <run>`), pick one from `/runs`, or \
-             `/start` one."
-                .to_string()
-        })
+    fn setup(&self) -> &human::Setup {
+        &self.agent.config.human
     }
 
     fn bind(&self, run: &str) {
-        let mut sessions = self
-            .agent
-            .sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(session) = sessions.get_mut(&self.session_id) {
-            session.run = Some(run.to_string());
-        }
-    }
-
-    fn execute(&self, command: Command, mode: Mode) -> Result<Ended, String> {
-        let client = || self.agent.config.client(&self.cwd);
-        let a2a = |e: ln_a2a::Error| format!("orchestrator: {e}");
-        match command {
-            Command::Help => self.say(commands::help(mode)),
-            Command::HumanOnly(name) => self.say(format!(
-                "`/{name}` is not something ln-agents does.{}\n",
-                commands::HUMAN_ONLY
-            )),
-            Command::Runs => {
-                let tasks = client()?.list_tasks().map_err(a2a)?;
-                let runs = latest_per_run(tasks);
-                if runs.is_empty() {
-                    self.say("No runs have been driven over A2A yet (runs made with the CLI are not listed).\n");
-                } else {
-                    let mut text =
-                        String::from("| run | task state | last status |\n|---|---|---|\n");
-                    for (run, task) in runs {
-                        let why = task
-                            .status
-                            .message
-                            .as_ref()
-                            .map(ln_a2a::text)
-                            .unwrap_or_default();
-                        let why: String = why
-                            .lines()
-                            .next()
-                            .unwrap_or_default()
-                            .chars()
-                            .take(100)
-                            .collect();
-                        text.push_str(&format!("| `{run}` | {:?} | {why} |\n", task.status.state));
-                    }
-                    self.say(text);
-                }
-            }
-            Command::Status { run } => {
-                let run = self.the_run(run)?;
-                let status = skill_reply(&client()?, &Request::status(&run)).map_err(a2a)?;
-                self.bind(&run);
-                self.say(render::status_text(&status));
-            }
-            Command::Evidence { run } => {
-                let run = self.the_run(run)?;
-                let view = skill_reply(&client()?, &Request::evidence(&run)).map_err(a2a)?;
-                for update in render::view_updates(&view) {
-                    self.agent.update(&self.session_id, update);
-                }
-            }
-            Command::Models => {
-                let catalog = skill_reply(&client()?, &Request::models()).map_err(a2a)?;
-                self.say(render::models_text(&catalog));
-            }
-            Command::Agents => {
-                let reply = skill_reply(&client()?, &Request::agents()).map_err(a2a)?;
-                self.say(render::agents_text(&reply));
-            }
-            Command::Guideline => {
-                let reply = skill_reply(&client()?, &Request::guideline()).map_err(a2a)?;
-                self.say(render::guideline_text(&reply));
-            }
-            Command::AddModel {
-                provider,
-                model_id,
-                capabilities,
-            } => {
-                let request = Request::add_model(&provider, &model_id, &capabilities);
-                let reply = skill_reply(&client()?, &request).map_err(a2a)?;
-                self.say(render::change_text(&reply));
-            }
-            Command::RemoveModel { model } => {
-                let reply = skill_reply(&client()?, &Request::remove_model(&model)).map_err(a2a)?;
-                self.say(render::change_text(&reply));
-            }
-            Command::Bind { slot, models } => {
-                let reply = skill_reply(&client()?, &Request::bind(&slot, &models)).map_err(a2a)?;
-                self.say(render::change_text(&reply));
-            }
-            Command::ProposeMapping { intent } => {
-                let request = Request::propose_mapping(&intent);
-                let reply = skill_reply(&client()?, &request).map_err(a2a)?;
-                self.say(render::change_text(&reply));
-            }
-            Command::Confirm { id } => {
-                let reply = skill_reply(&client()?, &Request::apply_change(&id)).map_err(a2a)?;
-                self.say(render::applied_text(&reply));
-            }
-            Command::Discard { id } => {
-                let reply = skill_reply(&client()?, &Request::discard_change(&id)).map_err(a2a)?;
-                self.say(render::discarded_text(&reply));
-            }
-            Command::Ask { question } => {
-                let run = self.the_run(None)?;
-                let request = Request::ask(Some(&run), &question);
-                let reply = skill_reply(&client()?, &request).map_err(a2a)?;
-                self.say(render::answer_text(&reply));
-            }
-            Command::Start { run, entry_spec } => {
-                // No run starts while an agent has no model: the server refuses it, and this asks
-                // first so that the reply is a proposal the human can confirm.
-                let gate = skill_reply(&client()?, &Request::complete_mapping()).map_err(a2a)?;
-                if !render::gaps_of(&gate).is_empty() {
-                    self.say(render::gap_text(&gate));
-                    return Ok(Ended::Done);
-                }
-                let spec = read_entry_spec(&self.cwd, &entry_spec)?;
-                return self.stream(&client()?, &Request::start_run(&run, spec), &run);
-            }
-            Command::Advance { run } => {
-                let run = self.the_run(run)?;
-                return self.stream(&client()?, &Request::advance(&run), &run);
-            }
-            Command::ApprovalDoc {
-                decision,
-                candidate,
-                approver,
-                reason,
-            } => {
-                let run = self.the_run(None)?;
-                if !self.permission(&run, &decision)? {
-                    self.say("Not written.\n");
-                    return Ok(Ended::Done);
-                }
-                let request = Request::approval_document(
-                    &run,
-                    &decision,
-                    &approver,
-                    &reason,
-                    candidate.as_deref(),
-                );
-                let reply = skill_reply(&client()?, &request).map_err(a2a)?;
-                self.say(render::approval_text(&reply));
-                match human::Pending::from_reply(&run, &reply) {
-                    Ok(pending) => self.remember(pending),
-                    Err(error) => {
-                        self.say(format!("\n`/decide` cannot use this document: {error}.\n"))
-                    }
-                }
-            }
-            Command::Decide => {
-                let run = self.the_run(None)?;
-                let pending = self.pending_for(&run)?;
-                if !pending.document.is_file() {
-                    return Err(format!(
-                        "The document {} is not on disk any more; write it again with \
-                         `/approval-doc`.",
-                        pending.document.display()
-                    ));
-                }
-                let setup = &self.agent.config.human;
-                let args = human::decide_args(setup, &run, &pending.document, &pending.namespace)?;
-                let manual = format!("{}\n{}", pending.sign, pending.then);
-                self.open_window(&args, &run, "sign and record your decision", &manual);
-            }
-            Command::Resume { by, reason } => {
-                let run = self.the_run(None)?;
-                let setup = &self.agent.config.human;
-                let args = human::resume_args(setup, &self.cwd, &run, &by, &reason);
-                let mut hand = setup.pipeline.clone();
-                if hand.is_empty() {
-                    hand = human::DEFAULT_PIPELINE
-                        .iter()
-                        .map(|w| w.to_string())
-                        .collect();
-                }
-                hand.extend(
-                    ["run", "resume", &run, "--by", &by, "--reason", &reason].map(String::from),
-                );
-                let manual = human::display(&hand);
-                self.open_window(&args, &run, "confirm the resume", &manual);
-            }
-        }
-        Ok(Ended::Done)
+        self.with_session(|session| session.run = Some(run.to_string()));
     }
 
     fn remember(&self, pending: human::Pending) {
-        let mut sessions = self
-            .agent
-            .sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(session) = sessions.get_mut(&self.session_id) {
-            session.pending = Some(pending);
-        }
+        self.with_session(|session| session.pending = Some(pending));
     }
 
-    fn pending_for(&self, run: &str) -> Result<human::Pending, String> {
-        let sessions = self
-            .agent
-            .sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        sessions
-            .get(&self.session_id)
-            .and_then(|session| session.pending.clone())
-            .filter(|pending| pending.run == run)
-            .ok_or_else(|| {
-                format!(
-                    "No unsigned document for run `{run}` in this session: write one with \
-                     `/approval-doc <decision> <approver> <reason>` first."
-                )
-            })
-    }
-
-    /// Open the human's terminal window and say what to do in it, or how to do it by hand.
-    fn open_window(&self, args: &[String], run: &str, what: &str, manual: &str) {
-        match self.agent.config.window.open(&self.cwd, args) {
-            Ok(command) => self.say(render::window_opened(run, what, &command)),
-            Err(error) => self.say(render::window_failed(&error, manual)),
-        }
+    fn pending(&self) -> Option<human::Pending> {
+        self.with_session(|session| session.pending.clone())
+            .flatten()
     }
 
     /// Ask before writing the document: allow or reject this once, never "always".
-    fn permission(&self, run: &str, decision: &str) -> Result<bool, String> {
+    fn allow_write(&self, run: &str, decision: &str) -> bool {
         let n = self.agent.next_id.fetch_add(1, Ordering::Relaxed);
         let call_id = format!("approval-doc-{n}");
         let title = format!(
@@ -711,138 +442,15 @@ impl Prompt {
             ToolCallStatus::Failed
         };
         self.agent.update(&self.session_id, update(status));
-        Ok(allowed)
+        allowed
     }
 
-    /// Stream one task, forwarding its events, until it stops or the turn is cancelled. The
-    /// request itself is made on the reader thread, so a cancel is answered at once even while
-    /// the server is still starting the run.
-    fn stream(&self, client: &Client, request: &Request, run: &str) -> Result<Ended, String> {
-        self.bind(run);
-        let cancel = Arc::new(Mutex::new(Cancellation::default()));
-        let reader = (
-            self.tx.clone(),
-            Arc::clone(&cancel),
-            client.clone(),
-            request.clone(),
-        );
-        thread::spawn(move || {
-            let (tx, cancel, client, request) = reader;
-            read_stream(&client, &request, &tx, &cancel);
-        });
-        let mut turn = render::Turn::default();
-        loop {
-            match self.rx.recv() {
-                Ok(Signal::Event(event)) => match *event {
-                    Ok(event) => {
-                        for update in turn.event(&event) {
-                            self.agent.update(&self.session_id, update);
-                        }
-                    }
-                    Err(error) => return Err(format!("orchestrator: {error}")),
-                },
-                Ok(Signal::End) | Err(_) => break,
-                Ok(Signal::Cancel) => {
-                    let due = {
-                        let mut cancel = lock(&cancel);
-                        cancel.requested = true;
-                        cancel.due()
-                    };
-                    if let Some(task) = due {
-                        let client = client.clone();
-                        thread::spawn(move || cancel_task(&client, &task));
-                    }
-                    return Ok(Ended::Cancelled);
-                }
-            }
-        }
-        if turn.stopped.is_none() {
-            self.say("\nThe orchestrator closed the stream before the task stopped; `/status` shows where the run is.\n");
-        }
-        Ok(Ended::Done)
-    }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Cancelling a streamed task needs its id, which the stream may not have sent yet when the
-/// editor cancels. Whichever side first knows both (the prompt thread, or the reader when the
-/// task arrives) sends CancelTask, once.
-#[derive(Default)]
-struct Cancellation {
-    requested: bool,
-    task: Option<String>,
-    sent: bool,
-}
-
-impl Cancellation {
-    fn due(&mut self) -> Option<String> {
-        if !self.requested || self.sent {
-            return None;
-        }
-        let task = self.task.clone()?;
-        self.sent = true;
-        Some(task)
-    }
-}
-
-fn cancel_task(client: &Client, task: &str) {
-    if let Err(e) = client.cancel_task(task) {
-        eprintln!("ln-agents: cancelling task {task}: {e}");
-    }
-}
-
-/// The reader thread: forward every event; after a cancel, read on only until the task's id
-/// is known, cancel it, and stop.
-fn read_stream(
-    client: &Client,
-    request: &Request,
-    tx: &Sender<Signal>,
-    cancel: &Mutex<Cancellation>,
-) {
-    let events = match client.stream(request) {
-        Ok(events) => events,
-        Err(error) => {
-            let _ = tx.send(Signal::Event(Box::new(Err(error))));
-            return;
-        }
-    };
-    for event in events {
-        if let Ok(StreamResponse::Task(task)) = &event {
-            let due = {
-                let mut cancel = lock(cancel);
-                cancel.task = Some(task.id.clone());
-                cancel.due()
-            };
-            if let Some(task) = due {
-                cancel_task(client, &task);
-                return;
-            }
-        }
-        let delivered = tx.send(Signal::Event(Box::new(event))).is_ok();
-        let waiting = {
-            let cancel = lock(cancel);
-            cancel.requested && cancel.task.is_none()
+    /// Open the human's terminal window and say what to do in it, or how to do it by hand.
+    fn hand_over(&self, args: &[String], run: &str, what: &str, manual: &str) {
+        let text = match self.agent.config.window.open(&self.cwd, args) {
+            Ok(command) => render::window_opened(run, what, &command),
+            Err(error) => render::window_failed(&error, manual),
         };
-        if !delivered && !waiting {
-            return; // the turn is over and there is nothing left to cancel
-        }
-    }
-    let _ = tx.send(Signal::End);
-}
-
-/// The entry spec named by `/start`, relative to the session's cwd; must be a JSON object.
-fn read_entry_spec(cwd: &Path, name: &str) -> Result<Value, String> {
-    let path = cwd.join(name);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    match serde_json::from_str(&text) {
-        Ok(spec @ Value::Object(_)) => Ok(spec),
-        Ok(_) => Err(format!(
-            "{}: an entry spec is a JSON object",
-            path.display()
-        )),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+        self.agent.say(&self.session_id, text);
     }
 }
