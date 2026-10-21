@@ -31,3 +31,7 @@ Requirements, the checks to run before a change, and the first-run walkthrough a
 ## Documentation
 
 The rest is in [`docs/`](docs/README.md): guides for tasks, concepts that explain how the pipeline works, and reference for commands and files.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
