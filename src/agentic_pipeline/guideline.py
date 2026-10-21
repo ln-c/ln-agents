@@ -159,14 +159,17 @@ def _launch_argv(provider: Mapping[str, Any]) -> list[str]:
 def launch_problems(provider: Mapping[str, Any], deps: Deps) -> list[str]:
     """Why dispatch could not start this provider's server: a program or a file it names is
     missing. (It cannot tell whether the server then comes up.)"""
+    # A path is told by how it is written: on Windows an expanded `~/x` is `C:\x`, which starts
+    # with neither "/" nor "~".
+    written = provider["launch"]["argv"]
     argv = _launch_argv(provider)
     program = argv[0]
-    found = deps.exists(Path(program)) if "/" in program else deps.which(program) is not None
+    found = deps.exists(Path(program)) if "/" in written[0] else deps.which(program) is not None
     problems = [] if found else [f"{program} is not installed"]
     problems += [
         f"{arg} does not exist"
-        for arg in argv[1:]
-        if arg.startswith(("/", "~")) and not deps.exists(Path(arg))
+        for arg, as_written in zip(argv[1:], written[1:], strict=True)
+        if as_written.startswith(("/", "~")) and not deps.exists(Path(arg))
     ]
     return problems
 

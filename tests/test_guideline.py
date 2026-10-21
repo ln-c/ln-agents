@@ -411,6 +411,17 @@ def test_a_down_local_server_whose_model_file_is_missing_blocks(tmp_path: Path) 
     assert out["ready"] is False
 
 
+def test_a_model_file_is_checked_when_expanding_the_home_mark_leaves_no_slash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows `~/x` expands to `C:\\Users\\ci\\x`, which starts with neither `/` nor `~`."""
+    monkeypatch.setattr(Path, "expanduser", lambda self: Path("C:Users-ci-" + self.name))
+    rig = Rig(tmp_path, servers="down")
+    rig.exists = lambda path: not str(path).endswith(".gguf")
+    step = rig.step("servers")
+    assert step["status"] == TODO and ".gguf does not exist" in step["detail"]
+
+
 def test_a_down_local_server_whose_program_is_missing_blocks(tmp_path: Path) -> None:
     rig = Rig(tmp_path, servers="down")
     rig.which = lambda program: None
