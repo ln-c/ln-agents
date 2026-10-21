@@ -28,14 +28,14 @@ The tests make throwaway git repositories and commit in them. Those commits are 
 
 ## Human-owned files
 
-[`.github/CODEOWNERS`](.github/CODEOWNERS) names the paths that set what the pipeline may do: `pipeline/`, `policy/`, `agents/`, `schemas/` and `.github/CODEOWNERS` itself. A change to them goes through the maintainer's review.
+[`.github/CODEOWNERS`](.github/CODEOWNERS) names the paths that set what the pipeline, and the agents that change it, may do: `pipeline/`, `policy/`, `agents/`, `schemas/`, `AGENTS.md`, `CLAUDE.md` and `.github/CODEOWNERS` itself. A change to them goes through the maintainer's review.
 
 - Never change a test, a schema or a policy value to make a failing change pass. The tests pin the invariants, for example `tests/test_registry.py` pins the registry rules; list every pinning test a pull request edits in its description, for the code owner.
 - The invariants in [`AGENTS.md`](AGENTS.md) are the maintainer's to change, not a contributor's or a model's.
 
 ## Working with a coding agent
 
-An agent working in this repository reads [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md), which set what it may do. A model cannot approve a merge or a deployment, change a budget, clear a hard veto or impersonate human authority.
+An agent working in this repository reads [`AGENTS.md`](AGENTS.md), which sets what it may do; [`CLAUDE.md`](CLAUDE.md) only imports it. [`LN-AGENTS.md`](LN-AGENTS.md) is a different file: the setup of a project that runs `ln-agents`, read by `ln-agents` and not by coding agents. Put no agent instructions in it, and do not edit `AGENTS.md` to configure a run ([Files at the root](docs/reference/repository-layout.md#files-at-the-root)). A model cannot approve a merge or a deployment, change a budget, clear a hard veto or impersonate human authority.
 
 ## Code and docs
 
