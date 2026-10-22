@@ -10,6 +10,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 
 use agent_client_protocol_schema::v1::SessionUpdate;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use fake::{Fake, Reply, fixture, scratch, token_file};
 use ln_acp::Config;
 use ln_acp::commands::Mode;
@@ -50,13 +51,34 @@ fn host(fake: &Fake, dir: &Path) -> (TuiHost, Receiver<Msg>) {
 /// Run one turn on a thread, as the UI does, and apply what it sends until the turn is over (the
 /// host, and with it the sender, is dropped when the worker ends).
 fn turn(app: &mut App, host: TuiHost, rx: &Receiver<Msg>, dir: PathBuf, text: &str, mode: Mode) {
-    let (prompt, _cancel) = Prompt::new(host, dir, None);
+    turn_in(app, host, rx, dir, text, mode, None, None);
+}
+
+/// [`turn`] in a session already bound to `run`, with a permission question answered by pressing
+/// `answer` (a question left unanswered would hold the turn for ever).
+#[allow(clippy::too_many_arguments)]
+fn turn_in(
+    app: &mut App,
+    host: TuiHost,
+    rx: &Receiver<Msg>,
+    dir: PathBuf,
+    text: &str,
+    mode: Mode,
+    run: Option<&str>,
+    answer: Option<KeyCode>,
+) {
+    let (prompt, _cancel) = Prompt::new(host, dir, run.map(str::to_string));
     let text = text.to_string();
     let worker = thread::spawn(move || prompt.run_outcome(&text, mode));
     while let Ok(msg) = rx.recv() {
         match msg {
             Msg::Update(update) => app.apply(*update),
-            other => app.on_msg(other),
+            other => {
+                app.on_msg(other);
+                if let (Some(code), true) = (answer, app.question.is_some()) {
+                    app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+                }
+            }
         }
     }
     worker.join().expect("the turn does not panic");
@@ -146,6 +168,30 @@ fn the_write_permission_is_asked_on_the_ui_thread_and_defaults_to_no() {
     let (listenerless, rx) = host(&fake, &dir);
     drop(rx);
     assert!(!listenerless.allow_write("r1", "approve"));
+}
+
+#[test]
+fn refusing_the_write_says_so_once_and_sends_nothing() {
+    let fake = replaying();
+    let dir = scratch("tui-refuse");
+    let (host, rx) = host(&fake, &dir);
+    let mut app = App::new(Mode::Design, Theme::new(false));
+    turn_in(
+        &mut app,
+        host,
+        &rx,
+        dir,
+        "/approval-doc approve me trying",
+        Mode::Design,
+        Some("r"),
+        Some(KeyCode::Enter),
+    );
+    let text = texts(&mut app);
+    assert_eq!(text.matches("Not written.").count(), 1, "{text}");
+    assert!(
+        fake.seen().is_empty(),
+        "a refused write asks the server nothing"
+    );
 }
 
 #[test]

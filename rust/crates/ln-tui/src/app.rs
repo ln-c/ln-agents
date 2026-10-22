@@ -358,11 +358,10 @@ impl App {
             ) || (ctrl && key.code == KeyCode::Char('c'));
             if allow || deny {
                 let _ = question.reply.send(allow);
-                self.notice(if allow {
-                    "Allowed: the document is written once."
-                } else {
-                    "Not written."
-                });
+                // A refusal is answered by the turn itself ("Not written."), once.
+                if allow {
+                    self.notice("Allowed: the document is written once.");
+                }
             } else {
                 self.question = Some(question);
             }
