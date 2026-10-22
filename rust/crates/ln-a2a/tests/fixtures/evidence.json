@@ -6,53 +6,117 @@
    "parts": [
     {
      "data": {
-      "commit_sha": "a396e8a5ecf612fae82cb4506b1d3f165f65479e",
-      "provenance_tip": "sha256:7fa6cce70549b0d7adf3b6fe8112670909550f3167543eee5ee32e2ccafdcc3a",
-      "unevaluated": [],
-      "skill": "evidence",
-      "context_manifest": "sha256:3e1959bde17218249dd814bc9adc38ba55077728fd9ef2ed356f13a097e4140e",
-      "triage": "3a5a7da413cb1b1f60b3c8128ea903c1b5873bdeabd099e10636abb190de6ac8",
-      "vetoes": "db81dde56e300d3a16048b8b350f1e5d5e69bd9313f8e213b61f69f3a5a68074",
-      "policy": {
-       "policy/ci.yaml": "sha256:713ab8913a54761bba00b8e257875ea2e016f4093c24ad45905e029e9b2e6d8a",
-       "policy/vetoes.yaml": "sha256:511e53761ee874d19af1a36fb6906fc22a79b91de64b6cb7b76d26a7d1e5f592",
-       "policy/model_registry.yaml": "sha256:251d1d694937f8370f2a4fa03424e00a4109051f49111108d238838c594921cd",
-       "policy/approvers.yaml": "sha256:c420d137a9575d2f3182ecd83ba884f6b56c715ba60a40ecce47f20a0700a14b",
-       "pipeline/graph.yaml": "sha256:a76830c9f3bff5c041ef2e6f111159791ecb4b814dc5f01b8346197325d1c58b",
-       "policy/routing.yaml": "sha256:0506d223a225299d60746dfa641ee03029609cd8c2d4d43bba903fddd5ac97be",
-       "policy/weights.yaml": "sha256:a6196cc64998e574fbe4b9217f6308c7e17c8a3d8f3737a52fc1e29d6358bd17",
-       "policy/triage.yaml": "sha256:14bdf209ba7103b1c2fc698dbafd7f420364d36b8f10336dd9ac9530ea4d3ede",
-       "policy/data_classes.yaml": "sha256:f7a5ac5147c0795b504c0a28a6db0ce60a07689d3a6743516dac5c9ca74f93c4",
-       "policy/budgets.yaml": "sha256:7f619d181e89262fd5dc722722a6faff6e2fbcd6c1211fe13b85b32f66f6b1d2",
-       "policy/model_test_profiles.yaml": "sha256:3b3c89230b101b1d8b49049f1935bbbfd7f2e571e11a211ee1f2e85365471eec",
-       "policy/task_classes.yaml": "sha256:9c3e3589d2d8ef5aae91673cdb3b4d871689d41d3fd85cf137c8c2f143ae0f47",
-       "policy/escalation.yaml": "sha256:c81cd17ef1eeccb797fbba6ea26dbf2e14f553b04476e10afaf27d617fb8390f",
-       "policy/release.yaml": "sha256:9e9184a1d42ced9d8bfa26174240724a1fb26a54dd9480fe608d1ec0a22f3e38",
-       "policy/fast_path.yaml": "sha256:c82c89502b8895437a10c67387ff8d7bb0eab6bccea435f82df8bbe8814b9701",
-       "policy/advisories.yaml": "sha256:d36b0986844978ba37d309786231833330482c471e140ffd5435a8158a27199d"
+      "node": "H1",
+      "evidence": {
+       "commit_sha": "315b1572b38b32b05a09826bad0ca0b7e5fa860a",
+       "context_manifest": "sha256:dc85100dfd89adb54da99e4f7ede342b3fe3723745ee79690f448847f5863995",
+       "design_inputs": "7cc0e44958a7472bdd5eecf82386be966323a91611b891a6f66d7cf183dcef81",
+       "vetoes": "db81dde56e300d3a16048b8b350f1e5d5e69bd9313f8e213b61f69f3a5a68074",
+       "scores": "27e16ee5d32f1cc66474f92647dcf978b4c72fc9763b7213abef29461dc52108",
+       "survivors": [
+        "proposal_a_sealed",
+        "proposal_b_sealed",
+        "synthesis_sealed"
+       ],
+       "fired": {
+        "proposal_a_sealed": [],
+        "proposal_b_sealed": [],
+        "synthesis_sealed": []
+       },
+       "undetermined": {
+        "proposal_a_sealed": [],
+        "proposal_b_sealed": [],
+        "synthesis_sealed": []
+       },
+       "unevaluated": [],
+       "triage": "3a5a7da413cb1b1f60b3c8128ea903c1b5873bdeabd099e10636abb190de6ac8",
+       "valid_ratios": {
+        "critique_b_by_a_sealed": 1.0,
+        "critique_a_by_b_sealed": 1.0
+       },
+       "waived_blocking": [],
+       "provenance_tip": "sha256:2c54601e7b6f83ee117b8b32c372ae53551b9a73d097b65eced02b83c34c468e",
+       "policy": {
+        "agents/pipeline-build-agent.md": "sha256:406d843f7db5b02e4065ca58e61979bf84e8e59f84de500bec2a3e3c258d11d2",
+        "agents/pipeline-design-agent.md": "sha256:718e741f723eabb332b588448222d34d32445c61fc3db554b254c5e0e560cbaf",
+        "agents/pipeline-exception-router.md": "sha256:863a082ec96f86152a0770df1c33394a4bc2d6fc4243b68c3d323b21e5b187cd",
+        "agents/pipeline-grounding-agent.md": "sha256:6d8715cd63edf1e90322a05542a6ed86691a8215da3174dc15db3d4ae0b5d75b",
+        "agents/pipeline-human-authority-agent.md": "sha256:daf44514bba0451163ed25d0d31b2bec4249261e49c6a8a17540738f6075e15f",
+        "agents/pipeline-learning-agent.md": "sha256:158635d57be8bf79fcc46bb3c8e9fb38325112eb38a267f16681db9ce489889f",
+        "agents/pipeline-release-agent.md": "sha256:a6836145d03643290630c0d516f4a0f6a326085e1b5042938a785f7c5ce4d973",
+        "pipeline/graph.yaml": "sha256:a76830c9f3bff5c041ef2e6f111159791ecb4b814dc5f01b8346197325d1c58b",
+        "policy/advisories.yaml": "sha256:d36b0986844978ba37d309786231833330482c471e140ffd5435a8158a27199d",
+        "policy/approvers.yaml": "sha256:df00314f986e6cc0de0a5b7cea8a8ea0190d204467d3d517d5ea814e5562b946",
+        "policy/budgets.yaml": "sha256:7f619d181e89262fd5dc722722a6faff6e2fbcd6c1211fe13b85b32f66f6b1d2",
+        "policy/ci.yaml": "sha256:713ab8913a54761bba00b8e257875ea2e016f4093c24ad45905e029e9b2e6d8a",
+        "policy/data_classes.yaml": "sha256:f7a5ac5147c0795b504c0a28a6db0ce60a07689d3a6743516dac5c9ca74f93c4",
+        "policy/escalation.yaml": "sha256:c81cd17ef1eeccb797fbba6ea26dbf2e14f553b04476e10afaf27d617fb8390f",
+        "policy/fast_path.yaml": "sha256:c82c89502b8895437a10c67387ff8d7bb0eab6bccea435f82df8bbe8814b9701",
+        "policy/model_registry.yaml": "sha256:ad7bfb20b09f92dabff3b40e3cf1282c48f33ccee1633d7d28188a5ede27f895",
+        "policy/model_test_profiles.yaml": "sha256:7c58f721e4a15186b3125d3d31591eaf892daaa3d1897499a835785e09eb9f69",
+        "policy/release.yaml": "sha256:9e9184a1d42ced9d8bfa26174240724a1fb26a54dd9480fe608d1ec0a22f3e38",
+        "policy/routing.yaml": "sha256:0506d223a225299d60746dfa641ee03029609cd8c2d4d43bba903fddd5ac97be",
+        "policy/task_classes.yaml": "sha256:9c3e3589d2d8ef5aae91673cdb3b4d871689d41d3fd85cf137c8c2f143ae0f47",
+        "policy/triage.yaml": "sha256:31a2ebc65dab94a1eff67b18482bea831a5e7d37dc07abf9e985cb1f23d06b55",
+        "policy/vetoes.yaml": "sha256:511e53761ee874d19af1a36fb6906fc22a79b91de64b6cb7b76d26a7d1e5f592",
+        "policy/weights.yaml": "sha256:a6196cc64998e574fbe4b9217f6308c7e17c8a3d8f3737a52fc1e29d6358bd17"
+       }
       },
-      "scores": "27e16ee5d32f1cc66474f92647dcf978b4c72fc9763b7213abef29461dc52108",
-      "waived_blocking": [],
-      "valid_ratios": {
-       "critique_b_by_a_sealed": 1.0,
-       "critique_a_by_b_sealed": 1.0
-      },
-      "fired": {
-       "synthesis_sealed": [],
-       "proposal_b_sealed": [],
-       "proposal_a_sealed": []
-      },
-      "survivors": [
-       "proposal_a_sealed",
-       "proposal_b_sealed",
-       "synthesis_sealed"
+      "choices": [
+       {
+        "decision": "approve_design_and_no_security_veto",
+        "label": "Approve Design A",
+        "candidate": "proposal_a_sealed",
+        "remediation_cause": null
+       },
+       {
+        "decision": "approve_design_and_no_security_veto",
+        "label": "Approve Design B",
+        "candidate": "proposal_b_sealed",
+        "remediation_cause": null
+       },
+       {
+        "decision": "approve_design_and_no_security_veto",
+        "label": "Approve the synthesis",
+        "candidate": "synthesis_sealed",
+        "remediation_cause": null
+       },
+       {
+        "decision": "request_evidence",
+        "label": "Request evidence",
+        "candidate": null,
+        "remediation_cause": null
+       },
+       {
+        "decision": "revise_with_notes",
+        "label": "Revise with notes",
+        "candidate": null,
+        "remediation_cause": null
+       },
+       {
+        "decision": "approve_remediation_or_constraint_change",
+        "label": "Approve remediation or constraint change",
+        "candidate": null,
+        "remediation_cause": null
+       },
+       {
+        "decision": "reject",
+        "label": "Reject",
+        "candidate": null,
+        "remediation_cause": null
+       },
+       {
+        "decision": "halt",
+        "label": "Halt",
+        "candidate": null,
+        "remediation_cause": null
+       }
       ],
-      "undetermined": {
-       "synthesis_sealed": [],
-       "proposal_b_sealed": [],
-       "proposal_a_sealed": []
-      },
-      "design_inputs": "c3922a0c513c5159d6f878a46c14272da5156c5f845b6b09676cacc0baf1bf6b"
+      "approvers": [
+       "ln-c"
+      ],
+      "markdown": "# Design decision for run `deploy-design` (H1)\n\nNothing in this report approves anything. A decision is a document you sign with your ssh key; `run decide` checks the signature and that the evidence below is unchanged.\n\n## Your choices\n\n- **Approve Design A** (`approve_design_and_no_security_veto`, candidate `proposal_a_sealed`)\n- **Approve Design B** (`approve_design_and_no_security_veto`, candidate `proposal_b_sealed`)\n- **Approve the synthesis** (`approve_design_and_no_security_veto`, candidate `synthesis_sealed`)\n- **Request evidence** (`request_evidence`)\n- **Revise with notes** (`revise_with_notes`)\n- **Approve remediation or constraint change** (`approve_remediation_or_constraint_change`)\n- **Reject** (`reject`)\n- **Halt** (`halt`)\n\n## Candidates at a glance\n\n| Candidate | Written by | Vetoes fired | Vetoes undetermined | Weighted score | Rank |\n|---|---|---|---|---|---|\n| Design A | `claude_cli_default` | none | none | 0.79 | 2 |\n| Design B | `gemini_3_8_flash_high` | none | none | 0.57 | 3 |\n| the synthesis | `claude_cli_default` | none | none | 0.96 | 1 |\n\nNear tie: **no**. High uncertainty: **no**. Vetoes not evaluated by code: none.\n\n## What you sign\n\nYour signature binds to this evidence. If any of it changes, the approval is refused.\n\n- `commit_sha`: `315b1572b38b32b05a09826bad0ca0b7e5fa860a`\n- `context_manifest`: `sha256:dc85100dfd89adb54da99e4f7ede342b3fe3723745ee79690f448847f5863995`\n- `design_inputs`: `7cc0e44958a7472bdd5eecf82386be966323a91611b891a6f66d7cf183dcef81`\n- `fired`: `{\"proposal_a_sealed\": [], \"proposal_b_sealed\": [], \"synthesis_sealed\": []}`\n- `policy`: 23 frozen policy files\n- `provenance_tip`: `sha256:2c54601e7b6f83ee117b8b32c372ae53551b9a73d097b65eced02b83c34c468e`\n- `scores`: `27e16ee5d32f1cc66474f92647dcf978b4c72fc9763b7213abef29461dc52108`\n- `survivors`: `[\"proposal_a_sealed\", \"proposal_b_sealed\", \"synthesis_sealed\"]`\n- `triage`: `3a5a7da413cb1b1f60b3c8128ea903c1b5873bdeabd099e10636abb190de6ac8`\n- `undetermined`: `{\"proposal_a_sealed\": [], \"proposal_b_sealed\": [], \"synthesis_sealed\": []}`\n- `unevaluated`: `[]`\n- `valid_ratios`: `{\"critique_a_by_b_sealed\": 1.0, \"critique_b_by_a_sealed\": 1.0}`\n- `vetoes`: `db81dde56e300d3a16048b8b350f1e5d5e69bd9313f8e213b61f69f3a5a68074`\n- `waived_blocking`: `[]`\n",
+      "path": "/work/runs/deploy-design/approvals/H1-evidence.md"
      }
     }
    ]

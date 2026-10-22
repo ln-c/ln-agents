@@ -1,8 +1,9 @@
-# ln-agents: one binary for ACP (editor to agent), A2A (to the Python orchestrator) and MCP
-# (agent to tool). The orchestrator in src/agentic_pipeline stays authoritative; nothing here
-# takes a pipeline transition or signs with a key of its own. `/decide` and `/resume` open a
-# terminal where the human signs or confirms (crates/ln-agents/src/human.rs, the only place that
-# starts a process).
+# ln-agents: one binary for a terminal UI, ACP (editor to agent), A2A (to the Python
+# orchestrator) and MCP (agent to tool). The orchestrator in src/agentic_pipeline stays
+# authoritative; nothing here takes a pipeline transition or signs with a key of its own.
+# `/decide` and `/resume` put the human in a terminal where they sign or confirm: a window the
+# editor's agent opens, or the terminal the UI is in (crates/ln-agents/src/human.rs, the only
+# place that starts a process).
 [workspace]
 resolver = "3"
 members = ["crates/*"]
@@ -23,8 +24,16 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Loopback HTTP only: no TLS, no compression.
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }
+# The terminal UI. Pinned exactly, like the crates above; crossterm keeps the features it
+# defaults to, because Windows needs `windows`.
+crossterm = { version = "=0.29.0", default-features = false, features = ["bracketed-paste", "events", "windows"] }
+pulldown-cmark = { version = "=0.13.4", default-features = false }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+tui-textarea-2 = { version = "=0.13.2", default-features = false, features = ["crossterm"] }
+unicode-width = { version = "=0.2.2", default-features = false }
 ln-a2a = { path = "crates/ln-a2a" }
 ln-acp = { path = "crates/ln-acp" }
+ln-tui = { path = "crates/ln-tui" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

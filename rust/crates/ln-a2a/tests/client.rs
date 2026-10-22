@@ -145,6 +145,17 @@ fn a_token_file_others_can_read_is_refused() {
 }
 
 #[test]
+fn a_merge_denial_names_its_cause() {
+    let message =
+        Request::approval_document("r", "deny", "ln-c", "no", None, Some("test_defect")).message();
+    let PartContent::Data(data) = &message.parts[0].content else {
+        panic!("a data part")
+    };
+    assert_eq!(data["remediation_cause"], "test_defect");
+    assert!(data.get("candidate").is_none());
+}
+
+#[test]
 fn a_request_is_one_data_part_naming_one_of_the_twelve_skills() {
     let message = Request::approval_document(
         "r",
@@ -152,6 +163,7 @@ fn a_request_is_one_data_part_naming_one_of_the_twelve_skills() {
         "ln-c",
         "ok",
         Some("synthesis_sealed"),
+        None,
     )
     .message();
     assert!(message.task_id.is_none() && message.context_id.is_none());
@@ -198,7 +210,7 @@ fn a_request_is_one_data_part_naming_one_of_the_twelve_skills() {
         Request::complete_mapping(),
         Request::apply_change("deadbeef"),
         Request::discard_change("deadbeef"),
-        Request::approval_document("r", "d", "a", "why", None),
+        Request::approval_document("r", "d", "a", "why", None, None),
     ]
     .iter()
     .map(Request::skill)

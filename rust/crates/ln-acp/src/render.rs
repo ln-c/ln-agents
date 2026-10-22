@@ -295,8 +295,9 @@ pub fn evidence_text(evidence: &Value) -> String {
     text
 }
 
-/// A `status` skill reply as a few lines.
-pub fn status_text(status: &Value) -> String {
+/// A `status` skill reply as a few lines. `picks` says the front end lists what to sign for
+/// `/approval-doc`, so the next step is not the long form.
+pub fn status_text(status: &Value, picks: bool) -> String {
     let field = |k: &str| match status.get(k) {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Null) | None => "-".into(),
@@ -318,11 +319,14 @@ pub fn status_text(status: &Value) -> String {
         text.push_str(&format!("\nPaused: {reason}"));
     }
     if field("status") == "awaiting_human" {
-        text.push_str(
+        text.push_str(if picks {
+            "\nNext: `/evidence` to read the report, then `/approval-doc` (design mode) to pick \
+             what to sign and say why; `/decide` signs it here."
+        } else {
             "\nNext: `/evidence` to read the report, then `/approval-doc \
              <decision>[:<candidate>] <approver> <reason>` (design mode), sign it with ssh-keygen \
-             and run `run decide`.",
-        );
+             and run `run decide`."
+        });
     }
     text.push('\n');
     text
@@ -1038,12 +1042,18 @@ mod tests {
     fn replies_render_without_inventing_fields() {
         let status = json!({"run_id": "r", "status": "awaiting_human", "current": "H1", "steps": 11.0,
                             "runner_active": false, "paused_reason": null});
-        let text = status_text(&status);
+        let text = status_text(&status, false);
         assert!(
             text.starts_with("Run `r`: **awaiting_human** at `H1`, 11 steps."),
             "{text}"
         );
         assert!(text.contains("run decide"));
+        let listed = status_text(&status, true);
+        assert!(
+            listed.contains("`/approval-doc` (design mode) to pick"),
+            "{listed}"
+        );
+        assert!(!listed.contains("<decision>"), "{listed}");
         let doc = approval_text(
             &json!({"node": "H1", "decision": "d", "document": "/p.json",
                                         "sign": "ssh-keygen -Y sign ...", "then": "python -m ... run decide"}),
