@@ -246,7 +246,7 @@ impl Agent {
         let client = self.config.client(&request.cwd)?;
         let status = skill_reply(&client, &Request::status(run)).map_err(|e| e.to_string())?;
         self.insert_session(&session_id, request.cwd, Some(run.to_string()));
-        self.say(&session_id, render::status_text(&status));
+        self.say(&session_id, render::status_text(&status, false));
         self.conn.respond(
             id,
             LoadSessionResponse::new().modes(mode_state(Mode::Status)),

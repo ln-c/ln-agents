@@ -315,7 +315,7 @@ impl<H: Host> Prompt<H> {
                 let run = self.the_run(run)?;
                 let status = skill_reply(&client()?, &Request::status(&run)).map_err(a2a)?;
                 self.bind(&run);
-                self.say(render::status_text(&status));
+                self.say(render::status_text(&status, self.host.picks()));
             }
             Command::Evidence { run } => {
                 let run = self.the_run(run)?;
