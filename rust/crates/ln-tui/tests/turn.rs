@@ -38,6 +38,14 @@ fn replaying() -> Fake {
 
 /// A fake whose `evidence` reply is the recorded approval view after `edit`.
 fn offering(edit: impl Fn(&mut Value) + Send + Sync + 'static) -> Fake {
+    offering_document(edit, |_| {})
+}
+
+/// The same, with the `approval_document` reply edited too.
+fn offering_document(
+    edit: impl Fn(&mut Value) + Send + Sync + 'static,
+    edit_document: impl Fn(&mut Value) + Send + Sync + 'static,
+) -> Fake {
     Fake::start(
         move |seen| match (seen.rpc(), seen.data().and_then(|d| d["skill"].as_str())) {
             ("SendMessage", Some("evidence")) => {
@@ -46,7 +54,10 @@ fn offering(edit: impl Fn(&mut Value) + Send + Sync + 'static) -> Fake {
                 Reply::json(reply.to_string())
             }
             ("SendMessage", Some("approval_document")) => {
-                Reply::json(fixture("approval_document.json"))
+                let mut reply: Value =
+                    serde_json::from_str(&fixture("approval_document.json")).unwrap();
+                edit_document(&mut reply["result"]["message"]["parts"][0]["data"]);
+                Reply::json(reply.to_string())
             }
             _ => Reply::json(fixture("no_run.json")),
         },
@@ -328,13 +339,58 @@ fn a_pick_and_a_reason_write_the_document_the_orchestrator_listed() {
         "the choice and the reason are echoed: {text}"
     );
     assert!(text.contains("Wrote the unsigned"), "{text}");
-    assert!(text.contains("/decide"), "{text}");
+    assert!(text.contains("/decide signs it here."), "{text}");
     assert!(!text.contains("cannot use this document"), "{text}");
+    assert!(
+        !text.contains("ssh-keygen") && !text.contains("run decide"),
+        "`/decide` signs here, so the manual commands are not repeated: {text}"
+    );
     assert_eq!(
         fake.methods(),
         ["SendMessage", "SendMessage"],
         "the choices, then the document: no write was asked of the person"
     );
+}
+
+#[test]
+fn a_document_decide_cannot_use_is_not_followed_by_decide_signs_it_here() {
+    let fake = offering_document(
+        |_| {},
+        |document| {
+            document.as_object_mut().unwrap().remove("namespace");
+        },
+    );
+    let dir = scratch("tui-pick-unusable");
+    let (host, rx) = host(&fake, &dir);
+    let probe = TuiHost {
+        config: Arc::clone(&host.config),
+        cwd: host.cwd.clone(),
+        msg: channel().0,
+        shared: Arc::clone(&host.shared),
+    };
+    let mut app = App::new(Mode::Design, Theme::new(false));
+    turn_in(
+        &mut app,
+        host,
+        &rx,
+        dir,
+        "/approval-doc",
+        Mode::Design,
+        Some("deploy-design"),
+        &["1", "fine\n"],
+    );
+    let text = texts(&mut app);
+    assert!(text.contains("cannot use this document"), "{text}");
+    assert!(text.contains("has no namespace"), "{text}");
+    assert!(
+        !text.contains("signs it here"),
+        "it must not promise what it just refused: {text}"
+    );
+    assert!(
+        text.contains("ssh-keygen -Y sign"),
+        "the commands are the only way to sign it now: {text}"
+    );
+    assert!(probe.pending().is_none(), "nothing was kept for `/decide`");
 }
 
 #[test]
@@ -432,8 +488,15 @@ fn several_approvers_are_picked_too() {
 #[test]
 fn a_policy_with_no_approver_is_a_failure_not_a_default() {
     let fake = offering(|view| view["approvers"] = json!([]));
-    let (_app, text) = pick_flow(&fake, "no-approver", &["1"]);
+    // No answers: the check comes before the list, so nothing is asked of the person at all.
+    let (_app, text) = pick_flow(&fake, "no-approver", &[]);
     assert!(text.contains("names no approver"), "{text}");
+    assert!(!text.contains("Nothing was written."), "{text}");
+    assert_eq!(
+        fake.methods(),
+        ["SendMessage"],
+        "only the choices were asked"
+    );
     assert!(written(&fake).is_none());
 }
 
