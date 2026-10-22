@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::{Frame, Terminal};
 
-use crate::app::{App, INPUT_ROWS, StageState};
+use crate::app::{App, Hits, INPUT_ROWS, StageState};
 use crate::markdown::columns;
 use crate::term::Screen;
 
@@ -54,7 +54,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, screen: Screen, now: Instant) {
         frame.render_widget(Paragraph::new("too small"), area);
         return;
     }
-    let input_rows = if app.question.is_some() {
+    app.hits = Hits::default();
+    let input_rows = if let Some(pick) = &app.pick {
+        picker_rows(pick.options.len(), area.height, screen)
+    } else if app.question.is_some() {
         4 // the question, how to answer it, and the border
     } else {
         app.input
@@ -73,7 +76,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, screen: Screen, now: Instant) {
         Screen::Alternate => transcript(frame, app, top),
         Screen::Inline => live_tail(frame, app, top),
     }
-    frame.render_widget(Paragraph::new(hint_line(app, area.width, now)), hint);
+    let (hint_text, named) = hint_line(app, area.width, now);
+    frame.render_widget(Paragraph::new(hint_text), hint);
+    app.hits.commands = named
+        .into_iter()
+        .map(|(from, to, name)| {
+            let rect = Rect {
+                x: hint.x + from,
+                y: hint.y,
+                width: to - from,
+                height: 1,
+            };
+            (rect, name)
+        })
+        .collect();
+    if app.pick.is_some() {
+        picker(frame, app, input, screen);
+        frame.render_widget(Paragraph::new(status_line(app, area.width)), status);
+        return;
+    }
     match &app.question {
         Some(question) => {
             let text = Text::from(vec![
@@ -98,6 +119,12 @@ fn transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     let lines = app.transcript(area.width);
     let total = lines.len();
     let height = usize::from(area.height);
+    if let Some(item) = app.take_focus() {
+        // show that item from its first line (or as far up as the end of the transcript allows)
+        let first = app.offset_of(item, area.width);
+        app.up = total.saturating_sub(height + first);
+        app.total = total;
+    }
     if app.up > 0 && total > app.total {
         app.up = app.up.saturating_add(total - app.total); // keep what is being read where it is
     }
@@ -140,20 +167,33 @@ fn live_tail(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// While typing a command, the commands that match; otherwise the stages of the run and how long
 /// the turn has been going.
-fn hint_line(app: &App, width: u16, now: Instant) -> Line<'static> {
+fn hint_line(app: &App, width: u16, now: Instant) -> (Line<'static>, Vec<(u16, u16, String)>) {
     let dim = app.theme.dim();
-    if app.question.is_some() {
-        return Line::default();
+    if app.question.is_some() || app.pick.is_some() {
+        return (Line::default(), Vec::new());
+    }
+    if app.line.is_some() {
+        let note = "Enter writes the document · Esc cancels";
+        return (Line::from(Span::styled(note, dim)), Vec::new());
     }
     let matches = app.completions();
     if !matches.is_empty() {
         let mut spans = Vec::new();
+        let mut named = Vec::new();
+        let mut x = 0usize;
         for (i, (name, hint, description)) in matches.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("  ", dim));
+                x += 2;
             }
+            let label = format!("/{name}");
+            let w = columns(&label);
+            if x + w <= usize::from(width) {
+                named.push((x as u16, (x + w) as u16, name.clone()));
+            }
+            x += w;
             spans.push(Span::styled(
-                format!("/{name}"),
+                label,
                 Style::new().add_modifier(Modifier::BOLD),
             ));
             if matches.len() == 1 {
@@ -163,9 +203,102 @@ fn hint_line(app: &App, width: u16, now: Instant) -> Line<'static> {
                 spans.push(Span::styled(format!(" — {description}"), dim));
             }
         }
-        return fit(spans, width);
+        return (fit(spans, width), named);
     }
-    progress_line(app, width, now)
+    (progress_line(app, width, now), Vec::new())
+}
+
+/// The rows the picker takes: its options, the border and a line of keys. Full screen keeps a few
+/// lines of the conversation in view; the inline screen has only its few rows, so the list scrolls.
+fn picker_rows(options: usize, height: u16, screen: Screen) -> u16 {
+    let want = u16::try_from(options).unwrap_or(u16::MAX).saturating_add(3);
+    let room = match screen {
+        Screen::Alternate => height.saturating_sub(5),
+        Screen::Inline => height.saturating_sub(2),
+    };
+    want.min(room).max(4)
+}
+
+/// The picker over the input: `1. Approve Design A` and so on, the marked one bold, and a line
+/// of the keys (and the mouse, where the full screen has it).
+fn picker(frame: &mut Frame, app: &mut App, area: Rect, screen: Screen) {
+    let dim = app.theme.dim();
+    let color = app.theme.color();
+    let Some(pick) = app.pick.as_mut() else {
+        return;
+    };
+    let block = Block::bordered().border_style(dim).title(Span::styled(
+        format!(" {} ", pick.title),
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = usize::from(inner.height.saturating_sub(1));
+    pick.keep_visible(rows);
+    let mut options = Vec::new();
+    let end = (pick.first + rows).min(pick.options.len());
+    for (row, at) in (pick.first..end).enumerate() {
+        let marked = at == pick.selected;
+        let number = if at < 9 {
+            format!("{}. ", at + 1)
+        } else {
+            "   ".to_string()
+        };
+        let style = if marked {
+            fg(color, Color::Cyan, Modifier::BOLD)
+        } else {
+            Style::new()
+        };
+        let line = fit(
+            vec![
+                Span::styled(if marked { "❯ " } else { "  " }, style),
+                Span::styled(number, style),
+                Span::styled(pick.options[at].clone(), style),
+            ],
+            inner.width,
+        );
+        let rect = Rect {
+            x: inner.x,
+            y: inner.y + row as u16,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(line), rect);
+        options.push((rect, at));
+    }
+    let more = pick.options.len().saturating_sub(end);
+    let mut keys = match pick.options.len() {
+        0 | 1 => String::from("1 or Enter"),
+        n => format!("1-{} or ↑↓ Enter", n.min(9)),
+    };
+    if screen == Screen::Alternate {
+        keys.push_str(" · click");
+    }
+    if pick.has_report() {
+        keys.push_str(" · r reads the report");
+    }
+    keys.push_str(" · Esc leaves");
+    if pick.first > 0 {
+        keys.push_str(" · ↑ more");
+    }
+    if more > 0 {
+        keys.push_str(&format!(" · ↓ {more} more"));
+    }
+    let footer = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(fit(
+            vec![Span::styled(format!("  {keys}"), dim)],
+            inner.width,
+        )),
+        footer,
+    );
+    app.hits.options = options;
+    app.hits.picker = Some(area);
 }
 
 /// `⠋ r1  ■G ■A1 ▶A3  0:42  Esc cancels` — the stages the turn has entered, the last working.
@@ -315,6 +448,7 @@ mod tests {
     use agent_client_protocol_schema::v1::{
         Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionUpdate,
     };
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ln_acp::commands::Mode;
     use ratatui::backend::TestBackend;
     use ratatui::{TerminalOptions, Viewport};
@@ -458,6 +592,160 @@ mod tests {
         let all = rows.join("\n");
         assert!(all.contains("Write an unsigned design document"), "{all}");
         assert!(all.contains("n or Enter does not"), "{all}");
+    }
+
+    fn pick_msg(
+        options: &[&str],
+        report: Option<&str>,
+    ) -> (Msg, std::sync::mpsc::Receiver<Option<usize>>) {
+        let (reply, answer) = std::sync::mpsc::channel();
+        let msg = Msg::Pick {
+            title: "H1 · r1: what do you sign?".into(),
+            options: options.iter().map(|o| o.to_string()).collect(),
+            report: report.map(str::to_string),
+            reply,
+        };
+        (msg, answer)
+    }
+
+    const DESIGNS: [&str; 3] = [
+        "Approve Design A",
+        "Approve Design B",
+        "Approve the synthesis",
+    ];
+
+    #[test]
+    fn a_picker_lists_numbered_options_and_the_keys() {
+        let mut app = app();
+        app.notice("Welcome");
+        app.on_msg(pick_msg(&DESIGNS, Some("# Report")).0);
+        let rows = frame_rows(&mut app, 80, 14, Screen::Alternate);
+        let all = rows.join("\n");
+        assert!(all.contains("H1 · r1: what do you sign?"), "{all}");
+        assert!(all.contains("❯ 1. Approve Design A"), "{all}");
+        assert!(all.contains("  2. Approve Design B"), "{all}");
+        assert!(all.contains("3. Approve the synthesis"), "{all}");
+        assert!(
+            all.contains("click"),
+            "the full screen takes the mouse: {all}"
+        );
+        assert!(all.contains("r reads the report"), "{all}");
+        assert_eq!(rows[0], "Welcome", "the conversation stays in view");
+    }
+
+    #[test]
+    fn the_inline_screen_does_not_promise_the_mouse() {
+        let mut app = app();
+        app.on_msg(pick_msg(&DESIGNS, None).0);
+        let all = frame_rows(&mut app, 80, 10, Screen::Inline).join("\n");
+        assert!(all.contains("1. Approve Design A"), "{all}");
+        assert!(
+            !all.contains("click") && !all.contains("reads the report"),
+            "{all}"
+        );
+    }
+
+    #[test]
+    fn a_list_longer_than_the_room_scrolls_to_keep_the_marked_option_in_view() {
+        let mut app = app();
+        let many: Vec<String> = (1..=8).map(|i| format!("Option {i}")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        app.on_msg(pick_msg(&refs, None).0);
+        let rows = frame_rows(&mut app, 80, 10, Screen::Inline);
+        let all = rows.join("\n");
+        assert!(
+            all.contains("Option 1") && !all.contains("Option 8"),
+            "{all}"
+        );
+        assert!(all.contains("more"), "says there is more: {all}");
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::End,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let all = frame_rows(&mut app, 80, 10, Screen::Inline).join("\n");
+        assert!(
+            all.contains("❯ 8. Option 8") || all.contains("❯ Option 8"),
+            "{all}"
+        );
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn a_click_on_an_option_picks_it_like_its_number() {
+        let mut app = app();
+        let (msg, answer) = pick_msg(&DESIGNS, None);
+        app.on_msg(msg);
+        let rows = frame_rows(&mut app, 80, 14, Screen::Alternate);
+        let row = rows
+            .iter()
+            .position(|r| r.contains("2. Approve Design B"))
+            .unwrap();
+        app.on_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            row as u16,
+        ));
+        assert_eq!(answer.recv().unwrap(), Some(1));
+        assert!(app.pick.is_none());
+    }
+
+    #[test]
+    fn a_click_beside_the_options_picks_nothing_and_the_wheel_moves_the_mark() {
+        let mut app = app();
+        let (msg, answer) = pick_msg(&DESIGNS, None);
+        app.on_msg(msg);
+        let rows = frame_rows(&mut app, 80, 14, Screen::Alternate);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 0));
+        assert!(app.pick.is_some() && answer.try_recv().is_err());
+        let row = rows
+            .iter()
+            .position(|r| r.contains("1. Approve Design A"))
+            .unwrap() as u16;
+        app.on_mouse(mouse(MouseEventKind::ScrollDown, 10, row));
+        assert_eq!(app.pick.as_ref().unwrap().selected, 1);
+        app.on_mouse(mouse(MouseEventKind::ScrollUp, 10, row));
+        assert_eq!(app.pick.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_conversation_elsewhere_and_a_click_completes_a_command() {
+        let mut app = app();
+        for i in 0..40 {
+            app.notice(format!("line {i}"));
+        }
+        frame_rows(&mut app, 40, 10, Screen::Alternate);
+        app.on_mouse(mouse(MouseEventKind::ScrollUp, 5, 2));
+        assert_eq!(app.up, 3);
+        app.on_mouse(mouse(MouseEventKind::ScrollDown, 5, 2));
+        assert_eq!(app.up, 0);
+
+        app.input.insert_str("/ev");
+        let rows = frame_rows(&mut app, 100, 12, Screen::Alternate);
+        let row = rows.iter().position(|r| r.contains("/evidence")).unwrap() as u16;
+        let col = rows[row as usize].find("/evidence").unwrap() as u16;
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col + 2, row));
+        assert_eq!(app.text(), "/evidence ");
+    }
+
+    #[test]
+    fn the_line_question_shows_what_it_asks_on_the_border() {
+        let mut app = app();
+        let (reply, _answer) = std::sync::mpsc::channel();
+        app.on_msg(Msg::Line {
+            prompt: "Why: Approve Design B".into(),
+            reply,
+        });
+        let all = frame_rows(&mut app, 80, 12, Screen::Alternate).join("\n");
+        assert!(all.contains("Why: Approve Design B"), "{all}");
+        assert!(all.contains("Enter writes the document"), "{all}");
     }
 
     #[test]

@@ -78,6 +78,34 @@ impl Host for TuiHost {
         answer.recv().unwrap_or(false)
     }
 
+    fn picks(&self) -> bool {
+        true
+    }
+
+    /// The person picks on the UI thread, by key or by mouse; leaving it, or the UI going away,
+    /// is no choice.
+    fn choose(&self, title: &str, options: &[String], report: Option<&str>) -> Option<usize> {
+        let (reply, answer) = channel();
+        let pick = Msg::Pick {
+            title: title.to_string(),
+            options: options.to_vec(),
+            report: report.map(str::to_string),
+            reply,
+        };
+        self.msg.send(pick).ok()?;
+        answer.recv().ok().flatten()
+    }
+
+    fn ask_line(&self, prompt: &str) -> Option<String> {
+        let (reply, answer) = channel();
+        let line = Msg::Line {
+            prompt: prompt.to_string(),
+            reply,
+        };
+        self.msg.send(line).ok()?;
+        answer.recv().ok().flatten()
+    }
+
     /// The step runs in this terminal: the UI leaves the screen, the step asks for the run id and
     /// the passphrase itself, and the UI comes back.
     fn hand_over(&self, args: &[String], run: &str, what: &str, manual: &str) {

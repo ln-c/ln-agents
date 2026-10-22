@@ -9,8 +9,11 @@ use std::time::Instant;
 use agent_client_protocol_schema::v1::{
     ContentBlock, PlanEntryStatus, SessionUpdate, StopReason, ToolCallStatus,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ln_acp::commands::{self, Mode};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block as Frame;
@@ -42,6 +45,8 @@ pub enum Block {
     },
     /// Something ln-agents itself says: the welcome, a refusal, how a cancel went.
     Notice(String),
+    /// A document the person asked to read (the evidence report), shown as it is.
+    Report(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +72,19 @@ pub enum Msg {
     Ask {
         title: String,
         reply: Sender<bool>,
+    },
+    /// A turn lets the person pick one of `options`; the reply is the index, or `None` if they
+    /// leave it. `report` is Markdown they can read first.
+    Pick {
+        title: String,
+        options: Vec<String>,
+        report: Option<String>,
+        reply: Sender<Option<usize>>,
+    },
+    /// A turn asks for one line; the reply is it, or `None` if the person leaves it.
+    Line {
+        prompt: String,
+        reply: Sender<Option<String>>,
     },
     /// A turn hands the person a step that runs in this terminal; the reply says how it went.
     Foreground {
@@ -106,6 +124,60 @@ pub struct Question {
     reply: Sender<bool>,
 }
 
+/// A numbered list the person picks from by key or by mouse.
+pub struct Picker {
+    pub title: String,
+    pub options: Vec<String>,
+    pub selected: usize,
+    /// The first option drawn, so the selected one stays in view.
+    pub first: usize,
+    report: Option<String>,
+    shown: bool,
+    reply: Sender<Option<usize>>,
+}
+
+impl Picker {
+    /// Whether a report can still be read.
+    pub fn has_report(&self) -> bool {
+        self.report.is_some() && !self.shown
+    }
+
+    /// Scroll so the selected option is among the `rows` drawn.
+    pub fn keep_visible(&mut self, rows: usize) {
+        let rows = rows.max(1);
+        if self.selected < self.first {
+            self.first = self.selected;
+        } else if self.selected >= self.first + rows {
+            self.first = self.selected + 1 - rows;
+        }
+        self.first = self.first.min(self.options.len().saturating_sub(rows));
+    }
+}
+
+/// One line asked for in the input box.
+pub struct LinePrompt {
+    reply: Sender<Option<String>>,
+}
+
+/// Where the last frame put what a click can reach.
+#[derive(Default)]
+pub struct Hits {
+    /// The picker's rows, each with the option it picks.
+    pub options: Vec<(Rect, usize)>,
+    /// The picker as a whole, where the wheel moves the selection.
+    pub picker: Option<Rect>,
+    /// The commands named on the hint line, each with the name it completes.
+    pub commands: Vec<(Rect, String)>,
+}
+
+impl Hits {
+    fn at<T: Clone>(list: &[(Rect, T)], column: u16, row: u16) -> Option<T> {
+        list.iter()
+            .find(|(r, _)| r.contains((column, row).into()))
+            .map(|(_, v)| v.clone())
+    }
+}
+
 struct Item {
     block: Block,
     rev: u32,
@@ -125,6 +197,12 @@ pub struct App {
     pub run: Option<String>,
     pub running: Option<Running>,
     pub question: Option<Question>,
+    pub pick: Option<Picker>,
+    pub line: Option<LinePrompt>,
+    /// What a click can reach in the last frame.
+    pub hits: Hits,
+    /// An item to show from its first line, once, at the next full-screen draw.
+    focus: Option<usize>,
     /// Lines scrolled up from the bottom of the transcript; 0 follows the newest.
     pub up: usize,
     pub total: usize,
@@ -148,10 +226,18 @@ pub fn commands_for(mode: Mode) -> Vec<(String, String, String)> {
         .into_iter()
         .filter(|(name, _, _)| *name != "help")
         .map(|(name, hint, description)| {
-            let description = match name {
-                "decide" => "Sign that document here, with your key, and record the decision",
-                "resume" => "Confirm here that the paused run may go on",
-                _ => description,
+            let (hint, description) = match name {
+                "decide" => (
+                    hint,
+                    "Sign that document here, with your key, and record the decision",
+                ),
+                "resume" => (hint, "Confirm here that the paused run may go on"),
+                // the choices come from the orchestrator; the long form still works
+                "approval-doc" => (
+                    "",
+                    "Pick what to sign (1, 2, ...) and say why: writes the unsigned document",
+                ),
+                _ => (hint, description),
             };
             (name.to_string(), hint.to_string(), description.to_string())
         })
@@ -181,7 +267,11 @@ pub const KEYS: &str = "\
 - `Esc` or `Ctrl+C` cancels the running turn: the A2A task is cancelled, which stops the run after \
 its current step. `Ctrl+C` again leaves at once.
 - `Ctrl+D` on an empty line leaves; `Ctrl+L` redraws.
-- `PageUp`, `PageDown`, `Ctrl+Home` and `Ctrl+End` scroll the full-screen view.";
+- `PageUp`, `PageDown`, `Ctrl+Home` and `Ctrl+End` scroll the full-screen view.
+- In a list (`/approval-doc`): a number picks, `Up` and `Down` then `Enter` pick the marked one, `r` \
+reads the report first, `Esc` leaves.
+- The full-screen view also takes the mouse: the wheel scrolls, a click picks an option or completes \
+a command. Select text with `Shift` held (`Option` in iTerm2).";
 
 impl App {
     pub fn new(mode: Mode, theme: Theme) -> Self {
@@ -197,6 +287,10 @@ impl App {
             run: None,
             running: None,
             question: None,
+            pick: None,
+            line: None,
+            hits: Hits::default(),
+            focus: None,
             up: 0,
             total: 0,
             quit: false,
@@ -261,10 +355,32 @@ impl App {
                 self.run = Some(run);
             }
             Msg::Ask { title, reply } => self.question = Some(Question { title, reply }),
+            Msg::Pick {
+                title,
+                options,
+                report,
+                reply,
+            } => {
+                self.pick = Some(Picker {
+                    title,
+                    options,
+                    selected: 0,
+                    first: 0,
+                    report,
+                    shown: false,
+                    reply,
+                });
+            }
+            Msg::Line { prompt, reply } => {
+                self.input = make_line_input(&prompt, self.theme);
+                self.history_at = None;
+                self.line = Some(LinePrompt { reply });
+            }
             Msg::Foreground { .. } => {} // the loop answers it: it owns the terminal
             Msg::Done { stop, failed: _ } => {
                 self.running = None;
                 self.streaming = false;
+                self.focus = None;
                 if stop == StopReason::Cancelled {
                     self.notice("Cancelled. `/status` shows where the run is.");
                 }
@@ -367,6 +483,12 @@ impl App {
             }
             return None;
         }
+        if self.pick.is_some() {
+            return self.on_pick_key(key);
+        }
+        if self.line.is_some() {
+            return self.on_line_key(key);
+        }
         match key.code {
             KeyCode::Char('c') if ctrl => {
                 match &self.running {
@@ -437,10 +559,167 @@ impl App {
     }
 
     pub fn on_paste(&mut self, text: &str) {
-        if self.question.is_none() {
+        if self.question.is_none() && self.pick.is_none() {
             self.input
                 .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
         }
+    }
+
+    /// The keys of a picker: a digit picks that option, the arrows move, Enter picks the marked
+    /// one, `r` reads the report, Esc leaves. The page keys still scroll the transcript.
+    fn on_pick_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let pick = self.pick.as_mut()?;
+        let last = pick.options.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Char(c @ '1'..='9') if !ctrl && !alt => {
+                let at = usize::from(c as u8 - b'1');
+                if at <= last {
+                    self.finish_pick(Some(at));
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') if !ctrl => {
+                pick.selected = pick.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') if !ctrl => {
+                pick.selected = (pick.selected + 1).min(last);
+            }
+            KeyCode::Home if !ctrl => pick.selected = 0,
+            KeyCode::End if !ctrl => pick.selected = last,
+            KeyCode::Enter => {
+                let at = pick.selected;
+                self.finish_pick(Some(at));
+            }
+            KeyCode::Esc => self.finish_pick(None),
+            KeyCode::Char('c') if ctrl => self.finish_pick(None),
+            KeyCode::Char('r') if !ctrl && !alt => self.show_report(),
+            KeyCode::PageUp => self.up = self.up.saturating_add(10),
+            KeyCode::PageDown => self.up = self.up.saturating_sub(10),
+            KeyCode::Home => self.up = usize::MAX,
+            KeyCode::End => self.up = 0,
+            _ => {}
+        }
+        None
+    }
+
+    fn finish_pick(&mut self, at: Option<usize>) {
+        if let Some(pick) = self.pick.take() {
+            let _ = pick.reply.send(at);
+            self.up = 0; // what comes next is at the bottom, even if the report was read above
+        }
+    }
+
+    /// Put the report the picker came with into the conversation, once, from its first line.
+    fn show_report(&mut self) {
+        let Some(pick) = self.pick.as_mut() else {
+            return;
+        };
+        if !pick.has_report() {
+            return;
+        }
+        pick.shown = true;
+        if let Some(report) = pick.report.clone() {
+            self.push(Block::Report(report));
+            self.focus = Some(self.items.len() - 1);
+        }
+    }
+
+    /// The keys of a one-line question: Enter sends it (not empty), Esc leaves.
+    fn on_line_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Enter if !alt => {
+                let line = self.text().split_whitespace().collect::<Vec<_>>().join(" ");
+                if !line.is_empty()
+                    && let Some(asked) = self.line.take()
+                {
+                    let _ = asked.reply.send(Some(line));
+                    self.set_input("");
+                }
+            }
+            KeyCode::Esc => self.finish_line(),
+            KeyCode::Char('c') if ctrl => self.finish_line(),
+            KeyCode::PageUp => self.up = self.up.saturating_add(10),
+            KeyCode::PageDown => self.up = self.up.saturating_sub(10),
+            KeyCode::Tab | KeyCode::Up | KeyCode::Down | KeyCode::Enter => {}
+            KeyCode::Char('j' | 'l' | 'd') if ctrl => {}
+            _ => {
+                self.input.input(key);
+            }
+        }
+        None
+    }
+
+    fn finish_line(&mut self) {
+        if let Some(asked) = self.line.take() {
+            let _ = asked.reply.send(None);
+        }
+        self.set_input("");
+    }
+
+    /// What the mouse does, in the full-screen view: the wheel scrolls (the picker's list when
+    /// it is over it), and a click picks an option or completes a command named on the hint line.
+    /// Whatever the keys do, they still do.
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        let (column, row) = (mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = mouse.kind == MouseEventKind::ScrollUp;
+                let over_picker = self
+                    .hits
+                    .picker
+                    .is_some_and(|r| r.contains((column, row).into()));
+                match self.pick.as_mut() {
+                    Some(pick) if over_picker => {
+                        let last = pick.options.len().saturating_sub(1);
+                        pick.selected = if up {
+                            pick.selected.saturating_sub(1)
+                        } else {
+                            (pick.selected + 1).min(last)
+                        };
+                    }
+                    _ if self.question.is_some() => {}
+                    _ => {
+                        self.up = if up {
+                            self.up.saturating_add(3)
+                        } else {
+                            self.up.saturating_sub(3)
+                        };
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.pick.is_some() {
+                    if let Some(at) = Hits::at(&self.hits.options, column, row) {
+                        self.finish_pick(Some(at));
+                    }
+                } else if self.question.is_none()
+                    && self.line.is_none()
+                    && !self.busy()
+                    && let Some(name) = Hits::at(&self.hits.commands, column, row)
+                {
+                    self.set_input(&format!("/{name} "));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The first transcript line of item `index` at `width` columns.
+    pub fn offset_of(&mut self, index: usize, width: u16) -> usize {
+        let theme = self.theme;
+        self.items
+            .iter_mut()
+            .take(index)
+            .map(|item| item.lines(width, theme).len() + 1)
+            .sum()
+    }
+
+    /// The item to show from its first line at the next full-screen draw, if one was asked for.
+    pub fn take_focus(&mut self) -> Option<usize> {
+        self.focus.take()
     }
 
     pub fn text(&self) -> String {
@@ -686,7 +965,7 @@ impl Item {
                 }
                 lines
             }
-            Block::Agent(md) => markdown::render(md, width, theme),
+            Block::Agent(md) | Block::Report(md) => markdown::render(md, width, theme),
             Block::Tool { title, state, .. } => {
                 let (mark, style) = match state {
                     ToolState::Running => ("…", theme.dim()),
@@ -728,6 +1007,21 @@ fn tool_state(status: ToolCallStatus) -> ToolState {
     }
 }
 
+/// An empty input that asks one line: the question is on its border.
+pub fn make_line_input(prompt: &str, theme: Theme) -> TextArea<'static> {
+    let mut input = make_input(&[String::new()], theme);
+    input.set_placeholder_text("One line, then Enter");
+    input.set_block(
+        Frame::bordered()
+            .border_style(theme.dim())
+            .title(Span::styled(
+                format!(" {prompt} "),
+                Style::new().add_modifier(Modifier::BOLD),
+            )),
+    );
+    input
+}
+
 /// An input holding `lines`, the cursor at its end.
 pub fn make_input(lines: &[String], theme: Theme) -> TextArea<'static> {
     let mut input = TextArea::new(lines.to_vec());
@@ -746,7 +1040,7 @@ pub fn make_input(lines: &[String], theme: Theme) -> TextArea<'static> {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc::channel;
+    use std::sync::mpsc::{Receiver, channel};
 
     use agent_client_protocol_schema::v1::{
         ContentChunk, Plan, PlanEntry, PlanEntryPriority, ToolCall, ToolCallId, ToolCallUpdate,
@@ -1075,6 +1369,122 @@ mod tests {
         });
         app.on_key(key(KeyCode::Char('y')));
         assert!(answer.recv().unwrap());
+    }
+
+    fn pick(app: &mut App, options: &[&str], report: Option<&str>) -> Receiver<Option<usize>> {
+        let (reply, answer) = channel();
+        app.on_msg(Msg::Pick {
+            title: "H1 · r1: what do you sign?".into(),
+            options: options.iter().map(|o| o.to_string()).collect(),
+            report: report.map(str::to_string),
+            reply,
+        });
+        answer
+    }
+
+    #[test]
+    fn a_number_picks_that_option_and_a_number_with_no_option_does_nothing() {
+        let mut app = app();
+        let answer = pick(&mut app, &["A", "B", "C"], None);
+        app.on_key(key(KeyCode::Char('7')));
+        assert!(app.pick.is_some(), "there is no 7th option");
+        app.on_key(key(KeyCode::Char('2')));
+        assert_eq!(answer.recv().unwrap(), Some(1));
+        assert!(app.pick.is_none());
+        assert_eq!(app.text(), "", "the digit is not typed into the input");
+    }
+
+    #[test]
+    fn the_arrows_move_the_mark_and_enter_picks_it() {
+        let mut app = app();
+        let answer = pick(&mut app, &["A", "B", "C"], None);
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.pick.as_ref().unwrap().selected, 2, "stops at the last");
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(answer.recv().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn escape_and_ctrl_c_leave_a_picker_without_a_choice() {
+        for leave in [key(KeyCode::Esc), ctrl('c')] {
+            let mut app = app();
+            let answer = pick(&mut app, &["A", "B"], None);
+            app.on_key(leave);
+            assert_eq!(answer.recv().unwrap(), None);
+            assert!(!app.quit, "the UI stays");
+        }
+    }
+
+    #[test]
+    fn r_puts_the_report_in_the_conversation_once() {
+        let mut app = app();
+        let _answer = pick(&mut app, &["A"], Some("# The report\n\nbody"));
+        app.on_key(key(KeyCode::Char('r')));
+        app.on_key(key(KeyCode::Char('r')));
+        let reports = app
+            .blocks()
+            .filter(|b| matches!(b, Block::Report(_)))
+            .count();
+        assert_eq!(reports, 1);
+        assert!(app.pick.as_ref().is_some_and(|p| !p.has_report()));
+        let text = lines_text(&app.transcript(60)).join("\n");
+        assert!(text.contains("The report"), "{text}");
+    }
+
+    #[test]
+    fn after_a_pick_the_conversation_follows_the_newest_again() {
+        let mut app = app();
+        let _answer = pick(&mut app, &["A", "B"], None);
+        app.up = 120; // the report was read above
+        app.on_key(key(KeyCode::Char('1')));
+        assert_eq!(app.up, 0);
+    }
+
+    #[test]
+    fn typing_in_a_picker_does_not_reach_the_input() {
+        let mut app = app();
+        let _answer = pick(&mut app, &["A"], None);
+        type_text(&mut app, "xyz");
+        assert_eq!(app.text(), "");
+    }
+
+    #[test]
+    fn a_line_question_sends_one_trimmed_line_and_not_an_empty_one() {
+        let mut app = app();
+        let (reply, answer) = channel();
+        app.on_msg(Msg::Line {
+            prompt: "Why".into(),
+            reply,
+        });
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.line.is_some(), "an empty reason is not sent");
+        type_text(&mut app, "  looks   right ");
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert!(
+            app.line.is_some(),
+            "Alt+Enter does not start a new line or send"
+        );
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(answer.recv().unwrap().as_deref(), Some("looks right"));
+        assert!(app.line.is_none());
+        assert_eq!(app.text(), "", "the input is clear for the next prompt");
+    }
+
+    #[test]
+    fn escape_leaves_a_line_question_without_an_answer() {
+        let mut app = app();
+        let (reply, answer) = channel();
+        app.on_msg(Msg::Line {
+            prompt: "Why".into(),
+            reply,
+        });
+        type_text(&mut app, "half");
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(answer.recv().unwrap(), None);
+        assert_eq!(app.text(), "");
     }
 
     #[test]

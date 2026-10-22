@@ -18,6 +18,7 @@ The URL, token file, signing key and runs directory are the same flags and `LN_A
 - **The conversation**, with each reply drawn from its Markdown: headings, lists, code and diffs, and tables. A table too wide for the terminal is shown as rows of `header: value` lines instead of cutting words.
 - **The stages of the run you are driving**, above the input: `■G ■A1 ▶A3` is grounding and the first design stage done and the third working, with the run's id, how long the turn has been going, and `Esc cancels`. When the turn has ended, the last stage is drawn `□`: it is where the run stopped, and the message above says why (waiting for your signature, paused, failed). Only the stages the run has entered are shown; the ones still to come are not known to `ln-agents`. When a run goes back to an earlier stage the list shows the stages entered in the order they were entered.
 - **The commands that match**, in place of the stages, while you type a `/`. `Tab` completes.
+- **A list to pick from**, in place of the input, when a command asks you to choose (`/approval-doc`): the options numbered, the marked one in bold, and a line of the keys that work.
 - **A status line**: the mode, the run, and the keys that matter now.
 
 ## Keys
@@ -31,6 +32,21 @@ The URL, token file, signing key and runs directory are the same flags and `LN_A
 | `Ctrl+D` | Leave, from an empty line. |
 | `Ctrl+L` | Redraw. |
 | `PageUp`, `PageDown`, `Ctrl+Home`, `Ctrl+End` | Scroll the full-screen view. |
+
+In a list (`/approval-doc`), the input gives way to the list:
+
+| Key | Does |
+|---|---|
+| `1` to `9` | Pick that option. |
+| `Up`, `Down`, `Home`, `End`, then `Enter` | Move the mark and pick the marked option. |
+| `r` | Read the report that came with the list, in the conversation, from its first line. |
+| `Esc`, `Ctrl+C` | Leave the list: nothing is written. |
+
+## The mouse
+
+The full-screen view takes the mouse together with the keys, in the same mode: the wheel scrolls the conversation (or moves the mark when it is over a list), and a click picks the option under it, or completes the command you click on the line that lists the matching commands. Everything the mouse does, a key does too.
+
+Taking the mouse means a plain drag no longer selects text: hold `Shift` while you drag (`Option` in iTerm2). The inline screen (`--no-alt-screen`) never takes the mouse, because its purpose is the terminal's own scrollback and selection; there the lists are keyboard-only.
 
 `/mode [status|design]`, `/clear`, `/help` and `/quit` are answered by the UI itself; everything else is the same code as in an editor.
 
@@ -46,7 +62,19 @@ By default the UI uses the terminal's alternate screen, as a pager does: the inp
 
 `/decide` and `/resume` (design mode) do not open a window here. The UI gives the terminal back, runs `ln-agents decide` or `ln-agents resume` in it, and comes back when it ends. That step is the one an editor opens in a window: it shows the run, node, decision, candidate, approver and reason, asks you to type the run id, and runs `ssh-keygen -Y sign` so it asks for your passphrase there. The UI reads no key while it runs, and neither it nor any model sees the run id or the passphrase. The step drops `SSH_AUTH_SOCK` and `SSH_ASKPASS_REQUIRE`, so a key loaded in an ssh-agent still asks for its passphrase. See [Human decisions](../guides/human-decisions.md).
 
-`/approval-doc` asks before it writes the unsigned document: `y` allows it once, and `n`, `Esc` or `Enter` does not.
+## Writing the unsigned document
+
+`/approval-doc` on its own (design mode) is a short dialogue, with nothing to type from memory:
+
+1. It asks the orchestrator what the run is waiting for, and lists exactly what the orchestrator offers, numbered. At the design decision that is, for example, `1. Approve Design A`, `2. Approve Design B`, `3. Approve the synthesis`, `4. Request evidence`, `5. Revise with notes`, and so on. The list comes only from the orchestrator's own answer; text a model wrote cannot add an option. Press `r` to read the whole evidence report first.
+2. You pick one: a number, the arrows and `Enter`, or a click.
+3. If the policy names more than one approver for this decision you pick the approver too; if it names one, that one is used. It is never your git user by default, and a policy that names none is an error.
+4. It asks for the reason on one line (`Enter` sends it, `Esc` leaves).
+5. It writes the unsigned document and says so. The pick and your reason are the consent, so nothing more is asked. The document approves nothing until you sign it, and `/decide` signs it here.
+
+Leaving the list or the reason writes nothing. The long form, `/approval-doc <decision>[:<candidate>] <approver> <reason>`, still works, and then asks before it writes: `y` allows it once, and `n`, `Esc` or `Enter` does not.
+
+The session must follow a run waiting at a human state (after `/advance` stops there, or `/status <run>`).
 
 ## `-p`
 

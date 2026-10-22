@@ -98,18 +98,23 @@ impl Request {
     }
 
     /// Writes the unsigned document; the human signs it and runs `run decide`.
-    /// `candidate` names the surviving design an approval at H1 chooses; nothing else has one.
+    /// `candidate` names the surviving design an approval at H1 chooses; `remediation_cause` names
+    /// why a merge is denied at R1. Nothing else has either.
     pub fn approval_document(
         run_id: &str,
         decision: &str,
         approver: &str,
         reason: &str,
         candidate: Option<&str>,
+        remediation_cause: Option<&str>,
     ) -> Self {
         let mut args =
             json!({"run_id": run_id, "decision": decision, "approver": approver, "reason": reason});
         if let Some(candidate) = candidate {
             args["candidate"] = Value::from(candidate);
+        }
+        if let Some(cause) = remediation_cause {
+            args["remediation_cause"] = Value::from(cause);
         }
         Self::new("approval_document", args)
     }

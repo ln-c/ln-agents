@@ -115,20 +115,31 @@ fn event_loop(
             Duration::from_millis(300)
         };
         if event::poll(wait)? {
-            let action = match event::read()? {
-                Event::Key(key) => app.on_key(key),
-                Event::Paste(text) => {
-                    app.on_paste(&text);
-                    None
+            // Everything that has already arrived is handled before the next draw: a wheel or a
+            // held key sends many events at once.
+            loop {
+                let action = match event::read()? {
+                    Event::Key(key) => app.on_key(key),
+                    Event::Paste(text) => {
+                        app.on_paste(&text);
+                        None
+                    }
+                    Event::Mouse(mouse) => {
+                        app.on_mouse(mouse);
+                        None
+                    }
+                    _ => None, // a resize is drawn on the next turn of the loop
+                };
+                match action {
+                    Some(Action::Run { text, mode, run }) => {
+                        start_turn(app, config, cwd, shared, msg_tx, text, mode, run);
+                    }
+                    Some(Action::Redraw) => tui.clear()?,
+                    None => {}
                 }
-                _ => None, // a resize is drawn on the next turn of the loop
-            };
-            match action {
-                Some(Action::Run { text, mode, run }) => {
-                    start_turn(app, config, cwd, shared, msg_tx, text, mode, run);
+                if app.quit || !event::poll(Duration::ZERO)? {
+                    break;
                 }
-                Some(Action::Redraw) => tui.clear()?,
-                None => {}
             }
         }
         while let Ok(msg) = msg_rx.try_recv() {

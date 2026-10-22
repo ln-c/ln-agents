@@ -107,6 +107,9 @@ pub enum Command {
         approver: String,
         reason: String,
     },
+    /// `/approval-doc` alone, in a front end that can offer the choices: the person picks what
+    /// they sign from the orchestrator's own list and says why.
+    ApprovalPick,
     /// Open the terminal where the human signs the unsigned document this session wrote and
     /// records the decision.
     Decide,
@@ -219,6 +222,12 @@ impl fmt::Display for Refusal {
 
 /// The command in a prompt's text, or a refusal explaining why there is none.
 pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
+    parse_with(text, mode, false)
+}
+
+/// Like [`parse`]; `picks` says the front end can offer a choice, so `/approval-doc` with no
+/// arguments is a command (the person picks what to sign) and not a usage error.
+pub fn parse_with(text: &str, mode: Mode, picks: bool) -> Result<Command, Refusal> {
     let text = text.trim();
     let Some(rest) = text.strip_prefix('/') else {
         return Ok(match text {
@@ -313,6 +322,7 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
             _ => return Err(Refusal("usage: /start <run> <entry_spec.json>".into())),
         },
         "approval-doc" => match args.as_slice() {
+            [] if picks => Command::ApprovalPick,
             [choice, approver, reason @ ..] if !reason.is_empty() => {
                 let (decision, candidate) = match choice.split_once(':') {
                     Some((decision, candidate)) => (decision, Some(candidate.to_string())),
@@ -356,6 +366,7 @@ pub fn parse(text: &str, mode: Mode) -> Result<Command, Refusal> {
         Command::Start { .. }
             | Command::Advance { .. }
             | Command::ApprovalDoc { .. }
+            | Command::ApprovalPick
             | Command::Decide
             | Command::Resume { .. }
             | Command::AddModel { .. }
@@ -405,6 +416,27 @@ pub const HUMAN_ONLY: &str = "\nNothing here approves for you. `/decide` opens a
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_doc_alone_is_a_command_only_where_the_person_can_pick() {
+        let usage = Err(Refusal(
+            "usage: /approval-doc <decision>[:<candidate>] <approver> <reason>".into(),
+        ));
+        assert_eq!(parse("/approval-doc", Mode::Design), usage);
+        assert_eq!(
+            parse_with("/approval-doc", Mode::Design, true),
+            Ok(Command::ApprovalPick)
+        );
+        assert!(
+            parse_with("/approval-doc", Mode::Status, true).is_err(),
+            "it changes something, so the status mode refuses it"
+        );
+        assert_eq!(
+            parse_with("/approval-doc d", Mode::Design, true),
+            usage,
+            "a half-typed command is still a usage error"
+        );
+    }
 
     #[test]
     fn commands_parse_with_their_arguments() {

@@ -5,7 +5,9 @@ use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::cursor::Show;
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -93,7 +95,10 @@ fn setup(screen: Screen) -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     let entered = (|| {
         execute!(out, EnableBracketedPaste)?;
         if screen == Screen::Alternate {
-            execute!(out, EnterAlternateScreen)?;
+            // The mouse is the full screen's: wheel and clicks work with the keys. Plain drag
+            // select is then the terminal's modifier-drag (usually Shift). The inline screen
+            // exists for the terminal's own selection and scrollback, so it never takes the mouse.
+            execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
         }
         let viewport = match screen {
             Screen::Alternate => Viewport::Fullscreen,
@@ -113,7 +118,7 @@ fn restore(screen: Screen) {
     let mut out = io::stdout();
     let _ = execute!(out, DisableBracketedPaste, Show);
     if screen == Screen::Alternate {
-        let _ = execute!(out, LeaveAlternateScreen);
+        let _ = execute!(out, DisableMouseCapture, LeaveAlternateScreen);
     }
     let _ = disable_raw_mode();
     let _ = out.flush();

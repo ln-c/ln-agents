@@ -41,6 +41,92 @@ pub trait Host {
     fn fail(&self, text: String) {
         self.update(render::message(text));
     }
+    /// Whether this front end can show a choice ([`Host::choose`]) and ask for a line
+    /// ([`Host::ask_line`]). Where it cannot, `/approval-doc` needs all of its arguments.
+    fn picks(&self) -> bool {
+        false
+    }
+    /// Let the person pick one of `options` (the index, or `None` if they leave it). `report` is
+    /// the Markdown they can read before choosing. Only called when [`Host::picks`] is true.
+    fn choose(&self, title: &str, options: &[String], report: Option<&str>) -> Option<usize> {
+        let _ = (title, options, report);
+        None
+    }
+    /// Ask for one line of text, not empty (`None` if the person leaves it). Only called when
+    /// [`Host::picks`] is true.
+    fn ask_line(&self, prompt: &str) -> Option<String> {
+        let _ = prompt;
+        None
+    }
+}
+
+/// What a human can sign at the run's human state, as the orchestrator's `evidence` reply lists
+/// it. Only that list is offered: a model's text cannot add a choice.
+struct Offer {
+    node: String,
+    choices: Vec<Choice>,
+    approvers: Vec<String>,
+    report: Option<String>,
+}
+
+struct Choice {
+    decision: String,
+    label: String,
+    candidate: Option<String>,
+    remediation_cause: Option<String>,
+}
+
+/// What `/approval-doc` asks the orchestrator to write.
+struct Signing<'a> {
+    decision: &'a str,
+    candidate: Option<&'a str>,
+    remediation_cause: Option<&'a str>,
+    approver: &'a str,
+    reason: &'a str,
+}
+
+impl Offer {
+    fn from_view(view: &Value) -> Result<Offer, String> {
+        let text =
+            |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+        let Some(listed) = view.get("choices").and_then(Value::as_array) else {
+            return Err("This orchestrator does not list the choices. Type \
+                 `/approval-doc <decision>[:<candidate>] <approver> <reason>`; `/evidence` shows \
+                 what is on offer."
+                .to_string());
+        };
+        let choices: Vec<Choice> = listed
+            .iter()
+            .filter_map(|c| {
+                let decision = text(c, "decision")?;
+                Some(Choice {
+                    label: text(c, "label").unwrap_or_else(|| decision.clone()),
+                    candidate: text(c, "candidate"),
+                    remediation_cause: text(c, "remediation_cause"),
+                    decision,
+                })
+            })
+            .collect();
+        if choices.is_empty() {
+            return Err("The orchestrator offers nothing to sign for this run.".to_string());
+        }
+        let approvers = view
+            .get("approvers")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Offer {
+            node: text(view, "node").unwrap_or_else(|| "?".to_string()),
+            choices,
+            approvers,
+            report: text(view, "markdown"),
+        })
+    }
 }
 
 pub(crate) enum Signal {
@@ -153,7 +239,7 @@ impl<H: Host> Prompt<H> {
     /// command could not be carried out (what went wrong was said as a message).
     pub fn run_outcome(&self, text: &str, mode: Mode) -> Outcome {
         let mut failed = false;
-        let ended = match commands::parse(text, mode) {
+        let ended = match commands::parse_with(text, mode, self.host.picks()) {
             Err(refusal) => {
                 failed = true;
                 self.host.fail(format!("{refusal}\n"));
@@ -312,22 +398,18 @@ impl<H: Host> Prompt<H> {
                     self.say("Not written.\n");
                     return Ok(Ended::Done);
                 }
-                let request = Request::approval_document(
+                self.write_document(
                     &run,
-                    &decision,
-                    &approver,
-                    &reason,
-                    candidate.as_deref(),
-                );
-                let reply = skill_reply(&client()?, &request).map_err(a2a)?;
-                self.say(render::approval_text(&reply));
-                match human::Pending::from_reply(&run, &reply) {
-                    Ok(pending) => self.remember(pending),
-                    Err(error) => {
-                        self.say(format!("\n`/decide` cannot use this document: {error}.\n"))
-                    }
-                }
+                    &Signing {
+                        decision: &decision,
+                        candidate: candidate.as_deref(),
+                        remediation_cause: None,
+                        approver: &approver,
+                        reason: &reason,
+                    },
+                )?;
             }
+            Command::ApprovalPick => return self.pick_and_write(),
             Command::Decide => {
                 let run = self.the_run(None)?;
                 let pending = self.pending_for(&run)?;
@@ -364,6 +446,77 @@ impl<H: Host> Prompt<H> {
         Ok(Ended::Done)
     }
 
+    /// `/approval-doc` alone: the person picks what to sign from the orchestrator's own list
+    /// and says why. The pick and the typed reason are the consent, so nothing more is asked.
+    fn pick_and_write(&self) -> Result<Ended, String> {
+        let nothing = || {
+            self.say("Nothing was written.\n");
+            Ok(Ended::Done)
+        };
+        let run = self.the_run(None)?;
+        let view = skill_reply(&self.host.client()?, &Request::evidence(&run))
+            .map_err(|e| format!("orchestrator: {e}"))?;
+        let offer = Offer::from_view(&view)?;
+        let labels: Vec<String> = offer.choices.iter().map(|c| c.label.clone()).collect();
+        let title = format!("{} · {run}: what do you sign?", offer.node);
+        let Some(choice) = self
+            .host
+            .choose(&title, &labels, offer.report.as_deref())
+            .and_then(|at| offer.choices.get(at))
+        else {
+            return nothing();
+        };
+        let approver = match offer.approvers.as_slice() {
+            [] => return Err(format!("The policy names no approver for {}.", offer.node)),
+            [only] => only.clone(),
+            several => {
+                let title = format!("Who signs {}?", offer.node);
+                match self.host.choose(&title, several, None) {
+                    Some(at) if at < several.len() => several[at].clone(),
+                    _ => return nothing(),
+                }
+            }
+        };
+        let prompt = format!("Why: {}", choice.label);
+        let reason = match self.host.ask_line(&prompt) {
+            Some(line) if !line.trim().is_empty() => line.trim().to_string(),
+            _ => return nothing(),
+        };
+        self.say(format!("**{}**: {reason}\n\n", choice.label));
+        self.write_document(
+            &run,
+            &Signing {
+                decision: &choice.decision,
+                candidate: choice.candidate.as_deref(),
+                remediation_cause: choice.remediation_cause.as_deref(),
+                approver: &approver,
+                reason: &reason,
+            },
+        )?;
+        self.say("`/decide` signs it here.\n");
+        Ok(Ended::Done)
+    }
+
+    /// Ask the orchestrator for the unsigned document and keep it for `/decide`.
+    fn write_document(&self, run: &str, signing: &Signing) -> Result<(), String> {
+        let request = Request::approval_document(
+            run,
+            signing.decision,
+            signing.approver,
+            signing.reason,
+            signing.candidate,
+            signing.remediation_cause,
+        );
+        let reply = skill_reply(&self.host.client()?, &request)
+            .map_err(|e| format!("orchestrator: {e}"))?;
+        self.say(render::approval_text(&reply));
+        match human::Pending::from_reply(run, &reply) {
+            Ok(pending) => self.remember(pending),
+            Err(error) => self.say(format!("\n`/decide` cannot use this document: {error}.\n")),
+        }
+        Ok(())
+    }
+
     fn remember(&self, pending: human::Pending) {
         self.host.remember(pending);
     }
@@ -373,10 +526,12 @@ impl<H: Host> Prompt<H> {
             .pending()
             .filter(|pending| pending.run == run)
             .ok_or_else(|| {
-                format!(
-                    "No unsigned document for run `{run}` in this session: write one with \
-                     `/approval-doc <decision> <approver> <reason>` first."
-                )
+                let how = if self.host.picks() {
+                    "`/approval-doc`"
+                } else {
+                    "`/approval-doc <decision> <approver> <reason>`"
+                };
+                format!("No unsigned document for run `{run}` in this session: write one with {how} first.")
             })
     }
 
