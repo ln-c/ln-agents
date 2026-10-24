@@ -71,9 +71,39 @@ def _add_serve_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
         type=Path,
         help="bearer token (created 0600 if missing); default: <runs-dir>/.a2a/token",
     )
+    mcp = kinds.add_parser(
+        "mcp",
+        help="local project MCP server on stdio, with the tools of one profile "
+        "(needs the `mcp` extra)",
+    )
+    mcp.add_argument("--profile", required=True, help="a profile of policy/tools.yaml")
+    mcp.add_argument("--root", type=Path, default=REPO_ROOT, help="the project to serve")
+    mcp.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
+
+
+def _serve_mcp(args: argparse.Namespace) -> int:
+    # Imported here so the core install works without the optional `mcp` extra.
+    try:
+        from agentic_pipeline.mcp_policy import ToolsPolicyError
+        from agentic_pipeline.mcp_server import serve
+    except ImportError as exc:
+        print(
+            f"ERROR: the MCP server needs the `mcp` extra ({exc.name} missing): "
+            "uv sync --extra mcp",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        serve(args.root, args.runs_dir, args.profile)
+    except (ToolsPolicyError, OSError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _serve(args: argparse.Namespace) -> int:
+    if args.serve_command == "mcp":
+        return _serve_mcp(args)
     # Imported here so the core install works without the optional `a2a` extra.
     try:
         from agentic_pipeline.a2a_server import ServeError, serve

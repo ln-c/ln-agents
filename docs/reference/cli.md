@@ -34,3 +34,9 @@ A run that dispatches a model stage and fails (quota, auth, an adapter error) pa
 ```bash
 uv run python -m agentic_pipeline serve a2a [--runs-dir D] [--host 127.0.0.1] [--port 8420] [--token-file F]
 ```
+
+`serve mcp` is the local project MCP server: stdio, one process per agent session, with the read-only tools of one profile of `policy/tools.yaml`. It needs the `mcp` extra (`uv sync --extra mcp`). See [MCP server](mcp.md).
+
+```bash
+uv run python -m agentic_pipeline serve mcp --profile P [--root PROJECT] [--runs-dir D]
+```
