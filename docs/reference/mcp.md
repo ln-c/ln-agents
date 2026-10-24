@@ -13,7 +13,7 @@ uv run python -m agentic_pipeline serve mcp --run R --operation STAGE.OP [--back
 
 ## Two kinds of session
 
-- **Live** (`--profile P`): the project's working tree, for a person, an editor or an agent that is not part of a run. Its files have the class of the source tree (`artifact_defaults.pinned_source_tree`).
+- **Live** (`--profile P`): the project's working tree, for a person, an editor or an agent that is not part of a run. Its files have the class of the source tree (`artifact_defaults.pinned_source_tree`), unless a [path rule](#path-rules) gives one a class of its own.
 - **Bound to an operation of a run** (`--run R --operation STAGE.OP`): for a model working inside a run, such as `E1.implementation_patch`. The session reads the run's own **frozen** policy (each file is checked against the digest the run recorded) and takes from the run's registry the operation's `tool_profile` and its `tool_reads`: the sealed artifacts of the run's pinned snapshot it may fetch on request. They are re-hashed when the session starts, and a change stops it. The live checkout is never read, so a file edited after grounding is not seen. The run tools answer only for the bound run. `--backend MODEL` makes the session refuse to start if that model runs outside the host while the profile's destination is inside it.
 
 In a bound session each sealed artifact appears where it sits in the repository: the pinned tree at the root, `applicable_contracts` under `contracts/`, `protected_tests` under `tests/`, and any other artifact under a directory named by its id. Where two overlap, the narrower one serves the path and gives it its own class, so a cloud operation that lists only `applicable_contracts` sees `contracts/` and nothing else. A registry has to name the profile and the artifacts (`tool_profile`, `tool_reads`, see the schema) before an operation can be bound; none does yet.
@@ -39,6 +39,26 @@ An operation in `policy/model_registry.yaml` may carry `tool_profile` (a profile
 
 At dispatch, an operation that is promised tools is refused, before any call, while its adapter cannot provide them. An adapter that starts its model with an MCP configuration declares `provides_tools = True`; none does yet, so no operation can opt in until one is changed.
 
+## Path rules
+
+`artifact_defaults` in `policy/data_classes.yaml` gives a whole artifact one class, and the source tree is `confidential`, so by itself a destination outside the host is sent none of the repository. `path_rules` (human-owned, optional) refine that for the files of the repository, so a project can let a cloud model read its documentation and keep its code on the host:
+
+```yaml
+path_rules:
+  - {path: "docs/private/**", class: confidential}   # listed first: it wins over the next rule
+  - {path: "docs/**",         class: internal}
+  - {path: "README.md",       class: internal}
+```
+
+- **The first rule that covers a file gives it its class.** A file no rule covers keeps its artifact's class. A rule can lower a class (`docs/**`) or raise one (`docs/private/**`).
+- **A `path` is relative to the project root, with `/`.** Each segment is a pattern: `*`, `?` and `[...]` match inside one segment, and case is significant. A segment that is exactly `**` matches any number of segments, none included, so `docs/**` covers `docs` and everything below it, and `**/*.md` every Markdown file. `validate` rejects an absolute path, `..`, a backslash, an empty segment (`docs/`), a `**` that is only part of a segment, a class the file does not define, an entry with other keys, and a path that repeats an earlier rule.
+- **They apply to the files of the repository:** the live checkout, and in a bound session the pinned tree, `applicable_contracts` and `protected_tests`, by their place in the repository (the contracts are `contracts/...`). Any other sealed artifact, which sits under its id, keeps its class whole. A caller inside the host is not held by the rules.
+- **Reading, listing and searching all follow them.** A file is read only if its class is `cloud_allowed` for a destination outside the host, and the class is judged before the path is looked up, so a refusal does not say whether the path exists. A file reached through a symlink must be allowed both under the name it was asked for and under the file the link leads to. A directory is listed only if it holds a file the caller may be sent, however deep; a search opens only such files and does not count the others. The repository tools are offered once some rule gives the caller something to read.
+- **Case is read both ways.** A file system that ignores case could serve `notes/secret.md` as `notes/SECRET.md`, so a path is judged by the first rule that covers it as written and by the first that covers it ignoring case, and both must allow it.
+- **What a rule cannot open:** the confinement below (secrets, run data, paths outside the project) is checked first, and `run_evidence`, whose saved reports can carry code, still needs the class of the whole source tree to be allowed.
+
+A rule is the policy's own statement that those files may leave the host, so it is a reviewed, human-owned change. `validate` counts a rule as something a cloud destination may receive from a pinned artifact only if the rule can reach where that artifact sits in the repository (the tree at the root, the contracts under `contracts/`, the tests under `tests/`). This repository has no rules yet.
+
 ## Tools
 
 All tools are read-only.
@@ -55,12 +75,10 @@ All tools are read-only.
 
 ## What the server refuses
 
-- **Files to a destination that may not have them.** Each mount has one class. A destination with `cloud: true` is returned a file only if its mount's class is `cloud_allowed`; listings and searches leave the others out. In a live session the class is `artifact_defaults.pinned_source_tree` (by default `confidential`), so a cloud profile is offered no repository tool, and the audit log lists what was withheld. `run_evidence` returns run documents that can carry code, so it needs the same class to be allowed.
+- **Files to a destination that may not have them.** A destination with `cloud: true` is returned a file only if its class is `cloud_allowed`; listings and searches leave the others out. A file has its mount's class, or the one a [path rule](#path-rules) gives it. In a live session the mount's class is `artifact_defaults.pinned_source_tree` (by default `confidential`), so with no rule a cloud profile is offered no repository tool, and the audit log lists what was withheld. `run_evidence` returns run documents that can carry code, so it needs the same class to be allowed.
 - **Paths outside the project.** A path is relative to the root, with forward slashes: no absolute path, no `..`, no backslash, no NUL. A symlink is followed and the result must still be inside the root.
 - **Secrets and run data.** Nothing under `.git`, `.runs`, `.ssh`, `.gnupg`, `.aws`, `.venv`, `node_modules`, `__pycache__` or `target`, and nothing named like a credential file (`.env*`, `id_rsa`, `*.pem`, `*.key`, `*secrets*.yaml`, and the like). A file or report whose text matches a secret pattern (`build_gates.SECRET_PATTERNS`) is withheld, and a search drops such lines and counts them.
 - **Binary files, oversized results and calls past `max_calls`.**
-
-These are defaults built from policy that already exists. Path-level data classes, and which agent gets which profile, are not decided yet: they are planned for every agent together.
 
 ## Audit
 
@@ -70,4 +88,4 @@ In a bound session every record also carries the run, the operation and the arti
 
 ## Not built yet
 
-Streamable HTTP and OAuth, run control, path-level classes within an artifact, the rules that check a registry's `tool_profile` and `tool_reads` and make the dispatcher refuse an operation whose adapter cannot provide tools, wiring a tool set into each agent's runtime (the Claude and agy CLIs, and the local-model harness), and the interview as an MCP prompt or skill.
+Streamable HTTP and OAuth, run control, the path-rule values for this repository and the registry bindings that give operations their profiles, wiring a tool set into each agent's runtime (the Claude and agy CLIs, and the local-model harness), grounding recording a class per file in the manifest, and the interview as an MCP prompt or skill.

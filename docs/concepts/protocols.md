@@ -10,4 +10,4 @@ ln-agents speaks three protocols. Each has one job, and the orchestrator in `src
 
 MCP is where the policy shows most. ln-agents is the MCP **host**: for each agent session it picks the agent's tool set from `policy/tools.yaml` and starts the local project server with only those tools. The server enforces the set on every call, so a model's own tool list or request grants nothing: a tool that is not in the profile does not exist for the caller, repository content is held back from a destination the data classes do not allow, and every call is logged.
 
-What exists today: the server and its policy. Which agent gets which profile, and path-level rules for files and data, are planned for every agent together; today none of the agents' runtimes is given a tool set.
+What exists today: the server and its policy, the registry fields that name an operation's profile and the artifacts it may fetch (`tool_profile`, `tool_reads`, checked by `validate`), and path rules that give the files of the repository their own classes. No operation uses them yet, and none of the agents' runtimes is given a tool set.

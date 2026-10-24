@@ -150,6 +150,52 @@ def test_a_project_that_lets_its_source_tree_reach_the_cloud_gets_repository_too
     assert not result.is_error and "zxq_marker" in text(result)
 
 
+def test_a_live_cloud_session_is_sent_only_the_files_the_path_rules_clear(
+    project: Path, runs: Path
+) -> None:
+    classes = dict(mp.load_data_classes(project))
+    classes["path_rules"] = [{"path": "schemas/**", "class": "internal"}]
+    doc = (
+        (project / "policy" / "tools.yaml")
+        .read_text()
+        .replace(
+            "tools: [run_status, pipeline_guideline, models]",
+            "tools: [repo_list, repo_read, repo_search, run_evidence, run_status]",
+        )
+    )
+    policy = mp.parse_tools_policy(doc.encode(), classes)
+    server, session = session_of(
+        project, runs, "cloud_pipeline_info", policy=policy, data_classes=classes
+    )
+    assert "repo_read" in session.offered and "run_evidence" not in session.offered
+    schema, source, listing, found = run(
+        call_all(
+            server,
+            [
+                ("repo_read", {"path": "schemas/proposal.schema.json", "length": 20}),
+                ("repo_read", {"path": "src/app.py"}),
+                ("repo_list", {"path": "."}),
+                ("repo_search", {"query": "zxq_marker"}),
+            ],
+        )
+    )
+    assert not schema.is_error
+    assert source.is_error and "denied (class_not_allowed)" in text(source)
+    assert [e["name"] for e in json.loads(text(listing))["entries"]] == ["schemas"]
+    assert json.loads(text(found))["matches"] == []
+    refused = [r["reason_code"] for r in audit(runs) if r.get("allowed") is False]
+    assert refused == ["class_not_allowed"]
+
+
+def test_a_live_session_is_refused_a_policy_whose_rules_cannot_be_read(
+    project: Path, runs: Path
+) -> None:
+    classes = dict(mp.load_data_classes(project))
+    classes["path_rules"] = [{"path": "docs/", "class": "internal"}]
+    with pytest.raises(mp.ToolsPolicyError, match="an empty segment"):
+        mcp_server.build_server(project, runs, "local_project", data_classes=classes)
+
+
 def test_a_profile_that_does_not_exist_is_refused_with_the_ones_that_do(
     project: Path, runs: Path
 ) -> None:
@@ -400,8 +446,17 @@ GROUNDED_RUN = "demo"
 
 @pytest.fixture
 def bound(tmp_path: Path) -> tuple[Path, Path]:
+    return build_bound(tmp_path)
+
+
+def build_bound(
+    tmp_path: Path,
+    path_rules: list[dict[str, str]] | None = None,
+    cloud_reads: tuple[str, ...] = ("applicable_contracts",),
+) -> tuple[Path, Path]:
     """A project whose registry gives two operations MCP tools, with a run that has finished
-    grounding (so the pinned snapshot is sealed). Returns (project, runs directory)."""
+    grounding (so the pinned snapshot is sealed). `path_rules` go into its data classes and
+    `cloud_reads` are the `tool_reads` of the cloud operation. Returns (project, runs directory)."""
     import yaml
     from test_grounding import Rig as GroundingRig
 
@@ -419,8 +474,13 @@ def bound(tmp_path: Path) -> tuple[Path, Path]:
         tool_reads=["pinned_source_tree", "applicable_contracts", "protected_tests"],
     )
     a1 = registry["stage_requirements"]["A1"]["operations"][0]
-    a1.update(tool_profile="cloud_contracts", tool_reads=["applicable_contracts"])
+    a1.update(tool_profile="cloud_contracts", tool_reads=list(cloud_reads))
     registry_file.write_text(yaml.safe_dump(registry, sort_keys=False))
+    if path_rules is not None:
+        classes_file = work / "policy" / "data_classes.yaml"
+        classes_doc = yaml.safe_load(classes_file.read_text())
+        classes_doc["path_rules"] = path_rules
+        classes_file.write_text(yaml.safe_dump(classes_doc, sort_keys=False))
     tools_file = work / "policy" / "tools.yaml"
     tools = yaml.safe_load(tools_file.read_text())
     tools["profiles"]["cloud_contracts"] = {
@@ -530,6 +590,51 @@ def test_a_cloud_operation_reads_only_the_artifacts_whose_class_its_destination_
     assert source.is_error and "denied (not_found)" in text(source)  # not even mounted
     assert [e["name"] for e in json.loads(text(listing))["entries"]] == ["contracts"]
     assert [m["path"] for m in json.loads(text(found))["matches"]] == ["contracts/api.md"]
+
+
+CLEARED = [
+    {"path": "schemas/**", "class": "internal"},
+    {"path": "agents/**", "class": "internal"},
+]
+
+
+def test_a_cloud_operation_that_may_fetch_the_tree_is_sent_only_what_the_path_rules_clear(
+    tmp_path: Path,
+) -> None:
+    bound = build_bound(tmp_path, CLEARED, ("pinned_source_tree", "applicable_contracts"))
+    # The project later drops the rules: the run keeps the ones it was frozen with.
+    classes_file = bound[0] / "policy" / "data_classes.yaml"
+    classes_file.write_text(classes_file.read_text().replace("path_rules", "gone_rules"))
+    server, session = bound_server(bound, "A1.proposal_a")
+    assert "repo_read" in session.offered and "run_evidence" not in session.offered
+    contract, schema, source, tests, listing, found = run(
+        call_all(
+            server,
+            [
+                ("repo_read", {"path": "contracts/api.md"}),
+                ("repo_read", {"path": "schemas/proposal.schema.json", "length": 40}),
+                ("repo_read", {"path": "src/app.py"}),
+                ("repo_read", {"path": "tests/test_x.py"}),
+                ("repo_list", {"path": "."}),
+                ("repo_search", {"query": "zxq_marker"}),
+            ],
+        )
+    )
+    assert "API contract" in text(contract) and not schema.is_error
+    for refused in (source, tests):
+        assert refused.is_error and "denied (class_not_allowed)" in text(refused)
+    assert [e["name"] for e in json.loads(text(listing))["entries"]] == [
+        "agents",
+        "contracts",
+        "schemas",
+    ]
+    assert [m["path"] for m in json.loads(text(found))["matches"]] == ["contracts/api.md"]
+
+
+def test_a_run_whose_policy_has_a_rule_the_code_cannot_read_is_refused(tmp_path: Path) -> None:
+    bound = build_bound(tmp_path, [{"path": "../up/**", "class": "internal"}])
+    with pytest.raises(mp.ToolsPolicyError, match=r"path_rules\[0\]"):
+        bound_server(bound, "E1.implementation_patch")
 
 
 def test_the_run_tools_answer_only_for_the_bound_run(bound: tuple[Path, Path]) -> None:

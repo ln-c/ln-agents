@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from agentic_pipeline import advisories, approvals, ci
+from agentic_pipeline.path_rules import check_path_rules
 
 MUST_BLOCK_CLOUD = ("unknown", "confidential", "restricted")
 # Code artifacts must stay off cloud backends; weakening one is a policy-review event.
@@ -112,7 +113,7 @@ def check_data_classes(doc: Mapping[str, Any]) -> list[str]:
         for kind, spec in destinations.items():
             if not isinstance((spec or {}).get("cloud"), bool):
                 errors.append(f"data_classes: destinations.{kind}.cloud must be true or false")
-    return errors
+    return errors + check_path_rules(doc)
 
 
 def check_artifact_defaults(doc: Mapping[str, Any], registry: Mapping[str, Any]) -> list[str]:

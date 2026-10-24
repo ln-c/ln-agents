@@ -194,6 +194,45 @@ def test_a_cloud_destination_with_a_derived_artifact_is_judged_when_the_run_has_
     assert check(registry) == []
 
 
+def with_path_rules(*rules: tuple[str, str], **defaults: str) -> dict[str, Any]:
+    doc = copy.deepcopy(DATA_CLASSES)
+    doc["path_rules"] = [{"path": path, "class": cls} for path, cls in rules]
+    doc["artifact_defaults"].update(defaults)
+    return doc
+
+
+def test_a_path_rule_can_make_a_pinned_artifact_receivable_by_a_cloud_destination() -> None:
+    message = "which a cloud_service destination may not receive"
+
+    def reading(artifact: str) -> dict[str, Any]:
+        return registry_with(
+            A1__proposal_a={"tool_profile": "cloud_contracts", "tool_reads": [artifact]}
+        )
+
+    def errors(artifact: str, classes: dict[str, Any]) -> bool:
+        return any(
+            message in e for e in mp.check_operation_tools(reading(artifact), TOOLS, classes)
+        )
+
+    assert errors("pinned_source_tree", DATA_CLASSES)
+    assert not errors("pinned_source_tree", with_path_rules(("docs/**", "internal")))
+    # a rule that gives the files a class the destination may not receive changes nothing
+    assert errors("pinned_source_tree", with_path_rules(("docs/**", "confidential")))
+    # a rule counts for the artifact it can reach, by where the artifact sits in the repository
+    assert errors("protected_tests", with_path_rules(("docs/**", "internal")))
+    assert not errors("protected_tests", with_path_rules(("tests/fixtures/**", "internal")))
+    shared = with_path_rules(("docs/**", "internal"), applicable_contracts="confidential")
+    assert errors("applicable_contracts", shared)
+    shared["path_rules"].append({"path": "contracts/public/**", "class": "internal"})
+    assert not errors("applicable_contracts", shared)
+    # a rule is about the repository, not about an artifact kept under its own id
+    classes = with_path_rules(("**", "internal"), requirements="confidential")
+    assert errors("requirements", classes)
+    # rules the code cannot read count for nothing here (validate reports them)
+    broken = with_path_rules(("docs/", "internal"))
+    assert errors("pinned_source_tree", broken)
+
+
 def test_an_agent_may_name_a_profile_and_must_fit_its_models() -> None:
     registry = copy.deepcopy(REGISTRY)
     registry["agents"]["grounding"]["tool_profile"] = "cloud_pipeline_info"
