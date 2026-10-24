@@ -121,13 +121,30 @@ def test_content_follows_the_class_the_project_gives_its_source_tree() -> None:
     assert not mp.content_allowed(classes, "cloud_service")
 
 
+def live_view(destination: str, classes: dict[str, Any] = DATA_CLASSES) -> mp.View:
+    cloud = mp.destination_is_cloud(classes, destination)
+    return mp.View.live(Path("."), mp.tree_class(classes), cloud, classes["classes"])
+
+
 def test_a_profile_gets_only_the_tools_its_destination_may_use() -> None:
-    cloud = mp.Profile(
-        "p", "", "cloud_service", tuple(sorted(mp.IMPLEMENTED_TOOLS)), mp.Limits(1024, 1)
+    every = tuple(sorted(mp.IMPLEMENTED_TOOLS))
+    cloud = mp.Profile("p", "", "cloud_service", every, mp.Limits(1024, 1))
+    local = mp.Profile("p", "", "local", every, mp.Limits(1024, 1))
+    assert set(mp.offered_tools(local, DATA_CLASSES, live_view("local"))) == mp.IMPLEMENTED_TOOLS
+    offered = mp.offered_tools(cloud, DATA_CLASSES, live_view("cloud_service"))
+    assert set(offered) == mp.IMPLEMENTED_TOOLS - mp.CONTENT_TOOLS
+    assert set(mp.withheld_tools(cloud, offered)) == mp.CONTENT_TOOLS
+
+
+def test_repository_tools_need_a_file_the_destination_may_receive() -> None:
+    cloud = mp.Profile("p", "", "cloud_service", ("repo_read", "models"), mp.Limits(1024, 1))
+    classes = copy.deepcopy(DATA_CLASSES)
+    classes["artifact_defaults"]["pinned_source_tree"] = "internal"
+    assert mp.offered_tools(cloud, classes, live_view("cloud_service", classes)) == (
+        "repo_read",
+        "models",
     )
-    local = mp.Profile("p", "", "local", tuple(sorted(mp.IMPLEMENTED_TOOLS)), mp.Limits(1024, 1))
-    assert set(mp.offered_tools(local, DATA_CLASSES)) == mp.IMPLEMENTED_TOOLS
-    assert set(mp.offered_tools(cloud, DATA_CLASSES)) == mp.IMPLEMENTED_TOOLS - mp.CONTENT_TOOLS
+    assert mp.offered_tools(cloud, DATA_CLASSES) == ("models",)  # no view, no repository tool
 
 
 def mutated(change: Any) -> dict[str, Any]:
@@ -141,11 +158,6 @@ def mutated(change: Any) -> dict[str, Any]:
     [
         (lambda d: d["profiles"]["local_project"]["tools"].append("approve"), "tools"),
         (lambda d: d["profiles"]["local_project"].update(destination="mars"), "destination"),
-        (lambda d: d["profiles"]["cloud_pipeline_info"]["tools"].append("repo_read"), "repo_read"),
-        (
-            lambda d: d["profiles"]["cloud_pipeline_info"]["tools"].append("run_evidence"),
-            "run_evidence",
-        ),
         (lambda d: d.update(version=2), "tools"),
         (lambda d: d["profiles"].update({"Bad Name": d["profiles"]["local_project"]}), "tools"),
     ],
@@ -155,11 +167,9 @@ def test_a_policy_that_cannot_be_used_is_refused_with_the_reason(change: Any, me
     assert errors and any(message in e for e in errors), errors
 
 
-def test_a_cloud_profile_listing_a_content_tool_is_fine_once_the_class_allows_it() -> None:
+def test_a_cloud_profile_may_list_repository_tools_because_files_are_judged_one_by_one() -> None:
     doc = mutated(lambda d: d["profiles"]["cloud_pipeline_info"]["tools"].append("repo_read"))
-    classes = copy.deepcopy(DATA_CLASSES)
-    classes["artifact_defaults"]["pinned_source_tree"] = "internal"
-    assert mp.check_tools_policy(doc, classes) == []
+    assert mp.check_tools_policy(doc, DATA_CLASSES) == []
 
 
 def test_parse_reports_unreadable_yaml_and_errors_as_one_exception() -> None:
@@ -183,9 +193,9 @@ def test_the_repository_validates_with_its_tools_policy_and_a_bad_one_is_reporte
     bad = tmp_path / "bad"
     for name in ("pipeline", "policy", "schemas", "agents"):
         shutil.copytree(ROOT / name, bad / name)
-    doc = mutated(lambda d: d["profiles"]["cloud_pipeline_info"]["tools"].append("repo_read"))
+    doc = mutated(lambda d: d["profiles"]["local_project"].update(destination="mars"))
     (bad / "policy" / "tools.yaml").write_text(yaml.safe_dump(doc))
-    assert any("repo_read" in e for e in validate_repo(bad))
+    assert any("destination" in e for e in validate_repo(bad))
     (bad / "policy" / "tools.yaml").unlink()
     assert any("policy/tools.yaml" in e for e in validate_repo(bad))
 
@@ -439,3 +449,142 @@ def test_the_unreadable_names_are_not_a_path_to_a_real_file_in_this_repository()
     # The defaults must not hide the project's own sources.
     for rel in ("src/agentic_pipeline/mcp_policy.py", "policy/tools.yaml", "README.md"):
         assert os.fspath(mp.resolve_readable(ROOT, rel)).endswith(Path(rel).name)
+
+
+# ── Views: sealed artifacts mounted where they sit in the repository ─────────
+
+
+@pytest.fixture
+def mounts(tmp_path: Path) -> dict[str, Path]:
+    """A pinned tree that also holds contracts, and the contracts artifact on its own."""
+    files = {
+        "tree/README.md": "tree readme needle\n",
+        "tree/src/a.py": "x = 'tree needle'\n",
+        "tree/contracts/c.md": "the tree's copy of the contract\n",
+        "contracts/c.md": "the contracts artifact needle\n",
+        "contracts/sub/d.md": "deeper needle\n",
+        "synthesis/design.md": "the design needle\n",
+    }
+    for rel, text in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, newline="\n")
+    return {name: tmp_path / name for name in ("tree", "contracts", "synthesis")}
+
+
+def sealed(path: Path, data_class: str) -> Any:
+    from agentic_pipeline.manifest import SealedInput
+
+    return SealedInput(path, data_class)
+
+
+def snapshot(mounts: dict[str, Path], destination: str, *artifacts: str) -> mp.View:
+    found = {
+        "pinned_source_tree": sealed(mounts["tree"], "confidential"),
+        "applicable_contracts": sealed(mounts["contracts"], "internal"),
+        "synthesis_sealed": sealed(mounts["synthesis"], "internal"),
+    }
+    chosen = {a: found[a] for a in artifacts}
+    return mp.snapshot_view(
+        chosen, mp.destination_is_cloud(DATA_CLASSES, destination), DATA_CLASSES["classes"]
+    )
+
+
+def test_each_sealed_artifact_appears_where_it_sits_in_the_repository(
+    mounts: dict[str, Path],
+) -> None:
+    view = snapshot(
+        mounts, "local", "pinned_source_tree", "applicable_contracts", "synthesis_sealed"
+    )
+    where = {m.label: m.prefix for m in view.mounts}
+    assert where == {
+        "pinned_source_tree": (),
+        "applicable_contracts": ("contracts",),
+        "synthesis_sealed": ("synthesis_sealed",),
+    }
+
+
+def test_the_narrower_mount_serves_a_path_and_refines_its_class(mounts: dict[str, Path]) -> None:
+    view = snapshot(mounts, "local", "pinned_source_tree", "applicable_contracts")
+    broad, narrow = view.mounts
+    assert view.locate(("src", "a.py"))[0] is broad
+    assert view.locate(("contracts", "c.md")) == (narrow, ("c.md",))
+    assert view.hidden_under(broad) == {("contracts",)} and view.hidden_under(narrow) == set()
+    assert "contracts artifact" in mp.view_read(view, "contracts/c.md", 0, None, 1000)["text"]
+    assert mp.view_read(view, "contracts/c.md", 0, None, 1000)["path"] == "contracts/c.md"
+    assert "tree needle" in mp.view_read(view, "src/a.py", 0, None, 1000)["text"]
+
+
+def test_a_destination_outside_the_host_reads_only_what_its_mount_class_allows(
+    mounts: dict[str, Path],
+) -> None:
+    view = snapshot(mounts, "cloud_service", "pinned_source_tree", "applicable_contracts")
+    assert view.any_allowed()
+    with pytest.raises(mp.Denied) as caught:
+        mp.view_read(view, "src/a.py", 0, None, 1000)
+    assert caught.value.code == "class_not_allowed"
+    assert "contracts artifact" in mp.view_read(view, "contracts/c.md", 0, None, 1000)["text"]
+    listing = mp.view_list(view, ".")
+    assert [(e["name"], e["kind"]) for e in listing["entries"]] == [("contracts", "dir")]
+    assert [e["name"] for e in mp.view_list(view, "contracts")["entries"]] == ["sub", "c.md"]
+    with pytest.raises(mp.Denied) as caught:
+        mp.view_list(view, "src")
+    assert caught.value.code == "class_not_allowed"
+
+
+def test_a_view_of_only_confidential_files_offers_no_repository_tool(
+    mounts: dict[str, Path],
+) -> None:
+    view = snapshot(mounts, "cloud_service", "pinned_source_tree")
+    assert not view.any_allowed()
+    assert snapshot(mounts, "local", "pinned_source_tree").any_allowed()
+    with pytest.raises(mp.Denied) as caught:
+        mp.view_list(view, ".")
+    assert caught.value.code == "class_not_allowed"
+
+
+def test_a_search_reaches_every_mount_the_destination_may_read_once(
+    mounts: dict[str, Path],
+) -> None:
+    def found(view: mp.View, **kw: Any) -> dict[str, str]:
+        args: dict[str, Any] = {"rel": ".", "glob": None, "ignore_case": False, "max_results": 50}
+        result = mp.view_search(view, "needle", **{**args, "limit": 100000, **kw})
+        return {m["path"]: m["text"] for m in result["matches"]}
+
+    local = snapshot(mounts, "local", "pinned_source_tree", "applicable_contracts")
+    everywhere = found(local)
+    assert set(everywhere) == {"README.md", "src/a.py", "contracts/c.md", "contracts/sub/d.md"}
+    assert everywhere["contracts/c.md"] == "the contracts artifact needle"  # not the tree's copy
+    cloud = snapshot(mounts, "cloud_service", "pinned_source_tree", "applicable_contracts")
+    assert set(found(cloud)) == {"contracts/c.md", "contracts/sub/d.md"}
+    assert set(found(cloud, rel="contracts/sub")) == {"contracts/sub/d.md"}
+    assert set(found(local, rel="contracts", glob="contracts/sub/*")) == {"contracts/sub/d.md"}
+    with pytest.raises(mp.Denied) as caught:
+        found(cloud, rel="src")
+    assert caught.value.code == "class_not_allowed"
+    with pytest.raises(mp.Denied) as caught:
+        found(local, rel="nothing")
+    assert caught.value.code == "not_found"
+
+
+def test_an_artifact_that_is_not_a_part_of_the_repository_appears_under_its_id(
+    mounts: dict[str, Path],
+) -> None:
+    view = snapshot(mounts, "cloud_service", "synthesis_sealed")
+    assert [e["name"] for e in mp.view_list(view, ".")["entries"]] == ["synthesis_sealed"]
+    assert (
+        "design needle" in mp.view_read(view, "synthesis_sealed/design.md", 0, None, 1000)["text"]
+    )
+    with pytest.raises(mp.Denied) as caught:
+        mp.view_read(view, "design.md", 0, None, 1000)
+    assert caught.value.code == "not_found"
+
+
+def test_the_live_checkout_is_one_mount_with_the_source_trees_class(project: Path) -> None:
+    cloud = mp.View.live(project, mp.tree_class(DATA_CLASSES), True, DATA_CLASSES["classes"])
+    local = mp.View.live(project, mp.tree_class(DATA_CLASSES), False, DATA_CLASSES["classes"])
+    assert not cloud.any_allowed() and local.any_allowed()
+    assert "needle" in mp.view_read(local, "README.md", 0, None, 1000)["text"]
+    assert [
+        m["path"] for m in mp.view_search(local, "needle", ".", "*.md", False, 5, 9999)["matches"]
+    ] == ["README.md"]

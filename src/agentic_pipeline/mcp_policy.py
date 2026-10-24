@@ -37,6 +37,8 @@ from typing import Any
 
 from agentic_pipeline.build_gates import SECRET_PATTERNS
 from agentic_pipeline.graph import loads_yaml
+from agentic_pipeline.grounding import PINNED_SOURCES
+from agentic_pipeline.manifest import SealedInput
 from agentic_pipeline.provenance import JsonlProvenanceLog, ProvenanceError
 from agentic_pipeline.schemas import ValidationError, validate
 
@@ -141,15 +143,6 @@ def check_tools_policy(doc: Any, data_classes: Mapping[str, Any]) -> list[str]:
                 f"tools.{name}: destination {profile['destination']!r} is not one of "
                 f"policy/data_classes.yaml destinations {sorted(destinations)}"
             )
-            continue
-        if not content_allowed(data_classes, profile["destination"]):
-            held = sorted(set(profile["tools"]) & CONTENT_TOOLS)
-            if held:
-                errors.append(
-                    f"tools.{name}: {held} return repository content, which "
-                    f"policy/data_classes.yaml does not let a {profile['destination']} "
-                    "destination receive (artifact_defaults.pinned_source_tree)"
-                )
     return errors
 
 
@@ -193,10 +186,25 @@ def load_tools_policy(root: Path, data_classes: Mapping[str, Any] | None = None)
     return parse_tools_policy(data, classes)
 
 
-def offered_tools(profile: Profile, data_classes: Mapping[str, Any]) -> tuple[str, ...]:
-    """The tools a profile gets: those it lists that its destination may use."""
-    allowed = content_allowed(data_classes, profile.destination)
-    return tuple(t for t in profile.tools if allowed or t not in CONTENT_TOOLS)
+def offered_tools(
+    profile: Profile, data_classes: Mapping[str, Any], view: View | None = None
+) -> tuple[str, ...]:
+    """The tools a profile gets, among those it lists: a repository tool only if the view holds
+    some file the destination may receive, and `run_evidence` only if the destination may
+    receive repository content (a saved report can carry code)."""
+
+    def usable(tool: str) -> bool:
+        if tool in REPO_TOOLS:
+            return view is not None and view.any_allowed()
+        if tool == "run_evidence":
+            return content_allowed(data_classes, profile.destination)
+        return True
+
+    return tuple(t for t in profile.tools if usable(t))
+
+
+def withheld_tools(profile: Profile, offered: Sequence[str]) -> tuple[str, ...]:
+    return tuple(t for t in profile.tools if t not in offered)
 
 
 # ── Reading the project ──────────────────────────────────────────────────────
@@ -240,13 +248,18 @@ def scan_secrets(text: str) -> list[str]:
     return [kind for kind, rx in SECRET_PATTERNS.items() if rx.search(text)]
 
 
-def list_dir(root: Path, rel: str) -> dict[str, Any]:
+def list_dir(
+    root: Path, rel: str, hide: frozenset[tuple[str, ...]] = frozenset()
+) -> dict[str, Any]:
+    """The readable entries of a directory. `hide` holds paths (relative to `root`) that another
+    mount serves, so they are not listed here."""
     real = resolve_readable(root, rel)
     if not real.is_dir():
         raise Denied("not_a_directory", f"{rel}: not a directory")
     base, entries, truncated = root.resolve(), [], False
+    here = relative_parts(rel)
     for child in sorted(real.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-        if _unreadable(child.name):
+        if _unreadable(child.name) or (*here, child.name) in hide:
             continue
         try:
             resolved = child.resolve()
@@ -309,8 +322,12 @@ def search_text(
     ignore_case: bool,
     max_results: int,
     limit: int,
+    hide: frozenset[tuple[str, ...]] = frozenset(),
+    prefix: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Lines containing `query` in the readable text files under `rel`."""
+    """Lines containing `query` in the readable text files under `rel`. `hide` holds paths
+    (relative to `root`) that another mount serves; `prefix` is where `root` appears in the
+    project, and goes in front of the paths returned."""
     if not query or len(query) > MAX_QUERY:
         raise Denied("bad_argument", f"the query is 1 to {MAX_QUERY} characters")
     start = resolve_readable(root, rel)
@@ -325,7 +342,8 @@ def search_text(
             return [start]
         found: list[Path] = []
         for dirpath, dirs, files in os.walk(start, followlinks=False):
-            dirs[:] = sorted(d for d in dirs if not _unreadable(d))
+            at = Path(dirpath).relative_to(base).parts
+            dirs[:] = sorted(d for d in dirs if not _unreadable(d) and (*at, d) not in hide)
             found += [Path(dirpath, f) for f in sorted(files) if not _unreadable(f)]
         return found
 
@@ -337,7 +355,9 @@ def search_text(
             continue
         if any(_unreadable(p) for p in parts):
             continue
-        shown = "/".join(path.relative_to(base).parts) if path.is_relative_to(base) else ""
+        shown = (
+            "/".join((*prefix, *path.relative_to(base).parts)) if path.is_relative_to(base) else ""
+        )
         if glob and not fnmatch.fnmatch(shown, glob):
             continue
         if scanned >= MAX_SEARCH_FILES or scanned_bytes >= MAX_SEARCH_BYTES:
@@ -379,6 +399,203 @@ def search_text(
     }
 
 
+# ── What a session can see: mounts of sealed or live trees ────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class Mount:
+    """A tree that appears in the project at `prefix`, with the one class its files have."""
+
+    prefix: tuple[str, ...]
+    path: Path
+    data_class: str
+    label: str  # "project" for the live checkout, else the sealed artifact's id
+
+
+@dataclass(frozen=True, slots=True)
+class View:
+    """The files a session can reach, as mounts. A path belongs to the mount with the longest
+    matching prefix, so a narrower artifact (the contracts, `internal`) refines a broader one
+    (the whole tree, `confidential`) where they overlap. `cloud` says the caller's model is
+    outside the host: then only files of a `cloud_allowed` class are returned."""
+
+    mounts: tuple[Mount, ...]
+    cloud: bool
+    classes: Mapping[str, Any]
+
+    def allowed(self, data_class: str) -> bool:
+        if not self.cloud:
+            return True
+        entry = self.classes.get(data_class)
+        return isinstance(entry, Mapping) and entry.get("cloud_allowed") is True
+
+    def any_allowed(self) -> bool:
+        return any(self.allowed(m.data_class) for m in self.mounts)
+
+    def locate(self, parts: tuple[str, ...]) -> tuple[Mount, tuple[str, ...]] | None:
+        best = None
+        for m in self.mounts:
+            if parts[: len(m.prefix)] == m.prefix and (
+                best is None or len(m.prefix) > len(best.prefix)
+            ):
+                best = m
+        return (best, parts[len(best.prefix) :]) if best else None
+
+    def hidden_under(self, mount: Mount) -> frozenset[tuple[str, ...]]:
+        """Paths inside `mount` (relative to it) that a narrower mount serves instead."""
+        n = len(mount.prefix)
+        return frozenset(
+            m.prefix[n:]
+            for m in self.mounts
+            if m is not mount and len(m.prefix) > n and m.prefix[:n] == mount.prefix
+        )
+
+    @classmethod
+    def live(cls, root: Path, data_class: str, cloud: bool, classes: Mapping[str, Any]) -> View:
+        """The project's working tree as one mount; its class is the source tree's."""
+        return cls((Mount((), root.resolve(), data_class, "project"),), cloud, classes)
+
+
+def tree_class(data_classes: Mapping[str, Any]) -> str:
+    return (data_classes.get("artifact_defaults") or {}).get("pinned_source_tree", "unknown")
+
+
+def snapshot_view(
+    found: Mapping[str, SealedInput], cloud: bool, classes: Mapping[str, Any]
+) -> View:
+    """Sealed artifacts as a view. The pinned ones appear where they sit in the repository
+    (`grounding.PINNED_SOURCES`: the tree at the root, the contracts under `contracts`, the
+    tests under `tests`); any other artifact appears under a directory named by its id."""
+    mounts = []
+    for artifact, sealed in found.items():
+        where = PINNED_SOURCES.get(artifact, artifact)
+        prefix = tuple(PurePosixPath(where).parts) if where else ()
+        mounts.append(Mount(prefix, sealed.path.resolve(), sealed.data_class, artifact))
+    return View(tuple(mounts), cloud, classes)
+
+
+def _denied_class(view: View, mount: Mount, rel: str) -> Denied:
+    return Denied(
+        "class_not_allowed",
+        f"{rel or '.'}: its class ({mount.data_class}) may not be sent to a caller outside "
+        "the host",
+    )
+
+
+def _joined(prefix: tuple[str, ...], rel: str) -> str:
+    return "/".join((*prefix, *relative_parts(rel))) or "."
+
+
+def view_list(view: View, rel: str) -> dict[str, Any]:
+    parts = relative_parts(rel)
+    entries: dict[str, dict[str, Any]] = {}
+    truncated = False
+    located = view.locate(parts)
+    if located is not None and view.allowed(located[0].data_class):
+        mount, rest = located
+        listing = list_dir(mount.path, "/".join(rest) or ".", view.hidden_under(mount))
+        entries.update({e["name"]: e for e in listing["entries"]})
+        truncated = listing["truncated"]
+    for m in view.mounts:  # directories that exist only because a narrower mount sits below
+        if (
+            len(m.prefix) > len(parts)
+            and m.prefix[: len(parts)] == parts
+            and view.allowed(m.data_class)
+        ):
+            entries.setdefault(
+                m.prefix[len(parts)], {"name": m.prefix[len(parts)], "kind": "dir", "size": None}
+            )
+    if not entries:
+        if located is not None and not view.allowed(located[0].data_class):
+            raise _denied_class(view, located[0], rel)
+        if located is None:
+            raise Denied("not_found", f"{rel}: no such file or directory")
+    ordered = sorted(entries.values(), key=lambda e: (e["kind"] != "dir", e["name"].lower()))
+    return {
+        "path": "/".join(parts) or ".",
+        "entries": ordered[:MAX_LIST_ENTRIES],
+        "truncated": truncated or len(ordered) > MAX_LIST_ENTRIES,
+    }
+
+
+def view_read(view: View, rel: str, offset: int, length: int | None, limit: int) -> dict[str, Any]:
+    parts = relative_parts(rel)
+    located = view.locate(parts)
+    if located is None:
+        raise Denied("not_found", f"{rel}: no such file or directory")
+    mount, rest = located
+    if not view.allowed(mount.data_class):
+        raise _denied_class(view, mount, rel)
+    result = read_text(mount.path, "/".join(rest) or ".", offset, length, limit)
+    return {**result, "path": "/".join(parts)}
+
+
+def view_search(
+    view: View,
+    query: str,
+    rel: str,
+    glob: str | None,
+    ignore_case: bool,
+    max_results: int,
+    limit: int,
+) -> dict[str, Any]:
+    if not query or len(query) > MAX_QUERY:
+        raise Denied("bad_argument", f"the query is 1 to {MAX_QUERY} characters")
+    target = relative_parts(rel)
+    matches: list[dict[str, Any]] = []
+    scanned = withheld = used = 0
+    stopped: str | None = None
+    refused = searched = 0
+    for mount in view.mounts:
+        if target[: len(mount.prefix)] == mount.prefix:
+            inside = target[len(mount.prefix) :]
+        elif mount.prefix[: len(target)] == target:
+            inside = ()
+        else:
+            continue
+        hidden = view.hidden_under(mount)
+        if any(inside[: len(h)] == h for h in hidden):
+            continue  # a narrower mount serves this part
+        if not view.allowed(mount.data_class):
+            refused += 1
+            continue
+        searched += 1
+        found = search_text(
+            mount.path,
+            query,
+            "/".join(inside) or ".",
+            glob,
+            ignore_case,
+            max_results - len(matches),
+            max(0, limit - used),
+            hidden,
+            mount.prefix,
+        )
+        matches += found["matches"]
+        used += sum(len(m["path"]) + len(m["text"]) + 32 for m in found["matches"])
+        scanned += found["files_scanned"]
+        withheld += found["withheld_matches"]
+        stopped = stopped or found["stopped_by"]
+        if len(matches) >= max_results:
+            stopped = stopped or "result limit"
+            break
+    if not searched:
+        if refused:
+            raise Denied(
+                "class_not_allowed",
+                f"{rel or '.'}: its class may not be sent to a caller outside the host",
+            )
+        raise Denied("not_found", f"{rel}: no such file or directory")
+    return {
+        "query": query,
+        "matches": matches,
+        "files_scanned": scanned,
+        "withheld_matches": withheld,
+        "truncated": bool(stopped),
+        "stopped_by": stopped,
+    }
+
+
 def run_id(value: str) -> str:
     if not RUN_ID.fullmatch(value):
         raise Denied("bad_argument", "a run id is letters, digits, _ and - only")
@@ -403,8 +620,10 @@ class Session:
         runs_dir: Path,
         offered: Sequence[str],
         session_id: str | None = None,
+        scope: Mapping[str, Any] | None = None,
     ) -> None:
         self.profile = profile
+        self.scope = dict(scope or {})  # recorded with every decision: the run, operation, ...
         self.policy_digest = policy_digest
         self.offered = tuple(offered)
         self.id = session_id or uuid.uuid4().hex[:12]
@@ -419,6 +638,7 @@ class Session:
                 {
                     "state": AUDIT_STATE,
                     "event": "decision",
+                    **self.scope,
                     "session": self.id,
                     "profile": self.profile.name,
                     "policy_digest": self.policy_digest,
@@ -432,7 +652,13 @@ class Session:
             raise Denied("audit_unavailable", f"the audit log cannot be written: {exc}") from exc
 
     def start(self) -> None:
-        self.record("(session)", {"offered": list(self.offered)}, True, "session_started")
+        withheld = withheld_tools(self.profile, self.offered)
+        self.record(
+            "(session)",
+            {"offered": list(self.offered), "withheld": list(withheld)},
+            True,
+            "session_started",
+        )
 
     def begin(self) -> None:
         """Count a call and refuse it past the profile's limit. The caller records the outcome."""

@@ -76,9 +76,22 @@ def _add_serve_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
         help="local project MCP server on stdio, with the tools of one profile "
         "(needs the `mcp` extra)",
     )
-    mcp.add_argument("--profile", required=True, help="a profile of policy/tools.yaml")
+    mcp.add_argument("--profile", help="a profile of policy/tools.yaml (needed without --run)")
     mcp.add_argument("--root", type=Path, default=REPO_ROOT, help="the project to serve")
     mcp.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
+    mcp.add_argument(
+        "--run",
+        help="bind the session to this run: its pinned snapshot, its frozen policy; needs "
+        "--operation",
+    )
+    mcp.add_argument(
+        "--operation", help="STAGE.OP of the run, such as E1.implementation_patch; needs --run"
+    )
+    mcp.add_argument(
+        "--backend",
+        help="the model the operation runs on; refused if it is outside the host and the "
+        "profile's destination is inside it",
+    )
 
 
 def _serve_mcp(args: argparse.Namespace) -> int:
@@ -93,8 +106,21 @@ def _serve_mcp(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if (args.run is None) != (args.operation is None):
+        print("ERROR: --run and --operation go together", file=sys.stderr)
+        return 1
+    if args.run is None and args.profile is None:
+        print("ERROR: name a profile with --profile, or bind to a run with --run", file=sys.stderr)
+        return 1
     try:
-        serve(args.root, args.runs_dir, args.profile)
+        serve(
+            args.root,
+            args.runs_dir,
+            args.profile,
+            run=args.run,
+            operation=args.operation,
+            backend=args.backend,
+        )
     except (ToolsPolicyError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

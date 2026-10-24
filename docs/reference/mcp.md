@@ -6,9 +6,17 @@ It needs the `mcp` extra (`uv sync --extra mcp`).
 
 ```bash
 uv run python -m agentic_pipeline serve mcp --profile local_project [--root PROJECT] [--runs-dir D]
+uv run python -m agentic_pipeline serve mcp --run R --operation STAGE.OP [--backend MODEL] [--root PROJECT] [--runs-dir D]
 ```
 
 `--root` is the project to serve (default: the checkout the package is in) and `--runs-dir` is where its runs and the audit log live (default `.runs`). The caller is whoever spawned the process; there is no network listener.
+
+## Two kinds of session
+
+- **Live** (`--profile P`): the project's working tree, for a person, an editor or an agent that is not part of a run. Its files have the class of the source tree (`artifact_defaults.pinned_source_tree`).
+- **Bound to an operation of a run** (`--run R --operation STAGE.OP`): for a model working inside a run, such as `E1.implementation_patch`. The session reads the run's own **frozen** policy (each file is checked against the digest the run recorded) and takes from the run's registry the operation's `tool_profile` and its `tool_reads`: the sealed artifacts of the run's pinned snapshot it may fetch on request. They are re-hashed when the session starts, and a change stops it. The live checkout is never read, so a file edited after grounding is not seen. The run tools answer only for the bound run. `--backend MODEL` makes the session refuse to start if that model runs outside the host while the profile's destination is inside it.
+
+In a bound session each sealed artifact appears where it sits in the repository: the pinned tree at the root, `applicable_contracts` under `contracts/`, `protected_tests` under `tests/`, and any other artifact under a directory named by its id. Where two overlap, the narrower one serves the path and gives it its own class, so a cloud operation that lists only `applicable_contracts` sees `contracts/` and nothing else. A registry has to name the profile and the artifacts (`tool_profile`, `tool_reads`, see the schema) before an operation can be bound; none does yet.
 
 ## Profiles
 
@@ -36,7 +44,7 @@ All tools are read-only.
 
 ## What the server refuses
 
-- **Repository content to a destination that may not have it.** `repo_*` and `run_evidence` return repository content, or run documents that can carry code. A destination with `cloud: true` receives them only if the class of `artifact_defaults.pinned_source_tree` in `policy/data_classes.yaml` is `cloud_allowed`. By default it is `confidential`, so a cloud profile gets no repository tool, and `validate` reports a profile that lists one.
+- **Files to a destination that may not have them.** Each mount has one class. A destination with `cloud: true` is returned a file only if its mount's class is `cloud_allowed`; listings and searches leave the others out. In a live session the class is `artifact_defaults.pinned_source_tree` (by default `confidential`), so a cloud profile is offered no repository tool, and the audit log lists what was withheld. `run_evidence` returns run documents that can carry code, so it needs the same class to be allowed.
 - **Paths outside the project.** A path is relative to the root, with forward slashes: no absolute path, no `..`, no backslash, no NUL. A symlink is followed and the result must still be inside the root.
 - **Secrets and run data.** Nothing under `.git`, `.runs`, `.ssh`, `.gnupg`, `.aws`, `.venv`, `node_modules`, `__pycache__` or `target`, and nothing named like a credential file (`.env*`, `id_rsa`, `*.pem`, `*.key`, `*secrets*.yaml`, and the like). A file or report whose text matches a secret pattern (`build_gates.SECRET_PATTERNS`) is withheld, and a search drops such lines and counts them.
 - **Binary files, oversized results and calls past `max_calls`.**
@@ -47,8 +55,8 @@ These are defaults built from policy that already exists. Path-level data classe
 
 Every call, allowed or denied, is appended to a hash-chained log at `<runs-dir>/.mcp/provenance_mcp.jsonl`: the session, the profile, the digest of `policy/tools.yaml`, the tool, a hash of the arguments (never the arguments), whether it was allowed and a reason code. A call to a tool the profile does not offer is logged as `tool_not_offered`. If the log cannot be written, the call is denied.
 
-Reason codes: `ok`, `session_started`, `tool_not_offered`, `call_limit`, `too_large`, `bad_argument`, `bad_path`, `path_outside_root`, `unreadable_path`, `not_found`, `not_a_file`, `not_a_directory`, `not_text`, `secret_in_content`, `run_unreadable`, `audit_unavailable`.
+In a bound session every record also carries the run, the operation and the artifacts. Reason codes: `ok`, `session_started`, `tool_not_offered`, `call_limit`, `too_large`, `bad_argument`, `bad_path`, `path_outside_root`, `unreadable_path`, `class_not_allowed`, `not_found`, `not_a_file`, `not_a_directory`, `not_text`, `secret_in_content`, `other_run`, `run_unreadable`, `audit_unavailable`.
 
 ## Not built yet
 
-Streamable HTTP and OAuth, run control, wiring a tool set into each agent's runtime (the Claude and agy CLIs, and the local-model harness), and the interview as an MCP prompt or skill.
+Streamable HTTP and OAuth, run control, path-level classes within an artifact, the rules that check a registry's `tool_profile` and `tool_reads` and make the dispatcher refuse an operation whose adapter cannot provide tools, wiring a tool set into each agent's runtime (the Claude and agy CLIs, and the local-model harness), and the interview as an MCP prompt or skill.
