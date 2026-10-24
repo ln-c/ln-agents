@@ -391,3 +391,246 @@ def test_the_command_reports_a_profile_that_does_not_exist(project: Path, runs: 
         ["serve", "mcp", "--profile", "nope", "--root", str(project), "--runs-dir", str(runs)]
     )
     assert code == 1
+
+
+# ── Sessions bound to one operation of one run ───────────────────────────────
+
+GROUNDED_RUN = "demo"
+
+
+@pytest.fixture
+def bound(tmp_path: Path) -> tuple[Path, Path]:
+    """A project whose registry gives two operations MCP tools, with a run that has finished
+    grounding (so the pinned snapshot is sealed). Returns (project, runs directory)."""
+    import yaml
+    from test_grounding import Rig as GroundingRig
+
+    from agentic_pipeline.grounding import GROUNDING_HANDLERS
+
+    work = tmp_path / "work"
+    work.mkdir()
+    for name in ("pipeline", "policy", "schemas", "agents"):
+        shutil.copytree(ROOT / name, work / name)
+    registry_file = work / "policy" / "model_registry.yaml"
+    registry = yaml.safe_load(registry_file.read_text())
+    e1 = registry["stage_requirements"]["E1"]["operations"][0]
+    e1.update(
+        tool_profile="local_project",
+        tool_reads=["pinned_source_tree", "applicable_contracts", "protected_tests"],
+    )
+    a1 = registry["stage_requirements"]["A1"]["operations"][0]
+    a1.update(tool_profile="cloud_contracts", tool_reads=["applicable_contracts"])
+    registry_file.write_text(yaml.safe_dump(registry, sort_keys=False))
+    tools_file = work / "policy" / "tools.yaml"
+    tools = yaml.safe_load(tools_file.read_text())
+    tools["profiles"]["cloud_contracts"] = {
+        "destination": "cloud_service",
+        "tools": ["repo_list", "repo_read", "repo_search", "run_status", "run_evidence"],
+        "limits": {"max_read_bytes": 65536, "max_calls": 50},
+    }
+    tools_file.write_text(yaml.safe_dump(tools, sort_keys=False))
+    for rel, body in {
+        "src/app.py": "def handler():\n    return 'zxq_marker'\n",
+        "contracts/api.md": "# API contract zxq_marker\n",
+        "tests/test_x.py": "def test_x(): ...\n",
+        ".env": "TOKEN=abc\n",
+        "leak.txt": f"{AWS}\n",
+    }.items():
+        path = work / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, newline="\n")
+    git(work, "init", "-q")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "init")
+
+    rig = GroundingRig(work, tmp_path)
+    runner = rig.runner()
+    runner.step()  # START
+    GROUNDING_HANDLERS["G"](rig.ctx(runner, "G"))
+    runner.close()
+    return work, tmp_path / "runs"
+
+
+def bound_server(bound: tuple[Path, Path], operation: str, **kw: Any) -> Any:
+    project, runs = bound
+    server, session = mcp_server.build_server(
+        project, runs, run=GROUNDED_RUN, operation=operation, **kw
+    )
+    session.start()
+    return server, session
+
+
+def test_a_run_bound_session_has_the_profile_the_runs_registry_gives_the_operation(
+    bound: tuple[Path, Path],
+) -> None:
+    server, session = bound_server(bound, "E1.implementation_patch")
+
+    async def listed() -> Any:
+        async with Client(server) as client:
+            return {t.name for t in (await client.list_tools()).tools}
+
+    assert run(listed()) == mp.IMPLEMENTED_TOOLS
+    assert session.profile.name == "local_project"
+    first = audit(bound[1])[0]
+    assert first["bound_run"] == GROUNDED_RUN and first["operation"] == "E1.implementation_patch"
+    assert first["artifacts"] == ["pinned_source_tree", "applicable_contracts", "protected_tests"]
+
+
+def test_a_run_bound_session_reads_the_snapshot_and_not_the_live_checkout(
+    bound: tuple[Path, Path],
+) -> None:
+    project, _ = bound
+    (project / "src" / "app.py").write_text("def handler():\n    return 'edited later'\n")
+    (project / "src" / "new.py").write_text("added = 'after grounding'\n")
+    server, _ = bound_server(bound, "E1.implementation_patch")
+    app, listing, found = run(
+        call_all(
+            server,
+            [
+                ("repo_read", {"path": "src/app.py"}),
+                ("repo_list", {"path": "src"}),
+                ("repo_search", {"query": "zxq_marker"}),
+            ],
+        )
+    )
+    assert "zxq_marker" in text(app) and "edited later" not in text(app)
+    assert [e["name"] for e in json.loads(text(listing))["entries"]] == ["app.py"]
+    paths = {m["path"] for m in json.loads(text(found))["matches"]}
+    assert paths == {"src/app.py", "contracts/api.md"}
+
+
+def test_the_snapshot_keeps_secrets_unreadable_too(bound: tuple[Path, Path]) -> None:
+    server, _ = bound_server(bound, "E1.implementation_patch")
+    env, leak = run(
+        call_all(server, [("repo_read", {"path": ".env"}), ("repo_read", {"path": "leak.txt"})])
+    )
+    assert "denied (unreadable_path)" in text(env)
+    assert "denied (secret_in_content)" in text(leak) and AWS not in text(leak)
+
+
+def test_a_cloud_operation_reads_only_the_artifacts_whose_class_its_destination_may_receive(
+    bound: tuple[Path, Path],
+) -> None:
+    server, session = bound_server(bound, "A1.proposal_a")
+    assert session.profile.name == "cloud_contracts"
+    # run_evidence is withheld: the destination may not receive repository content.
+    assert "run_evidence" not in session.offered and "repo_read" in session.offered
+    contract, source, listing, found = run(
+        call_all(
+            server,
+            [
+                ("repo_read", {"path": "contracts/api.md"}),
+                ("repo_read", {"path": "src/app.py"}),
+                ("repo_list", {"path": "."}),
+                ("repo_search", {"query": "zxq_marker"}),
+            ],
+        )
+    )
+    assert "API contract" in text(contract)
+    assert source.is_error and "denied (not_found)" in text(source)  # not even mounted
+    assert [e["name"] for e in json.loads(text(listing))["entries"]] == ["contracts"]
+    assert [m["path"] for m in json.loads(text(found))["matches"]] == ["contracts/api.md"]
+
+
+def test_the_run_tools_answer_only_for_the_bound_run(bound: tuple[Path, Path]) -> None:
+    server, _ = bound_server(bound, "E1.implementation_patch")
+    own, other = run(
+        call_all(
+            server,
+            [("run_status", {"run_id": GROUNDED_RUN}), ("run_status", {"run_id": "someone-else"})],
+        )
+    )
+    assert json.loads(text(own))["run_id"] == GROUNDED_RUN
+    assert "denied (other_run)" in text(other)
+
+
+def test_the_policy_files_a_run_uses_are_frozen_with_it(bound: tuple[Path, Path]) -> None:
+    from agentic_pipeline.run_state import RunStore
+
+    _, runs = bound
+    state = RunStore(runs / GROUNDED_RUN).load()
+    for rel in ("policy/tools.yaml", "policy/data_classes.yaml", "policy/model_registry.yaml"):
+        assert rel in state.policy and (runs / GROUNDED_RUN / "frozen" / rel).is_file()
+
+
+def test_the_session_uses_the_frozen_policy_and_not_the_projects_current_one(
+    bound: tuple[Path, Path],
+) -> None:
+    project, _ = bound
+    # The project later drops the tool fields and the profile: the run keeps the old rules.
+    shutil.copy(ROOT / "policy" / "model_registry.yaml", project / "policy" / "model_registry.yaml")
+    (project / "policy" / "tools.yaml").write_text("version: 1\nprofiles: {}\n")
+    server, session = bound_server(bound, "E1.implementation_patch")
+    assert session.profile.name == "local_project"
+    assert audit(bound[1])[0]["policy_digest"] == session.policy_digest
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda p, r: p.update(operation="E1.nothing"), "no operation"),
+        (lambda p, r: p.update(operation="A1.proposal_b"), "no tool_profile"),
+        (lambda p, r: p.update(profile_name="cloud_contracts"), "uses profile"),
+        (lambda p, r: p.update(backend="gemini_4_argon_medium"), "runs outside the host"),
+        (lambda p, r: p.update(backend="no_such_model"), "not a model"),
+        (lambda p, r: p.update(run="nope"), "run nope"),
+        (lambda p, r: p.update(run="../x"), "run id"),
+    ],
+)
+def test_a_session_that_does_not_add_up_is_refused_before_it_starts(
+    bound: tuple[Path, Path], change: Any, message: str
+) -> None:
+    project, runs = bound
+    args: dict[str, Any] = {"run": GROUNDED_RUN, "operation": "E1.implementation_patch"}
+    change(args, runs)
+    with pytest.raises(mp.ToolsPolicyError, match=message):
+        mcp_server.build_server(project, runs, args.pop("profile_name", None), **args)
+
+
+def test_a_backend_inside_the_host_is_accepted_for_a_local_profile(
+    bound: tuple[Path, Path],
+) -> None:
+    server, session = bound_server(bound, "E1.implementation_patch", backend="qwen3_5_9b")
+    assert session.profile.name == "local_project"
+
+
+def test_a_sealed_artifact_that_changed_stops_the_session(bound: tuple[Path, Path]) -> None:
+    _, runs = bound
+    sealed_file = next(
+        (runs / GROUNDED_RUN / "grounding" / "G" / "pinned_source_tree").rglob("app.py")
+    )
+    sealed_file.write_text("tampered\n")
+    with pytest.raises(mp.ToolsPolicyError, match="content changed"):
+        bound_server(bound, "E1.implementation_patch")
+
+
+def test_a_frozen_file_that_no_longer_matches_its_digest_stops_the_session(
+    bound: tuple[Path, Path],
+) -> None:
+    _, runs = bound
+    frozen = runs / GROUNDED_RUN / "frozen" / "policy" / "tools.yaml"
+    frozen.write_text(frozen.read_text() + "\n# edited\n")
+    with pytest.raises(mp.ToolsPolicyError, match="does not match the recorded digest"):
+        bound_server(bound, "E1.implementation_patch")
+
+
+def test_a_run_that_began_before_tools_yaml_was_frozen_is_refused_with_the_reason(
+    bound: tuple[Path, Path],
+) -> None:
+    _, runs = bound
+    (runs / GROUNDED_RUN / "frozen" / "policy" / "tools.yaml").unlink()
+    with pytest.raises(mp.ToolsPolicyError, match="began before runs froze that file"):
+        bound_server(bound, "E1.implementation_patch")
+
+
+def test_the_command_binds_a_session_to_a_run_and_refuses_half_of_the_pair(
+    bound: tuple[Path, Path],
+) -> None:
+    from agentic_pipeline.cli import main
+
+    project, runs = bound
+    base = ["serve", "mcp", "--root", str(project), "--runs-dir", str(runs)]
+    assert main([*base, "--run", GROUNDED_RUN]) == 1
+    assert main([*base, "--operation", "E1.implementation_patch"]) == 1
+    assert main(base) == 1  # neither a profile nor a run
+    assert main([*base, "--run", GROUNDED_RUN, "--operation", "A1.proposal_b"]) == 1

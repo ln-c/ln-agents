@@ -39,4 +39,7 @@ uv run python -m agentic_pipeline serve a2a [--runs-dir D] [--host 127.0.0.1] [-
 
 ```bash
 uv run python -m agentic_pipeline serve mcp --profile P [--root PROJECT] [--runs-dir D]
+uv run python -m agentic_pipeline serve mcp --run R --operation STAGE.OP [--backend MODEL]
 ```
+
+`--run` binds the session to one operation of a run: its profile and fetchable artifacts come from the run's frozen registry, and the files are the run's pinned snapshot, not the working tree.
