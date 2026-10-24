@@ -36,7 +36,7 @@ def project(tmp_path: Path) -> Path:
     (root / "tests").mkdir()
     (root / "tests" / "test_x.py").write_text("def test_x(): ...\n")
     (root / "src").mkdir()
-    (root / "src" / "app.py").write_text("def handler():\n    return 'zxq_marker'\n")
+    (root / "src" / "app.py").write_text("def handler():\n    return 'zxq_marker'\n", newline="\n")
     (root / ".env").write_text("TOKEN=abc\n")
     (root / "leak.txt").write_text(f"{AWS}\n")
     git(root, "init", "-q")
@@ -278,7 +278,9 @@ def test_the_saved_evidence_report_is_returned_and_nothing_is_generated(
     assert not (run_dir / "approvals").exists()
 
     (run_dir / "approvals").mkdir()
-    (run_dir / "approvals" / "START-evidence.md").write_text("# Evidence\n\nall good\n")
+    (run_dir / "approvals" / "START-evidence.md").write_text(
+        "# Evidence\n\nall good\n", newline="\n"
+    )
     (found,) = run(call_all(server, [("run_evidence", {"run_id": "demo"})]))
     body = json.loads(text(found))
     assert body["node"] == "START" and body["markdown"].endswith("all good\n")
@@ -288,7 +290,7 @@ def test_the_saved_evidence_report_is_returned_and_nothing_is_generated(
 def test_an_evidence_report_with_a_secret_is_withheld(project: Path, runs: Path) -> None:
     run_dir = make_run(project, runs)
     (run_dir / "approvals").mkdir()
-    (run_dir / "approvals" / "START-evidence.md").write_text(f"key {AWS}\n")
+    (run_dir / "approvals" / "START-evidence.md").write_text(f"key {AWS}\n", newline="\n")
     server, _ = session_of(project, runs, "local_project")
     (result,) = run(call_all(server, [("run_evidence", {"run_id": "demo"})]))
     assert "denied (secret_in_content)" in text(result) and AWS not in text(result)

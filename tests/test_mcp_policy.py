@@ -53,7 +53,7 @@ def project(tmp_path: Path) -> Path:
     for rel, text in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, newline="\n")  # bytes, not Windows line endings
     (root / "bin").mkdir()
     (root / "bin" / "blob.bin").write_bytes(b"needle\x00\x01\x02")
     return root
