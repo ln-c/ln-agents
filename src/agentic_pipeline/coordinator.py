@@ -59,6 +59,8 @@ VIEWS_DIR = "views"
 CAPABILITY = "coordination"
 AUTHORITY_DIR = ".authority"  # under the runs directory: calls that belong to no run
 AUTHORITY_RUN = "authority"  # the id of that directory's provenance chain
+GROUND_DIR = ".ground"  # under the runs directory: the grounding interview, before any run
+GROUND_RUN = "grounding"  # the id of that directory's provenance chain
 STAGE = "VIEW"  # the `state` of the coordinator's own provenance events
 ROLE = "coordinator"
 # Adapters that take a task text as an override (the subscription tools); a local model's
@@ -71,6 +73,9 @@ MAX_ASK_BYTES = 80 * 1024
 MAX_REPORT_BYTES = 60 * 1024
 PREFLIGHT_TTL_SECONDS = 60.0
 CALL_TIMEOUT_SECONDS = 180.0  # the run has stopped and the text is advice: never wait longer
+# A person waits for each question of the grounding interview. Gemini Flash High took 79 to 160 s
+# on a short prompt (it spends about 12K thinking tokens), so 180 s cut real answers off.
+INTERVIEW_TIMEOUT_SECONDS = 300.0
 
 # Sealed design artifacts, in reading order: (artifact, view name, title). Each holds one JSON.
 SEALED = (
@@ -136,7 +141,14 @@ type AdapterFactory = Callable[..., BackendAdapter]
 
 
 class CoordinatorError(Exception):
-    """The coordinator could not be used or did not answer; the caller falls back to code."""
+    """The coordinator could not be used or did not answer; the caller falls back to code.
+
+    `status` is the adapter's result status when a call was made and failed (for example
+    `quota_exhausted`), else None."""
+
+    def __init__(self, message: str, status: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class SetupError(Exception):
@@ -445,7 +457,9 @@ class Coordinator:
                 raise CoordinatorError(f"{backend}: adapter failed: {exc}") from exc
             log.append({**correlation, "event": "model_result", "reason_code": result.status})
         if result.status != "ok":
-            raise CoordinatorError(f"{backend}: {result.status} {result.detail}".rstrip())
+            raise CoordinatorError(
+                f"{backend}: {result.status} {result.detail}".rstrip(), status=result.status
+            )
         reply = write_path / f"{operation}.md"
         try:
             text = reply.read_text(encoding="utf-8").strip()
@@ -496,6 +510,25 @@ class Coordinator:
                 return text, backend
             reasons.extend(problems)
         raise CoordinatorError("no model is ready: " + "; ".join(reasons))
+
+    def consult_model(
+        self,
+        backend: str,
+        operation: str,
+        task: str,
+        inputs: Mapping[str, Path],
+        spec: AgentSpec | None,
+        data_class: str,
+    ) -> str:
+        """The reply of exactly `backend`, for work that belongs to no run and to no
+        LN-AGENTS.md setup (the grounding interview names its own model in the registry).
+
+        The model must declare `coordination` and be ready; it is never swapped for another, so a
+        quota error or a missing capability is raised as it is. The reply is text for code to
+        check, and carries no authority of its own."""
+        if problems := self._problems(backend):
+            raise CoordinatorError(f"{backend} is not ready: " + "; ".join(problems))
+        return self._call(operation, task, inputs, backend, data_class=data_class, agent_spec=spec)
 
     # ── a view of each sealed document ───────────────────────────────────────
 
@@ -829,6 +862,39 @@ def for_authority(
 
     Its readiness report tolerates agents that have no model (registry rule R20), because the
     authority is asked precisely when there are some; every other violation still blocks it."""
+    try:
+        setup, error = load_setup(root), None
+    except SetupError as exc:
+        setup, error = None, str(exc)
+    return _unbound(root, runs_dir / AUTHORITY_DIR, AUTHORITY_RUN, adapter_factory, setup, error)
+
+
+def for_grounding(
+    root: Path, runs_dir: Path, adapter_factory: AdapterFactory | None = None
+) -> Coordinator:
+    """A coordinator for the grounding interview, which happens before any run exists: it reads
+    the repository's own policy, needs no LN-AGENTS.md (the registry names the interview's model
+    in `agents.grounding`), and keeps its calls under `<runs>/.ground`."""
+    return _unbound(
+        root,
+        runs_dir / GROUND_DIR,
+        GROUND_RUN,
+        adapter_factory,
+        None,
+        None,
+        INTERVIEW_TIMEOUT_SECONDS,
+    )
+
+
+def _unbound(
+    root: Path,
+    run_dir: Path,
+    run_id: str,
+    adapter_factory: AdapterFactory | None,
+    setup: Setup | None,
+    setup_error: str | None,
+    timeout: float = CALL_TIMEOUT_SECONDS,
+) -> Coordinator:
     from agentic_pipeline.readiness import run_preflight_tolerating_gaps
     from agentic_pipeline.run_cli import _adapter_factories
     from agentic_pipeline.run_state import load_policy
@@ -840,20 +906,17 @@ def for_authority(
         factory = factories[registry["models"][backend]["provider"]]
         return factory(registry, backend, **overrides)
 
-    try:
-        setup, error = load_setup(root), None
-    except SetupError as exc:
-        setup, error = None, str(exc)
     return Coordinator(
         root=root,
-        run_dir=runs_dir / AUTHORITY_DIR,
-        run_id=AUTHORITY_RUN,
+        run_dir=run_dir,
+        run_id=run_id,
         registry=policy.registry,
         data_classes=policy.data_classes,
         adapter_factory=adapter_factory or build,
         preflight=lambda: run_preflight_tolerating_gaps(root),
         setup=setup,
-        setup_error=error,
+        setup_error=setup_error,
+        timeout=timeout,
     )
 
 
