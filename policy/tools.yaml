@@ -1,0 +1,27 @@
+# MCP tool profiles. Human-owned; a model never edits this file and nothing a model says widens it.
+#
+# ln-agents is the MCP host. For an agent's session it starts the local project MCP server
+# (`python -m agentic_pipeline serve mcp --profile <name>`), which offers and allows only the
+# tools of that profile; a tool that the profile does not list does not exist for the caller.
+# The tool names are a closed list in schemas/tools_policy.schema.json. None of them approves,
+# signs, decides, resumes or changes policy, budgets or vetoes, so no profile can grant that.
+#
+# `destination` is where the caller's model runs, in the kinds of policy/data_classes.yaml
+# `destinations`. A destination with `cloud: true` never receives repository content: the source
+# tree is `confidential` there and confidential is not `cloud_allowed`. A local destination does.
+#
+# Which agent gets which profile, and path-level rules for files and data, are not decided here:
+# they are planned for every agent together once the server exists. The limits below are first
+# values to adjust.
+version: 1
+profiles:
+  local_project:
+    description: A model on this machine may read the repository and ask about runs and the pipeline.
+    destination: local
+    tools: [repo_list, repo_read, repo_search, run_status, run_evidence, pipeline_guideline, models]
+    limits: {max_read_bytes: 65536, max_calls: 200}
+  cloud_pipeline_info:
+    description: A cloud model may ask about run status and the pipeline; it receives no repository content and no run documents.
+    destination: cloud_service
+    tools: [run_status, pipeline_guideline, models]
+    limits: {max_read_bytes: 65536, max_calls: 100}

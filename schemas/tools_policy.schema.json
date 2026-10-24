@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.invalid/schemas/tools_policy.schema.json",
+  "title": "Agentic Pipeline MCP Tool Profiles",
+  "description": "Which tools the local project MCP server offers to a caller, by profile. The tool list is closed: no tool that approves, signs, decides, resumes or changes policy, budgets or vetoes exists, so no profile can name one.",
+  "type": "object",
+  "required": ["version", "profiles"],
+  "additionalProperties": false,
+  "definitions": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "tool": {
+      "enum": [
+        "repo_list",
+        "repo_read",
+        "repo_search",
+        "run_status",
+        "run_evidence",
+        "pipeline_guideline",
+        "models"
+      ]
+    },
+    "profile": {
+      "type": "object",
+      "required": ["destination", "tools", "limits"],
+      "additionalProperties": false,
+      "properties": {
+        "description": {"type": "string", "minLength": 1, "maxLength": 300},
+        "destination": {
+          "description": "Where the caller's model runs. The kinds are those of policy/data_classes.yaml destinations and schemas/proposal.schema.json; the server decides what data the caller may receive from the destination's `cloud` flag.",
+          "enum": ["local", "internal_service", "cloud_service", "third_party"]
+        },
+        "tools": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/tool"},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "limits": {
+          "type": "object",
+          "required": ["max_read_bytes", "max_calls"],
+          "additionalProperties": false,
+          "properties": {
+            "max_read_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576},
+            "max_calls": {"type": "integer", "minimum": 1, "maximum": 10000}
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "version": {"const": 1},
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/definitions/id"},
+      "additionalProperties": {"$ref": "#/definitions/profile"}
+    }
+  }
+}
