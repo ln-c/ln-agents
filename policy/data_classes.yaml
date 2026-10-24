@@ -26,6 +26,27 @@ artifact_defaults:
   pinned_snapshot:          internal
   pinned_context_manifest:  internal
 
+# Classes of single files, for the MCP server (docs/reference/mcp.md, "Path rules"). The first
+# rule that covers a file gives it its class; a file no rule covers keeps the class of its
+# artifact, so the code (src/, tests/, rust/, scripts/), .github/ and every file not listed
+# here stay `confidential` and never leave the host. A rule here is this policy's own statement
+# that those files may be sent to a cloud model: the documentation and the specifications that
+# define the pipeline, which the repository publishes anyway. Paths are relative to the
+# project root, with `/`; `**` is any number of directories. Only these top-level files are
+# named; a new top-level file is confidential until a rule lists it.
+path_rules:
+  - {path: "README.md",       class: internal}
+  - {path: "CONTRIBUTING.md", class: internal}
+  - {path: "AGENTS.md",       class: internal}
+  - {path: "CLAUDE.md",       class: internal}
+  - {path: "LN-AGENTS.md",    class: internal}
+  - {path: "LICENSE",         class: internal}
+  - {path: "docs/**",         class: internal}
+  - {path: "schemas/**",      class: internal}
+  - {path: "agents/**",       class: internal}
+  - {path: "pipeline/**",     class: internal}
+  - {path: "policy/**",       class: internal}
+
 # Where a proposal's declared data flows may go. `cloud: true` means the destination is
 # outside the host and the organization's own services; B1's data_class_violation veto then
 # requires the flow's data class to be cloud_allowed. A destination kind not listed here is
