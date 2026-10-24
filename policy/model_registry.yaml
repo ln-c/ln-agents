@@ -229,9 +229,13 @@ models:
 agents:
   grounding:
     spec: agents/pipeline-grounding-agent.md
-    primary: qwen3_5_9b
+    # The interview that ends in the entry_spec. The maintainer judged the local Qwen3.5-9B too small
+    # for it, so Gemini Flash High asks the questions. Task text that data_classes.yaml keeps off the
+    # cloud (confidential, restricted, unknown) is never sent to it: such a task has no interview and
+    # its entry_spec is written by hand.
+    primary: gemini_3_8_flash_high
     escalation: claude_cli_default
-    escalation_trigger: unresolved_ambiguity_or_insufficient_local_quality
+    escalation_trigger: unresolved_ambiguity_or_insufficient_quality
     allowed_writes: [grounding_artifacts]
     may_change_state: false
 
