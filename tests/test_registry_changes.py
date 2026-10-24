@@ -219,7 +219,7 @@ def test_a_bind_that_cannot_be_made_is_refused(
 def test_a_bound_model_cannot_be_removed_until_it_is_unbound(repo: Path, runs: Path) -> None:
     errors = refused(rc.draft_remove_model, repo, runs, "qwen3_5_9b")
     assert errors == [
-        "qwen3_5_9b is bound to grounding.primary, build.primary, release.explanation_fallback, "
+        "qwen3_5_9b is bound to build.primary, release.explanation_fallback, "
         "learning.analysis_fallback, human_authority.model_assistance; bind those slots to "
         "another model with /agents first"
     ]
