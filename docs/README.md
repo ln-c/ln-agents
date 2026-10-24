@@ -13,11 +13,13 @@ Start with [Getting started](getting-started.md). The state table (what is built
 - [Agent specifications](concepts/agent-specifications.md): what each `agents/*.md` is and what a model is given.
 - [Release and learning](concepts/release-and-learning.md): `R1` to `MERGED`, `L1` and `L2`.
 - [Phases](concepts/phases.md): the eight groups of states in the graph.
+- [Protocols](concepts/protocols.md): what ACP, A2A and MCP are each used for.
 
 ## Reference
 
-- [Command line](reference/cli.md): `validate`, `preflight`, `models`, `run`, `serve a2a`.
+- [Command line](reference/cli.md): `validate`, `preflight`, `models`, `run`, `serve a2a`, `serve mcp`.
 - [A2A skills](reference/a2a-skills.md): what the orchestrator serves to other agents.
+- [MCP server](reference/mcp.md): the local project server and the tools a profile gets.
 - [Editor commands](reference/editor-commands.md): `ln-agents acp` and its slash commands.
 - [Terminal UI](reference/terminal-ui.md): `ln-agents` and `ln-agents -p`, the same commands in a terminal.
 - [CI checks](reference/ci-checks.md): the checks that run at `E2` and `F1`.
