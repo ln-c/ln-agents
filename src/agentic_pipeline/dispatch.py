@@ -261,6 +261,14 @@ def adapter_blockers(
         required = set(profiles[op["isolation_profile"]]) - DISPATCHER_ENFORCED
         if gaps := sorted(required - adapters[backend].enforced_isolation):
             found.append(f"{stage}.{op['id']}: {backend} adapter does not enforce {gaps}")
+        # An adapter that starts its model with an MCP configuration says so with
+        # `provides_tools = True`. Until then an operation that is promised tools is refused,
+        # not run without them.
+        if op.get("tool_profile") and not getattr(adapters[backend], "provides_tools", False):
+            found.append(
+                f"{stage}.{op['id']}: the registry gives it MCP tools (tool_profile "
+                f"{op['tool_profile']}) but the {backend} adapter cannot provide tools"
+            )
     return found
 
 
