@@ -153,7 +153,7 @@ Output one valid JSON object in a code block. Use this schema version and includ
       "component": "...",
       "implementation_paths": [],
       "contract_refs": [],
-      "acceptance_criteria_refs": []
+      "requirement_refs": []
     }
   ],
   "contracts": {
