@@ -25,8 +25,17 @@
         "denied_reads": {"$ref": "#/definitions/id_list"},
         "write_root": {"$ref": "#/definitions/id"},
         "isolation_profile": {"$ref": "#/definitions/id"},
-        "output_schema": {"$ref": "#/definitions/id"}
+        "output_schema": {"$ref": "#/definitions/id"},
+        "tool_profile": {
+          "description": "The profile of policy/tools.yaml whose MCP tools this operation's model may call. Absent means no tools.",
+          "$ref": "#/definitions/id"
+        },
+        "tool_reads": {
+          "description": "Sealed artifacts the operation may fetch on request through those tools, judged per file at call time. Separate from allowed_reads, which are put in its prompt.",
+          "$ref": "#/definitions/id_list"
+        }
       },
+      "dependencies": {"tool_reads": ["tool_profile"]},
       "additionalProperties": false
     }
   },
