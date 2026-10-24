@@ -286,7 +286,7 @@ def load_run_scope(
                 f"{backend} runs outside the host but profile {declared} has destination "
                 f"{profile.destination}, which is inside it"
             )
-    view = mcp_policy.snapshot_view(found, cloud, classes["classes"])
+    view = mcp_policy.snapshot_view(found, cloud, classes["classes"], mcp_policy.rules_of(classes))
     return RunScope(run_id, operation, declared, policy, classes, view, tuple(reads))
 
 
@@ -325,7 +325,13 @@ def build_server(
         view = scope.view
     else:
         cloud = mcp_policy.destination_is_cloud(classes, profile.destination)
-        view = View.live(root, mcp_policy.tree_class(classes), cloud, classes["classes"])
+        view = View.live(
+            root,
+            mcp_policy.tree_class(classes),
+            cloud,
+            classes["classes"],
+            mcp_policy.rules_of(classes),
+        )
     offered = mcp_policy.offered_tools(profile, classes, view)
     audit_scope = (
         {

@@ -6,10 +6,16 @@ SDK: loading and checking that policy, the rules for reading the project's files
 scan, and the audit log. `mcp_server.py` wires it to the SDK.
 
 * A profile names a destination (where the caller's model runs, in the kinds of
-  `policy/data_classes.yaml`). Repository content, and the run documents that can carry
-  code, are a class of their own in that file (`artifact_defaults.pinned_source_tree`); a
-  destination with `cloud: true` receives them only if that class is `cloud_allowed`. By
-  default it is `confidential`, so a cloud profile gets no repository content at all.
+  `policy/data_classes.yaml`). Repository content is a class of its own in that file
+  (`artifact_defaults.pinned_source_tree`); a destination with `cloud: true` receives a file
+  only if its class is `cloud_allowed`. By default the tree is `confidential`, so with no path
+  rule a cloud profile gets none of it. The run documents that can carry code (`run_evidence`)
+  need the whole tree's class to be allowed.
+* A file has a class of its own. The class of the artifact it comes from (the source tree is
+  `confidential`) is refined by the ordered `path_rules` of that file (`path_rules.py`), so a
+  cloud destination can be given the documentation of a project whose code stays on the host.
+  Listings and searches leave out what the destination may not receive, and a directory is
+  listed only if it holds a file it may.
 * Files are read through one confinement: no absolute path, no `..`, no backslash, no symlink
   that leaves the project root, nothing under a directory that holds secrets or run data
   (`UNREADABLE_DIRS`), nothing named like a credential file (`SECRET_NAMES`). Text only, in
@@ -18,8 +24,7 @@ scan, and the audit log. `mcp_server.py` wires it to the SDK.
 * Every call, allowed or denied, is appended to a hash-chained log under `<runs>/.mcp/`.
   If the log cannot be written the call is denied: no unaudited access.
 
-These are safe defaults that use only policy that already exists. Path-level data classes and
-which agent gets which profile are planned for every agent together, later.
+Which agent gets which profile is the registry's `tool_profile` (see `check_operation_tools`).
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -39,6 +44,7 @@ from agentic_pipeline.build_gates import SECRET_PATTERNS
 from agentic_pipeline.graph import loads_yaml
 from agentic_pipeline.grounding import PINNED_SOURCES
 from agentic_pipeline.manifest import SealedInput
+from agentic_pipeline.path_rules import PathRule, first_class, parse_path_rules
 from agentic_pipeline.provenance import JsonlProvenanceLog, ProvenanceError
 from agentic_pipeline.registry import _backend_refs, backend_location, op_backends, operations
 from agentic_pipeline.schemas import ValidationError, validate
@@ -119,7 +125,8 @@ def destination_is_cloud(data_classes: Mapping[str, Any], destination: str) -> b
 
 
 def content_allowed(data_classes: Mapping[str, Any], destination: str) -> bool:
-    """Whether repository content may reach a caller at `destination`."""
+    """Whether a caller at `destination` may be sent content of the whole source tree, as the
+    run documents that can carry code (`run_evidence`) require. Path rules do not count here."""
     if not destination_is_cloud(data_classes, destination):
         return True
     tree = (data_classes.get("artifact_defaults") or {}).get("pinned_source_tree", "unknown")
@@ -174,6 +181,23 @@ def check_operation_tools(
     defaults = data_classes.get("artifact_defaults") or {}
     isolation = registry.get("isolation_profiles") or {}
     errors: list[str] = []
+
+    def cloud_ok(name: Any) -> bool:
+        return isinstance(name, str) and (classes.get(name) or {}).get("cloud_allowed") is True
+
+    try:
+        rules = parse_path_rules(data_classes)
+    except ValueError:
+        rules = ()  # check_data_classes reports it
+
+    def cleared(artifact: str) -> bool:
+        """Whether a rule gives files of this pinned artifact, where it sits in the repository, a
+        class that is allowed."""
+        if artifact not in PINNED_SOURCES:
+            return False
+        where = PINNED_SOURCES[artifact]
+        prefix = tuple(PurePosixPath(where).parts) if where else ()
+        return any(cloud_ok(r.data_class) and r.reaches(prefix) for r in rules)
 
     def profile_of(where: str, name: Any) -> Mapping[str, Any] | None:
         if tools is None:
@@ -235,7 +259,7 @@ def check_operation_tools(
         if repo and reads and destination_is_cloud(data_classes, profile["destination"]):
             known = [defaults[a] for a in reads if a in defaults]
             if len(known) == len(reads) and not any(
-                (classes.get(c) or {}).get("cloud_allowed") is True for c in known
+                cloud_ok(c) or cleared(a) for a, c in zip(reads, known, strict=True)
             ):
                 errors.append(
                     f"tools: {where} tool_reads {reads} are all of classes {sorted(set(known))}, "
@@ -363,10 +387,14 @@ def scan_secrets(text: str) -> list[str]:
 
 
 def list_dir(
-    root: Path, rel: str, hide: frozenset[tuple[str, ...]] = frozenset()
+    root: Path,
+    rel: str,
+    hide: frozenset[tuple[str, ...]] = frozenset(),
+    visible: Callable[[Path, bool], bool] | None = None,
 ) -> dict[str, Any]:
     """The readable entries of a directory. `hide` holds paths (relative to `root`) that another
-    mount serves, so they are not listed here."""
+    mount serves, so they are not listed here; `visible(path, is_dir)` leaves out the entries
+    the caller may not be sent."""
     real = resolve_readable(root, rel)
     if not real.is_dir():
         raise Denied("not_a_directory", f"{rel}: not a directory")
@@ -383,10 +411,12 @@ def list_dir(
             _unreadable(p) for p in resolved.relative_to(base).parts
         ):
             continue
+        is_dir = resolved.is_dir()
+        if visible is not None and not visible(child, is_dir):
+            continue
         if len(entries) >= MAX_LIST_ENTRIES:
             truncated = True
             break
-        is_dir = resolved.is_dir()
         entries.append(
             {
                 "name": child.name,
@@ -438,10 +468,14 @@ def search_text(
     limit: int,
     hide: frozenset[tuple[str, ...]] = frozenset(),
     prefix: tuple[str, ...] = (),
+    visible: Callable[[Path], bool] | None = None,
+    enter: Callable[[tuple[str, ...]], bool] | None = None,
 ) -> dict[str, Any]:
     """Lines containing `query` in the readable text files under `rel`. `hide` holds paths
     (relative to `root`) that another mount serves; `prefix` is where `root` appears in the
-    project, and goes in front of the paths returned."""
+    project, and goes in front of the paths returned. `visible(path)` says whether the caller
+    may be sent a file, and `enter(parts)` whether a directory (relative to `root`) may hold
+    one: a file or directory it refuses is not opened, scanned or counted."""
     if not query or len(query) > MAX_QUERY:
         raise Denied("bad_argument", f"the query is 1 to {MAX_QUERY} characters")
     start = resolve_readable(root, rel)
@@ -457,7 +491,13 @@ def search_text(
         found: list[Path] = []
         for dirpath, dirs, files in os.walk(start, followlinks=False):
             at = Path(dirpath).relative_to(base).parts
-            dirs[:] = sorted(d for d in dirs if not _unreadable(d) and (*at, d) not in hide)
+            dirs[:] = sorted(
+                d
+                for d in dirs
+                if not _unreadable(d)
+                and (*at, d) not in hide
+                and (enter is None or enter((*at, d)))
+            )
             found += [Path(dirpath, f) for f in sorted(files) if not _unreadable(f)]
         return found
 
@@ -468,6 +508,8 @@ def search_text(
         except (OSError, ValueError):
             continue
         if any(_unreadable(p) for p in parts):
+            continue
+        if visible is not None and not visible(path):
             continue
         shown = (
             "/".join((*prefix, *path.relative_to(base).parts)) if path.is_relative_to(base) else ""
@@ -516,14 +558,35 @@ def search_text(
 # ── What a session can see: mounts of sealed or live trees ────────────────────
 
 
+def rules_of(data_classes: Mapping[str, Any]) -> tuple[PathRule, ...]:
+    """The `path_rules` of the data-classes policy. A policy whose rules do not check is
+    refused, so no file is served under rules the code cannot read."""
+    try:
+        return parse_path_rules(data_classes)
+    except ValueError as exc:
+        raise ToolsPolicyError(f"policy/data_classes.yaml: {exc}") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class Mount:
-    """A tree that appears in the project at `prefix`, with the one class its files have."""
+    """A tree that appears in the project at `prefix`, with the class its files have unless a
+    path rule gives one a class of its own. `repo` says it holds files of the repository, so the
+    rules apply (the live checkout and the pinned artifacts); any other sealed artifact keeps
+    its class whole."""
 
     prefix: tuple[str, ...]
     path: Path
     data_class: str
     label: str  # "project" for the live checkout, else the sealed artifact's id
+    repo: bool = False
+
+
+@dataclass(slots=True)
+class Probe:
+    """How many files a listing may still look at, in all, to learn whether the directories it
+    shows hold a file the caller may be sent. When it runs out, a directory is left out."""
+
+    left: int = MAX_SEARCH_FILES
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,11 +594,13 @@ class View:
     """The files a session can reach, as mounts. A path belongs to the mount with the longest
     matching prefix, so a narrower artifact (the contracts, `internal`) refines a broader one
     (the whole tree, `confidential`) where they overlap. `cloud` says the caller's model is
-    outside the host: then only files of a `cloud_allowed` class are returned."""
+    outside the host: then only files of a `cloud_allowed` class are returned. A file's class is
+    its mount's unless `rules` (ordered, first match wins) give it one."""
 
     mounts: tuple[Mount, ...]
     cloud: bool
     classes: Mapping[str, Any]
+    rules: tuple[PathRule, ...] = ()
 
     def allowed(self, data_class: str) -> bool:
         if not self.cloud:
@@ -543,8 +608,85 @@ class View:
         entry = self.classes.get(data_class)
         return isinstance(entry, Mapping) and entry.get("cloud_allowed") is True
 
+    def classes_of(self, mount: Mount, rest: tuple[str, ...]) -> frozenset[str]:
+        """The classes the policy may give the path `rest` of `mount`: the first matching rule
+        read with case and read ignoring case (a file system that ignores it could serve the
+        file under either spelling), else the mount's own."""
+        if not (mount.repo and self.rules):
+            return frozenset({mount.data_class})
+        full = (*mount.prefix, *rest)
+        return frozenset(
+            first_class(self.rules, full, fold) or mount.data_class for fold in (False, True)
+        )
+
+    def path_allowed(self, mount: Mount, rest: tuple[str, ...]) -> bool:
+        """Whether the caller may be sent the file at `rest` in `mount`, by its path alone."""
+        return not self.cloud or all(self.allowed(c) for c in self.classes_of(mount, rest))
+
+    def file_ok(self, mount: Mount, path: Path) -> bool:
+        """Whether the caller may be sent the file at `path`, which lies in `mount.path`: the
+        path as asked and the file it resolves to (a link may lead elsewhere) both qualify."""
+        if not self.cloud:
+            return True
+        try:
+            asked = path.relative_to(mount.path).parts
+            real = path.resolve().relative_to(mount.path).parts
+        except (OSError, ValueError):
+            return False
+        return self.path_allowed(mount, asked) and self.path_allowed(mount, real)
+
+    def may_hold(self, mount: Mount, rest: tuple[str, ...]) -> bool:
+        """Whether the directory `rest` of `mount` could hold a file the caller may be sent: its
+        class is allowed or a rule that gives an allowed class reaches into it. A cheap test
+        that can say yes of a directory with nothing; it never says no of one with something."""
+        if self.allowed(mount.data_class):
+            return True
+        full = (*mount.prefix, *rest)
+        return mount.repo and any(
+            self.allowed(r.data_class) and r.reaches(full) for r in self.rules
+        )
+
     def any_allowed(self) -> bool:
-        return any(self.allowed(m.data_class) for m in self.mounts)
+        return any(self.may_hold(m, ()) for m in self.mounts)
+
+    def dir_visible(self, mount: Mount, rest: tuple[str, ...], probe: Probe) -> bool:
+        """Whether a directory is shown: the caller may be sent a file in it, however deep."""
+        if not self.cloud:
+            return True
+        if not (mount.repo and self.rules):
+            return self.allowed(mount.data_class)
+        if not self.may_hold(mount, rest):
+            return False
+        hidden = self.hidden_under(mount)
+        for dirpath, dirs, files in os.walk(mount.path.joinpath(*rest), followlinks=False):
+            at = Path(dirpath).relative_to(mount.path).parts
+            dirs[:] = sorted(
+                d
+                for d in dirs
+                if not _unreadable(d) and (*at, d) not in hidden and self.may_hold(mount, (*at, d))
+            )
+            for name in sorted(files):
+                if _unreadable(name):
+                    continue
+                probe.left -= 1
+                if probe.left < 0:
+                    return False
+                if self.file_ok(mount, Path(dirpath, name)):
+                    return True
+        return False
+
+    def entry_filter(self, mount: Mount, probe: Probe) -> Callable[[Path, bool], bool] | None:
+        """For `list_dir`: which entries of a directory of `mount` the caller sees. None when the
+        whole mount has one class and the directory was shown for it."""
+        if not (self.cloud and mount.repo and self.rules):
+            return None
+
+        def visible(child: Path, is_dir: bool) -> bool:
+            if is_dir:
+                return self.dir_visible(mount, child.relative_to(mount.path).parts, probe)
+            return self.file_ok(mount, child)
+
+        return visible
 
     def locate(self, parts: tuple[str, ...]) -> tuple[Mount, tuple[str, ...]] | None:
         best = None
@@ -565,9 +707,16 @@ class View:
         )
 
     @classmethod
-    def live(cls, root: Path, data_class: str, cloud: bool, classes: Mapping[str, Any]) -> View:
+    def live(
+        cls,
+        root: Path,
+        data_class: str,
+        cloud: bool,
+        classes: Mapping[str, Any],
+        rules: tuple[PathRule, ...] = (),
+    ) -> View:
         """The project's working tree as one mount; its class is the source tree's."""
-        return cls((Mount((), root.resolve(), data_class, "project"),), cloud, classes)
+        return cls((Mount((), root.resolve(), data_class, "project", True),), cloud, classes, rules)
 
 
 def tree_class(data_classes: Mapping[str, Any]) -> str:
@@ -575,60 +724,77 @@ def tree_class(data_classes: Mapping[str, Any]) -> str:
 
 
 def snapshot_view(
-    found: Mapping[str, SealedInput], cloud: bool, classes: Mapping[str, Any]
+    found: Mapping[str, SealedInput],
+    cloud: bool,
+    classes: Mapping[str, Any],
+    rules: tuple[PathRule, ...] = (),
 ) -> View:
     """Sealed artifacts as a view. The pinned ones appear where they sit in the repository
     (`grounding.PINNED_SOURCES`: the tree at the root, the contracts under `contracts`, the
-    tests under `tests`); any other artifact appears under a directory named by its id."""
+    tests under `tests`) and the path rules apply to them; any other artifact appears under a
+    directory named by its id and keeps its class."""
     mounts = []
     for artifact, sealed in found.items():
         where = PINNED_SOURCES.get(artifact, artifact)
         prefix = tuple(PurePosixPath(where).parts) if where else ()
-        mounts.append(Mount(prefix, sealed.path.resolve(), sealed.data_class, artifact))
-    return View(tuple(mounts), cloud, classes)
+        mounts.append(
+            Mount(
+                prefix,
+                sealed.path.resolve(),
+                sealed.data_class,
+                artifact,
+                artifact in PINNED_SOURCES,
+            )
+        )
+    return View(tuple(mounts), cloud, classes, rules)
 
 
-def _denied_class(view: View, mount: Mount, rel: str) -> Denied:
+def _denied_class(rel: str) -> Denied:
     return Denied(
         "class_not_allowed",
-        f"{rel or '.'}: its class ({mount.data_class}) may not be sent to a caller outside "
-        "the host",
+        f"{rel or '.'}: its class may not be sent to a caller outside the host",
     )
-
-
-def _joined(prefix: tuple[str, ...], rel: str) -> str:
-    return "/".join((*prefix, *relative_parts(rel))) or "."
 
 
 def view_list(view: View, rel: str) -> dict[str, Any]:
     parts = relative_parts(rel)
     entries: dict[str, dict[str, Any]] = {}
     truncated = False
+    probe = Probe(MAX_SEARCH_FILES)
     located = view.locate(parts)
-    if located is not None and view.allowed(located[0].data_class):
+    listable = False
+    if located is not None:
         mount, rest = located
-        listing = list_dir(mount.path, "/".join(rest) or ".", view.hidden_under(mount))
-        entries.update({e["name"]: e for e in listing["entries"]})
-        truncated = listing["truncated"]
+        listable = view.path_allowed(mount, rest) or view.dir_visible(mount, rest, probe)
+        if listable:
+            listing = list_dir(
+                mount.path,
+                "/".join(rest) or ".",
+                view.hidden_under(mount),
+                view.entry_filter(mount, probe),
+            )
+            entries.update({e["name"]: e for e in listing["entries"]})
+            truncated = listing["truncated"]
     for m in view.mounts:  # directories that exist only because a narrower mount sits below
         if (
             len(m.prefix) > len(parts)
             and m.prefix[: len(parts)] == parts
-            and view.allowed(m.data_class)
+            and view.dir_visible(m, (), probe)
         ):
             entries.setdefault(
                 m.prefix[len(parts)], {"name": m.prefix[len(parts)], "kind": "dir", "size": None}
             )
     if not entries:
-        if located is not None and not view.allowed(located[0].data_class):
-            raise _denied_class(view, located[0], rel)
+        if located is not None and not listable:
+            raise _denied_class(rel)
         if located is None:
             raise Denied("not_found", f"{rel}: no such file or directory")
     ordered = sorted(entries.values(), key=lambda e: (e["kind"] != "dir", e["name"].lower()))
     return {
         "path": "/".join(parts) or ".",
         "entries": ordered[:MAX_LIST_ENTRIES],
-        "truncated": truncated or len(ordered) > MAX_LIST_ENTRIES,
+        # the listing is also incomplete when it ran out of files to look at for the directories
+        "truncated": truncated or len(ordered) > MAX_LIST_ENTRIES or probe.left < 0,
     }
 
 
@@ -638,8 +804,13 @@ def view_read(view: View, rel: str, offset: int, length: int | None, limit: int)
     if located is None:
         raise Denied("not_found", f"{rel}: no such file or directory")
     mount, rest = located
-    if not view.allowed(mount.data_class):
-        raise _denied_class(view, mount, rel)
+    # The class is judged before the file is looked for, so a refusal says nothing of whether
+    # the path exists; and again on the file a link leads to.
+    if not view.path_allowed(mount, rest):
+        raise _denied_class(rel)
+    real = resolve_readable(mount.path, "/".join(rest) or ".")
+    if not view.path_allowed(mount, real.relative_to(mount.path).parts):
+        raise _denied_class(rel)
     result = read_text(mount.path, "/".join(rest) or ".", offset, length, limit)
     return {**result, "path": "/".join(parts)}
 
@@ -670,21 +841,37 @@ def view_search(
         hidden = view.hidden_under(mount)
         if any(inside[: len(h)] == h for h in hidden):
             continue  # a narrower mount serves this part
-        if not view.allowed(mount.data_class):
+        own = view.path_allowed(mount, inside)
+        if not own and not view.may_hold(mount, inside):
             refused += 1
             continue
+        start = mount.path.joinpath(*inside)
+        if start.is_file() and not view.file_ok(mount, start):
+            refused += 1
+            continue
+        try:
+            found = search_text(
+                mount.path,
+                query,
+                "/".join(inside) or ".",
+                glob,
+                ignore_case,
+                max_results - len(matches),
+                max(0, limit - used),
+                hidden,
+                mount.prefix,
+                visible=lambda path, mount=mount: view.file_ok(mount, path),
+                enter=lambda at, mount=mount: view.may_hold(mount, at),
+            )
+        except Denied as exc:
+            if exc.code == "not_found" and not own:
+                refused += 1  # no word of whether a path the caller may not have exists
+                continue
+            raise
+        if not own and not view.dir_visible(mount, inside, Probe(MAX_SEARCH_FILES)):
+            refused += 1  # nothing below it may be sent, whatever the glob and the query
+            continue
         searched += 1
-        found = search_text(
-            mount.path,
-            query,
-            "/".join(inside) or ".",
-            glob,
-            ignore_case,
-            max_results - len(matches),
-            max(0, limit - used),
-            hidden,
-            mount.prefix,
-        )
         matches += found["matches"]
         used += sum(len(m["path"]) + len(m["text"]) + 32 for m in found["matches"])
         scanned += found["files_scanned"]
@@ -695,10 +882,7 @@ def view_search(
             break
     if not searched:
         if refused:
-            raise Denied(
-                "class_not_allowed",
-                f"{rel or '.'}: its class may not be sent to a caller outside the host",
-            )
+            raise _denied_class(rel)
         raise Denied("not_found", f"{rel}: no such file or directory")
     return {
         "query": query,
