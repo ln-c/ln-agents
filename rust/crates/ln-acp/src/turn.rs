@@ -407,6 +407,7 @@ impl<H: Host> Prompt<H> {
                         approver: &approver,
                         reason: &reason,
                     },
+                    false,
                 )?;
             }
             Command::ApprovalPick => return self.pick_and_write(),
@@ -457,6 +458,9 @@ impl<H: Host> Prompt<H> {
         let view = skill_reply(&self.host.client()?, &Request::evidence(&run))
             .map_err(|e| format!("orchestrator: {e}"))?;
         let offer = Offer::from_view(&view)?;
+        if offer.approvers.is_empty() {
+            return Err(format!("The policy names no approver for {}.", offer.node));
+        }
         let labels: Vec<String> = offer.choices.iter().map(|c| c.label.clone()).collect();
         let title = format!("{} · {run}: what do you sign?", offer.node);
         let Some(choice) = self
@@ -467,7 +471,6 @@ impl<H: Host> Prompt<H> {
             return nothing();
         };
         let approver = match offer.approvers.as_slice() {
-            [] => return Err(format!("The policy names no approver for {}.", offer.node)),
             [only] => only.clone(),
             several => {
                 let title = format!("Who signs {}?", offer.node);
@@ -483,7 +486,7 @@ impl<H: Host> Prompt<H> {
             _ => return nothing(),
         };
         self.say(format!("**{}**: {reason}\n\n", choice.label));
-        self.write_document(
+        let signable = self.write_document(
             &run,
             &Signing {
                 decision: &choice.decision,
@@ -492,13 +495,18 @@ impl<H: Host> Prompt<H> {
                 approver: &approver,
                 reason: &reason,
             },
+            true,
         )?;
-        self.say("`/decide` signs it here.\n");
+        if signable {
+            self.say("`/decide` signs it here.\n");
+        }
         Ok(Ended::Done)
     }
 
-    /// Ask the orchestrator for the unsigned document and keep it for `/decide`.
-    fn write_document(&self, run: &str, signing: &Signing) -> Result<(), String> {
+    /// Ask the orchestrator for the unsigned document and keep it for `/decide`. The manual
+    /// commands follow unless `short` and `/decide` can use the document, which is whether it
+    /// returns true. When it cannot, they are the only way to sign, so they are shown.
+    fn write_document(&self, run: &str, signing: &Signing, short: bool) -> Result<bool, String> {
         let request = Request::approval_document(
             run,
             signing.decision,
@@ -509,12 +517,22 @@ impl<H: Host> Prompt<H> {
         );
         let reply = skill_reply(&self.host.client()?, &request)
             .map_err(|e| format!("orchestrator: {e}"))?;
-        self.say(render::approval_text(&reply));
         match human::Pending::from_reply(run, &reply) {
-            Ok(pending) => self.remember(pending),
-            Err(error) => self.say(format!("\n`/decide` cannot use this document: {error}.\n")),
+            Ok(pending) => {
+                self.say(if short {
+                    render::approval_written(&reply)
+                } else {
+                    render::approval_text(&reply)
+                });
+                self.remember(pending);
+                Ok(true)
+            }
+            Err(error) => {
+                self.say(render::approval_text(&reply));
+                self.say(format!("\n`/decide` cannot use this document: {error}.\n"));
+                Ok(false)
+            }
         }
-        Ok(())
     }
 
     fn remember(&self, pending: human::Pending) {

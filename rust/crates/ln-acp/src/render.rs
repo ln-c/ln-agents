@@ -857,6 +857,17 @@ pub fn approval_text(reply: &Value) -> String {
     )
 }
 
+/// The same, for a person who signs with `/decide` in the same window: no commands to copy.
+pub fn approval_written(reply: &Value) -> String {
+    let field = |k: &str| reply.get(k).and_then(Value::as_str).unwrap_or("-");
+    format!(
+        "Wrote the **unsigned** {} document for `{}`: `{}`\n\nNothing is approved yet.\n",
+        field("decision"),
+        field("node"),
+        field("document"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1059,6 +1070,13 @@ mod tests {
                                         "sign": "ssh-keygen -Y sign ...", "then": "python -m ... run decide"}),
         );
         assert!(doc.contains("**unsigned**") && doc.contains("Nothing is approved yet"));
+        assert!(doc.contains("ssh-keygen -Y sign") && doc.contains("run decide"));
+        let written = approval_written(
+            &json!({"node": "H1", "decision": "d", "document": "/p.json",
+                                        "sign": "ssh-keygen -Y sign ...", "then": "python -m ... run decide"}),
+        );
+        assert!(written.contains("**unsigned**") && written.contains("`/p.json`"));
+        assert!(!written.contains("ssh-keygen") && !written.contains("run decide"));
         let evidence = evidence_text(&json!({"survivors": ["a"], "valid_ratios": {"x": 1.0}}));
         assert!(evidence.contains("survivors: `[\"a\"]`") && !evidence.contains("fired"));
     }

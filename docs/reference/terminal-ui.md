@@ -68,9 +68,9 @@ By default the UI uses the terminal's alternate screen, as a pager does: the inp
 
 1. It asks the orchestrator what the run is waiting for, and lists exactly what the orchestrator offers, numbered. At the design decision that is, for example, `1. Approve Design A`, `2. Approve Design B`, `3. Approve the synthesis`, `4. Request evidence`, `5. Revise with notes`, and so on. The list comes only from the orchestrator's own answer; text a model wrote cannot add an option. Press `r` to read the whole evidence report first.
 2. You pick one: a number, the arrows and `Enter`, or a click.
-3. If the policy names more than one approver for this decision you pick the approver too; if it names one, that one is used. It is never your git user by default, and a policy that names none is an error.
+3. If the policy names more than one approver for this decision you pick the approver too; if it names one, that one is used. It is never your git user by default, and a policy that names none is an error, reported before the list is shown.
 4. It asks for the reason on one line (`Enter` sends it, `Esc` leaves).
-5. It writes the unsigned document and says so. The pick and your reason are the consent, so nothing more is asked. The document approves nothing until you sign it, and `/decide` signs it here.
+5. It writes the unsigned document and says so. The pick and your reason are the consent, so nothing more is asked. The document approves nothing until you sign it, and `/decide` signs it here. The commands for signing by hand are not repeated here; if `/decide` cannot use the document (the orchestrator's reply lacks a field), they are shown with the reason, because then they are the only way to sign it.
 
 Leaving the list or the reason writes nothing. The long form, `/approval-doc <decision>[:<candidate>] <approver> <reason>`, still works, and then asks before it writes: `y` allows it once, and `n`, `Esc` or `Enter` does not.
 
