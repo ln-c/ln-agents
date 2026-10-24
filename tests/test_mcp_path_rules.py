@@ -22,7 +22,12 @@ from agentic_pipeline.path_rules import (
 from agentic_pipeline.policies import check_data_classes
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_CLASSES = yaml.safe_load((ROOT / "policy" / "data_classes.yaml").read_text())
+# The policy without the path rules the repository gives its own files: these tests set theirs.
+DATA_CLASSES = {
+    key: value
+    for key, value in yaml.safe_load((ROOT / "policy" / "data_classes.yaml").read_text()).items()
+    if key != "path_rules"
+}
 CLASSES = DATA_CLASSES["classes"]
 
 

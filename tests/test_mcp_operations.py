@@ -19,7 +19,12 @@ from agentic_pipeline.validation import validate_repo
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = yaml.safe_load((ROOT / "policy" / "model_registry.yaml").read_text())
-DATA_CLASSES = yaml.safe_load((ROOT / "policy" / "data_classes.yaml").read_text())
+# The policy without the path rules the repository gives its own files: these tests set theirs.
+DATA_CLASSES = {
+    key: value
+    for key, value in yaml.safe_load((ROOT / "policy" / "data_classes.yaml").read_text()).items()
+    if key != "path_rules"
+}
 TOOLS = yaml.safe_load((ROOT / "policy" / "tools.yaml").read_text())
 TOOLS["profiles"]["cloud_contracts"] = {
     "destination": "cloud_service",
