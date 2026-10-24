@@ -28,6 +28,17 @@ In a bound session each sealed artifact appears where it sits in the repository:
 
 `validate` checks the file. The tool names are a closed list in `schemas/tools_policy.schema.json`. None approves, signs, decides, resumes or changes policy, budgets or vetoes, so no profile can grant that.
 
+## What a registry may promise
+
+An operation in `policy/model_registry.yaml` may carry `tool_profile` (a profile above) and `tool_reads` (the sealed artifacts it may fetch through the repository tools); an agent may carry `tool_profile` for work outside a run. `validate` checks them against `policy/tools.yaml` and `policy/data_classes.yaml`, in the repository and in a run's frozen copy:
+
+- the profile exists, and its destination is at least as strict as **every** model the operation (or agent) may run on: a model outside the host needs a destination outside it, so the class gate always applies;
+- `tool_reads` name sealed catalog artifacts that the operation does not also deny, does not produce, and does not take from another operation of its own stage, which keeps the two designs independent;
+- repository tools and `tool_reads` go together, and when the classes are known a destination outside the host has at least one artifact it may receive;
+- an operation with session separation (the design stages) is given no run tools.
+
+At dispatch, an operation that is promised tools is refused, before any call, while its adapter cannot provide them. An adapter that starts its model with an MCP configuration declares `provides_tools = True`; none does yet, so no operation can opt in until one is changed.
+
 ## Tools
 
 All tools are read-only.

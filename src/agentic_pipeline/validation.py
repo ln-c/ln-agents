@@ -68,11 +68,18 @@ def validate_repo(root: Path = REPO_ROOT, policy_root: Path | None = None) -> li
         errors += check_test_profiles(policy_docs["model_test_profiles"], _capabilities(root))
     if policy_docs["data_classes"] is not None and registry is not None:
         errors += check_artifact_defaults(policy_docs["data_classes"], registry)
-    if policy_root is None and policy_docs["data_classes"] is not None:
-        # Not part of a run's frozen policy yet, so only the repository itself is checked.
-        from agentic_pipeline.mcp_policy import check_tools_policy
+    if policy_docs["data_classes"] is not None:
+        # A run's frozen copy from before tools.yaml has none, and then nothing to check.
+        tools_file = source / "policy" / "tools.yaml"
+        tools = None
+        if policy_root is None or tools_file.exists():
+            from agentic_pipeline.mcp_policy import check_tools_policy
 
-        tools = _load(root, "policy/tools.yaml", errors)
-        if tools is not None:
-            errors += check_tools_policy(tools, policy_docs["data_classes"])
+            tools = _load(source, "policy/tools.yaml", errors)
+            if tools is not None:
+                errors += check_tools_policy(tools, policy_docs["data_classes"])
+        if registry is not None and (tools is not None or policy_root is not None):
+            from agentic_pipeline.mcp_policy import check_operation_tools
+
+            errors += check_operation_tools(registry, tools, policy_docs["data_classes"])
     return errors

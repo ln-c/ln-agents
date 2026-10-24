@@ -40,6 +40,7 @@ from agentic_pipeline.graph import loads_yaml
 from agentic_pipeline.grounding import PINNED_SOURCES
 from agentic_pipeline.manifest import SealedInput
 from agentic_pipeline.provenance import JsonlProvenanceLog, ProvenanceError
+from agentic_pipeline.registry import _backend_refs, backend_location, op_backends, operations
 from agentic_pipeline.schemas import ValidationError, validate
 
 TOOLS_FILE = "policy/tools.yaml"
@@ -143,6 +144,119 @@ def check_tools_policy(doc: Any, data_classes: Mapping[str, Any]) -> list[str]:
                 f"tools.{name}: destination {profile['destination']!r} is not one of "
                 f"policy/data_classes.yaml destinations {sorted(destinations)}"
             )
+    return errors
+
+
+def _outside_host(registry: Mapping[str, Any], backend: str) -> bool:
+    """Only a provider declared `local` stays on the host; a missing or odd value is outside."""
+    return backend_location(registry, backend) != "local"
+
+
+def check_operation_tools(
+    registry: Mapping[str, Any], tools: Mapping[str, Any] | None, data_classes: Mapping[str, Any]
+) -> list[str]:
+    """What the registry's `tool_profile` and `tool_reads` promise, checked against
+    policy/tools.yaml and the data classes (empty means they add up). `tools` is None when
+    the policy has no tools.yaml.
+
+    * the profile exists, and its destination is at least as strict as every model the operation
+      (or agent) may run on: a model outside the host needs a destination outside it, so the
+      class gate always applies;
+    * `tool_reads` name sealed catalog artifacts that the operation does not also deny, does not
+      produce and does not take from another operation of its own stage (design independence);
+    * repository tools and `tool_reads` go together, and a destination outside the host has at
+      least one artifact it may receive when the classes are known;
+    * an operation with session separation (the design stages) is given no run tools.
+    """
+    profiles = (tools or {}).get("profiles") or {}
+    catalog = registry.get("artifacts") or {}
+    classes = data_classes.get("classes") or {}
+    defaults = data_classes.get("artifact_defaults") or {}
+    isolation = registry.get("isolation_profiles") or {}
+    errors: list[str] = []
+
+    def profile_of(where: str, name: Any) -> Mapping[str, Any] | None:
+        if tools is None:
+            errors.append(f"tools: {where} names profile {name!r} but there is no {TOOLS_FILE}")
+            return None
+        if not isinstance(name, str) or name not in profiles:
+            errors.append(
+                f"tools: {where} names profile {name!r}, which {TOOLS_FILE} does not have "
+                f"({', '.join(sorted(profiles)) or 'no profiles'})"
+            )
+            return None
+        return profiles[name]
+
+    def strict_enough(
+        where: str, name: str, profile: Mapping[str, Any], backends: list[str]
+    ) -> None:
+        if destination_is_cloud(data_classes, profile["destination"]):
+            return
+        for backend in backends:
+            if _outside_host(registry, backend):
+                errors.append(
+                    f"tools: {where} can run on {backend}, outside the host, but profile "
+                    f"{name} has destination {profile['destination']}, inside it"
+                )
+
+    for stage, op in operations(registry.get("stage_requirements") or {}):
+        name = op.get("tool_profile")
+        if name is None:
+            continue
+        where = f"{stage}.{op['id']}"
+        profile = profile_of(where, name)
+        if profile is None:
+            continue
+        strict_enough(where, name, profile, op_backends(registry, stage, op))
+        reads = list(op.get("tool_reads") or [])
+        for artifact in reads:
+            spec = catalog.get(artifact)
+            producers = (spec or {}).get("producer") or []
+            if spec is None or not spec.get("sealed"):
+                errors.append(
+                    f"tools: {where} tool_reads {artifact!r}: not a sealed catalog artifact"
+                )
+            elif artifact in (op.get("denied_reads") or []):
+                errors.append(f"tools: {where} tool_reads {artifact!r} is also in denied_reads")
+            elif where in producers:
+                errors.append(f"tools: {where} tool_reads {artifact!r}, which it produces")
+            elif any(x.startswith(f"{stage}.") for x in producers):
+                errors.append(
+                    f"tools: {where} tool_reads {artifact!r}, "
+                    f"produced by another operation of {stage}"
+                )
+        repo = sorted(set(profile["tools"]) & REPO_TOOLS)
+        if repo and not reads:
+            errors.append(f"tools: {where} has repository tools {repo} but no tool_reads to serve")
+        if reads and not repo:
+            errors.append(
+                f"tools: {where} has tool_reads but profile {name} lists no repository tool"
+            )
+        if repo and reads and destination_is_cloud(data_classes, profile["destination"]):
+            known = [defaults[a] for a in reads if a in defaults]
+            if len(known) == len(reads) and not any(
+                (classes.get(c) or {}).get("cloud_allowed") is True for c in known
+            ):
+                errors.append(
+                    f"tools: {where} tool_reads {reads} are all of classes {sorted(set(known))}, "
+                    f"which a {profile['destination']} destination may not receive"
+                )
+        run_tools = sorted(set(profile["tools"]) & RUN_TOOLS)
+        if run_tools and "session_separation" in (isolation.get(op.get("isolation_profile")) or []):
+            errors.append(
+                f"tools: {where} needs session separation, so profile {name} may not list "
+                f"{run_tools}"
+            )
+
+    for agent_name, agent in (registry.get("agents") or {}).items():
+        name = agent.get("tool_profile") if isinstance(agent, Mapping) else None
+        if name is None:
+            continue
+        where = f"agents.{agent_name}"
+        profile = profile_of(where, name)
+        if profile is not None:
+            refs = [ref for _, ref in _backend_refs(agent, where)]
+            strict_enough(where, name, profile, refs)
     return errors
 
 
