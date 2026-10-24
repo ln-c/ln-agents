@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "module_plan",
+  "title": "Decomposition of the approved design into independent work packages (C1). Each module is built in its own lane from D1 to E2; the modules are then merged and F1 verifies the whole against this plan. See agents/pipeline-build-agent.md.",
+  "type": "object",
+  "required": ["id", "manifest_hash", "candidate_digest", "requirements", "modules"],
+  "additionalProperties": false,
+  "definitions": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "requirement_id": {"type": "string", "pattern": "^REQ-[0-9]{1,6}$"},
+    "requirement_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/definitions/requirement_id"}
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.][A-Za-z0-9_./-]*$",
+      "not": {"pattern": "(^|/)\\.\\.(/|$)"},
+      "description": "Repository-relative, forward slashes, no glob: a file, or a directory when it ends in `/`. No absolute path and no `..`. Code checks the rest (no two modules' paths overlap, none inside the protected trees)."
+    }
+  },
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "manifest_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Copied from the pinned context manifest."},
+    "candidate_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Copied from the sealed design decision: the design this plan decomposes."},
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The requirements of the approved design, with ids assigned here. Every module and every test refers to them; code builds the coverage matrix from these ids.",
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"$ref": "#/definitions/requirement_id"},
+          "text": {"type": "string", "minLength": 1},
+          "source": {"type": "string", "minLength": 1, "description": "Where in the approved design this requirement comes from (a component, decision or contract)."}
+        }
+      }
+    },
+    "interfaces": {
+      "type": "array",
+      "description": "The only ways modules meet. Each has one provider and a frozen contract; a module sees another module's interface through its contract, never through its code.",
+      "items": {
+        "type": "object",
+        "required": ["id", "provider", "contract_ref"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"$ref": "#/definitions/id"},
+          "provider": {"$ref": "#/definitions/id", "description": "The module_id that implements it."},
+          "contract_ref": {"$ref": "#/definitions/path", "description": "The frozen contract file that states it."},
+          "description": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["module_id", "component", "implementation_paths", "contract_refs", "requirement_refs"],
+        "additionalProperties": false,
+        "properties": {
+          "module_id": {"$ref": "#/definitions/id"},
+          "component": {"type": "string", "minLength": 1, "description": "The component of the approved design this module realizes."},
+          "implementation_paths": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"$ref": "#/definitions/path"},
+            "description": "The only paths E1 may write for this module. Disjoint across modules."
+          },
+          "contract_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/definitions/path"}},
+          "requirement_refs": {"$ref": "#/definitions/requirement_refs"},
+          "consumes": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"$ref": "#/definitions/id"},
+            "description": "Interface ids this module uses from other modules."
+          },
+          "verification": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Methods the tests of this module add to the checks of policy/ci.yaml. A module can only raise its obligations; it never waives a required check.",
+            "properties": {
+              "methods": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {"enum": ["unit_test", "property_test", "boundary_test", "contract_test"]}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
