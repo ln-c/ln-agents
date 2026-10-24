@@ -16,7 +16,7 @@ Build status of every graph state, checked against `DEFAULT_HANDLERS` in `src/ag
 | Human design approval | `H1`, `DR` | Built. `H1` is a signed approval (see [Human decisions](docs/guides/human-decisions.md)); `DR` then seals the approved candidate as the design decision the build reads. `DR` reached from the fast path needs a scored winner and blocks, because none is ever invented. |
 | BENCH, CHILD | `BENCH`, `CHILD` | **Not built.** A run blocks here. |
 | Build | `C1`, `D1`, `E1` | Model dispatch built. |
-| Build | `E0` | **Not built.** It has no handler, so a run blocks before `E1`. |
+| Build | `E0` | Built. It blocks unless the pinned commit is the approved one, every sealed input `E1` reads is unchanged and the sandbox self-test passes; it makes no sandbox (the adapter does, per call). |
 | Build gates | `E2`, `E3`, `X` | Built. `E4` (cloud escalation) is **not built**. |
 | CI | `F1` | Built. See [CI checks](docs/reference/ci-checks.md). |
 | Release | `R1`, `M1`, `RC`, `RM`, `MERGED` | Built. `R1` is a signed merge approval; `M1` makes a local merge branch only. |

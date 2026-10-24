@@ -1,4 +1,16 @@
-"""Deterministic build-side gates: E2 and F1 (checks), X (exception router), E3 (escalation).
+"""Deterministic build-side gates: E0 (build start), E2 and F1 (checks), X (exception router),
+E3 (escalation).
+
+E0 attests the conditions the build starts under (agents/pipeline-build-agent.md, E0) and
+blocks before E1 is dispatched if one is absent or unverifiable: the pinned commit is the one
+the design approval names, every sealed input E1 may read (contracts, generated and protected
+tests among them) is published and re-hashes to its seal, and the worker sandbox's own
+self-test shows the isolation checks of E1's profile VERIFIED now. E0 makes no sandbox: each
+model call gets a fresh one from its adapter (bwrap, a private tmpfs home, the inputs read-only,
+loopback only, inference through the broker), and dispatch probes it again on the E0 to E1
+edge. The audit record is gates/E0/<digest>.json. The specification's "only approved cached
+dependencies" is not checked separately: the sandbox has no network, so nothing can be installed,
+and the repository defines no dependency cache to check against.
 
 E2 reads the newest implementation patch (the `implementation_patch` artifact in the E1 or
 E4 stage manifest, re-hashed against it) and runs the static checks that need only files,
@@ -35,7 +47,7 @@ import json
 import re
 import shutil
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +61,7 @@ from agentic_pipeline.ci import (
     stage_checks,
 )
 from agentic_pipeline.gates import (
+    CONTEXT_INPUT,
     UNEVALUATED,
     GateError,
     _digest,
@@ -63,6 +76,8 @@ from agentic_pipeline.manifest import (
     load_manifest,
     resolve_sealed_inputs,
 )
+from agentic_pipeline.readiness import SANDBOX_CHECKS, Host, probe_sandbox
+from agentic_pipeline.registry import operations
 
 if TYPE_CHECKING:
     from agentic_pipeline.runner import HandlerContext
@@ -119,6 +134,83 @@ UNKNOWN_CAUSE = "unknown_or_spent"
 
 class BuildGateError(GateError):
     pass
+
+
+# ── E0 ───────────────────────────────────────────────────────────────────────
+
+BUILD_STAGE = "E1"
+
+
+def _approved_sha(ctx: HandlerContext) -> str:
+    """The commit the newest signed design approval (H1) binds to, from the provenance log."""
+    approvals = [e for e in ctx.events() if e.get("event") == "approval" and e.get("state") == "H1"]
+    if not approvals:
+        raise BuildGateError("E0: no design approval is recorded for this run")
+    return str(approvals[-1]["approved_sha"])
+
+
+def _attest_sandbox(required: Collection[str]) -> dict[str, dict[str, str]]:
+    """Run the worker sandbox's own self-test now; every check the profile needs must be VERIFIED.
+
+    Anything else, including a check the test could not complete, stops the build: the pipeline
+    does not start a build in a sandbox it cannot show to be isolated.
+    """
+    found = probe_sandbox(Host.real())
+    attested = {
+        name: {"status": str(found[name].status), "detail": found[name].detail}
+        for name in sorted(required)
+    }
+    if bad := [
+        f"{n} {c['status']}: {c['detail']}"
+        for n, c in attested.items()
+        if c["status"] != "VERIFIED"
+    ]:
+        raise BuildGateError("E0: the sandbox is not attested: " + "; ".join(bad))
+    return attested
+
+
+def prepare_build(ctx: HandlerContext) -> str:
+    """E0: attest the build's starting conditions; E1 starts only if every one holds.
+
+    Checked, and recorded under gates/E0: the pinned commit is the one the design approval
+    names; every sealed input E1 may read is published and unchanged (the protected tests,
+    contracts and generated tests are re-hashed against their seals); and the sandbox self-test
+    shows only the write root writable, the host home invisible, the inputs read-only, loopback
+    as the only network and inference only through the broker. Anything absent or unverifiable
+    blocks the run here, with the reason, before E1 is dispatched.
+    """
+    _policy(ctx)
+    stage = ctx.registry["stage_requirements"][BUILD_STAGE]
+    ops = [op for _, op in operations({BUILD_STAGE: stage})]
+    reads = {artifact for op in ops for artifact in op["allowed_reads"]} | {CONTEXT_INPUT}
+    inputs, errors = resolve_sealed_inputs(ctx.run_root, ctx.run_id, ctx.registry, sorted(reads))
+    if errors:
+        raise BuildGateError("E0: " + "; ".join(errors))
+    context = json.loads((inputs[CONTEXT_INPUT].path / "context_manifest.json").read_text("utf-8"))
+    pinned, approved = str(context["commit_sha"]), _approved_sha(ctx)
+    if pinned != approved:
+        raise BuildGateError(f"E0: the pinned commit {pinned} is not the approved one, {approved}")
+    profiles = ctx.registry["isolation_profiles"]
+    needed = {c for op in ops for c in profiles[op["isolation_profile"]]} & set(SANDBOX_CHECKS)
+    facts = {
+        "guard": "always",
+        "commit_sha": pinned,
+        "inputs": {
+            name: {"digest": digest_path(item.path), "data_class": item.data_class}
+            for name, item in sorted(inputs.items())
+        },
+        "operations": [
+            {
+                "id": op["id"],
+                "write_root": ctx.registry["workspace_roots"][op["write_root"]],
+                "isolation_profile": op["isolation_profile"],
+            }
+            for op in ops
+        ],
+        "sandbox": _attest_sandbox(needed),
+    }
+    _record(ctx, "E0", _digest(facts), facts)
+    return "always"
 
 
 # ── E2 ───────────────────────────────────────────────────────────────────────
@@ -385,6 +477,7 @@ def decide_escalation(ctx: HandlerContext) -> str:
 
 
 BUILD_GATE_HANDLERS: dict[str, Callable[[Any], str]] = {
+    "E0": prepare_build,
     "E2": check_e2,
     "F1": check_f1,
     "X": route_exception,

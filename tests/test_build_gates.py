@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sandbox_env import run_on_host
-from test_grounding import Rig, repo  # noqa: F401  (repo is a fixture)
+from sandbox_env import BWRAP_USABLE, run_on_host
+from test_grounding import Rig, git, repo  # noqa: F401  (repo is a fixture)
 
+from agentic_pipeline import build_gates
 from agentic_pipeline.build_gates import (
     BUILD_GATE_HANDLERS,
     CAUSES,
@@ -24,6 +25,7 @@ from agentic_pipeline.graph import spent_route
 from agentic_pipeline.grounding import GROUNDING_HANDLERS
 from agentic_pipeline.manifest import build_manifest, publish_stage_manifest
 from agentic_pipeline.provenance import GENESIS_HASH
+from agentic_pipeline.readiness import SANDBOX_CHECKS, Check, Status
 from agentic_pipeline.run_state import load_policy
 from agentic_pipeline.runner import HandlerContext, Outcome, Runner
 
@@ -312,6 +314,164 @@ def seal_build_inputs(build: Build) -> None:
 def record(build: Build) -> dict[str, Any]:
     (path,) = (build.rig.run_dir / "gates" / "E3").glob("*.json")
     return json.loads(path.read_text())
+
+
+E1_READS = {
+    "pinned_context_manifest",
+    "pinned_source_tree",
+    "contracts_sealed",
+    "generated_tests_sealed",
+    "protected_tests",
+}
+
+
+def attest(monkeypatch: pytest.MonkeyPatch, **status: Status) -> None:
+    """Make the sandbox self-test report every check VERIFIED, except those named."""
+    checks = {
+        name: Check(name, status.get(name, Status.VERIFIED), f"{name} probed")
+        for name in SANDBOX_CHECKS
+    }
+    monkeypatch.setattr(build_gates, "probe_sandbox", lambda host: checks)
+
+
+def approve_design(build: Build, sha: str | None = None) -> None:
+    """The provenance record the runner appends once an H1 approval verifies."""
+    build.runner.log.append(
+        {
+            "state": "H1",
+            "event": "approval",
+            "approver_id": "ln-c",
+            "approved_sha": sha or git(build.rig.repo, "rev-parse", "HEAD"),
+            "approval_digest": "sha256:" + "0" * 64,
+            "reason_code": "approve_design_and_no_security_veto",
+        }
+    )
+
+
+@pytest.fixture
+def ready(build: Build, monkeypatch: pytest.MonkeyPatch) -> Build:
+    """A build whose inputs are sealed, whose design is approved and whose sandbox is attested."""
+    seal_build_inputs(build)
+    approve_design(build)
+    attest(monkeypatch)
+    return build
+
+
+def e0_record(build: Build) -> dict[str, Any]:
+    (path,) = (build.rig.run_dir / "gates" / "E0").glob("*.json")
+    return json.loads(path.read_text())
+
+
+def e0(build: Build) -> str:
+    return BUILD_GATE_HANDLERS["E0"](build.ctx("E0", "D1"))
+
+
+def test_e0_records_the_commit_the_inputs_and_the_attested_sandbox(ready: Build) -> None:
+    assert e0(ready) == "always"
+    doc = e0_record(ready)
+    assert doc["guard"] == "always"
+    assert doc["commit_sha"] == git(ready.rig.repo, "rev-parse", "HEAD")
+    assert set(doc["inputs"]) == E1_READS
+    assert all(entry["digest"] and entry["data_class"] for entry in doc["inputs"].values())
+    (operation,) = doc["operations"]
+    assert operation["id"] == "implementation_patch"
+    assert operation["write_root"] == "build/implementation_patch"
+    assert operation["isolation_profile"] == "implementation_sandbox"
+    assert set(doc["sandbox"]) == set(SANDBOX_CHECKS)
+    assert {c["status"] for c in doc["sandbox"].values()} == {"VERIFIED"}
+
+
+def test_e0_is_the_same_record_when_nothing_changed(ready: Build) -> None:
+    assert e0(ready) == e0(ready) == "always"
+    e0_record(ready)  # one file: the record is named by its content
+
+
+def test_e0_blocks_on_an_input_that_was_never_sealed_and_records_nothing(
+    build: Build, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    approve_design(build)
+    attest(monkeypatch)
+    with pytest.raises(BuildGateError, match=r"contracts_sealed.*generated_tests_sealed"):
+        e0(build)
+    assert not (build.rig.run_dir / "gates" / "E0").exists()
+
+
+@pytest.mark.parametrize("tampered", ["protected_tests", "pinned_source_tree"])
+def test_e0_blocks_on_a_sealed_input_that_changed(ready: Build, tampered: str) -> None:
+    root = ready.rig.run_dir / "grounding" / "G" / tampered
+    files = sorted(p for p in root.rglob("*") if p.is_file())
+    assert files, tampered
+    files[0].write_text("evil\n")
+    with pytest.raises(BuildGateError, match="content changed since G sealed it"):
+        e0(ready)
+    assert not (ready.rig.run_dir / "gates" / "E0").exists()
+
+
+def test_e0_blocks_without_a_design_approval(build: Build, monkeypatch: pytest.MonkeyPatch) -> None:
+    seal_build_inputs(build)
+    attest(monkeypatch)
+    with pytest.raises(BuildGateError, match="no design approval is recorded"):
+        e0(build)
+
+
+def test_e0_blocks_when_the_pinned_commit_is_not_the_approved_one(
+    build: Build, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seal_build_inputs(build)
+    approve_design(build, sha="f" * 40)
+    attest(monkeypatch)
+    with pytest.raises(BuildGateError, match="is not the approved one, " + "f" * 40):
+        e0(build)
+    assert not (build.rig.run_dir / "gates" / "E0").exists()
+
+
+@pytest.mark.parametrize("status", [Status.UNVERIFIED, Status.FAILED])
+@pytest.mark.parametrize("check", SANDBOX_CHECKS)
+def test_e0_blocks_on_a_sandbox_check_that_is_not_verified(
+    build: Build, monkeypatch: pytest.MonkeyPatch, check: str, status: Status
+) -> None:
+    seal_build_inputs(build)
+    approve_design(build)
+    attest(monkeypatch, **{check: status})
+    with pytest.raises(BuildGateError, match=f"the sandbox is not attested: {check} {status}"):
+        e0(build)
+    assert not (build.rig.run_dir / "gates" / "E0").exists()
+
+
+class RecordingDispatcher:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def dispatch_stage(self, src: str, guard: str, stage: str, context: Any, **_: Any) -> None:
+        self.calls.append((src, guard, stage))
+
+
+def test_the_runner_takes_e0_to_e1_and_a_blocked_e0_dispatches_nothing(
+    build: Build, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = build.runner
+    dispatcher = RecordingDispatcher()
+    runner.dispatcher = dispatcher  # type: ignore[assignment]
+    runner.state.current = "E0"
+    runner._save()
+    runner.log.append({"state": "E0", "event": "enter"})
+    attest(monkeypatch)
+    blocked = runner.step()  # no approval, nothing sealed
+    assert blocked.outcome is Outcome.BLOCKED and "contracts_sealed" in blocked.detail, blocked
+    assert dispatcher.calls == [] and runner.state.current == "E0"
+    seal_build_inputs(build)
+    approve_design(build)
+    advanced = runner.step()
+    assert advanced.outcome is Outcome.ADVANCED and runner.state.current == "E1", advanced
+    assert dispatcher.calls == [("E0", "always", "E1")]
+
+
+@pytest.mark.skipif(not BWRAP_USABLE, reason="bwrap cannot create a sandbox here")
+def test_e0_attests_the_real_sandbox_of_this_host(build: Build) -> None:
+    seal_build_inputs(build)
+    approve_design(build)
+    assert e0(build) == "always"  # the real self-test: only /work writable, loopback only
+    assert {c["status"] for c in e0_record(build)["sandbox"].values()} == {"VERIFIED"}
 
 
 def test_e3_never_escalates_while_e4_is_disabled(build: Build) -> None:
